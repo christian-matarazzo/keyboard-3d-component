@@ -23,7 +23,13 @@ const clamp = (v, min, max) => Math.max(min, Math.min(max, v))
  */
 export function useComposerControls(
   groupRef,
-  { speed = 0.008, flingFactor = 0.15, smoothTime = 0.4, minZoom = 3 } = {},
+  {
+    speed = 0.008,
+    flingFactor = 0.15,
+    smoothTime = 0.4,
+    minZoom = 3,
+    focalLength = 100, // mm equivalenti (35mm): più alta = tele, prospettiva compressa
+  } = {},
 ) {
   const gl = useThree((s) => s.gl)
   const camera = useThree((s) => s.camera)
@@ -45,11 +51,12 @@ export function useComposerControls(
 
   // Fit responsive: distanza minima perché il modello entri in orizzontale.
   useEffect(() => {
+    camera.setFocalLength(focalLength) // imposta il fov dalla focale (film 35mm)
     const aspect = size.width / Math.max(size.height, 1)
     const tanHalfV = Math.tan((camera.fov * Math.PI) / 360)
-    const fit = clamp(FIT_HALF_WIDTH / (tanHalfV * aspect), 5.2, 12)
+    const fit = clamp(FIT_HALF_WIDTH / (tanHalfV * aspect), 5.2, 40)
     const z = zoom.current
-    z.max = Math.max(8, fit)
+    z.max = Math.max(8, fit * 1.3)
     if (z.target == null) {
       // primo mount: nessuna animazione d'ingresso
       z.target = fit
@@ -58,7 +65,7 @@ export function useComposerControls(
     } else {
       z.target = fit
     }
-  }, [size, camera])
+  }, [size, camera, focalLength])
 
   useEffect(() => {
     const el = gl.domElement

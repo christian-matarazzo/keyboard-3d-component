@@ -15,7 +15,12 @@ interattivo a destra, stile Apple "Guardalo da vicino".
   tempo reale, senza ricaricare il modello.
 
 I gesti sono gestiti in `useComposerControls.js` (un unico set di pointer
-event: 1 pointer = rotazione, 2 pointer = pinch, wheel = zoom).
+event: 1 pointer = rotazione, 2 pointer = pinch, wheel = zoom). La camera
+usa una focale di 100 mm equivalenti (look teleobiettivo da product shot).
+
+**Per regolare qualsiasi valore (focale, snap, luci, finiture, layout) vedi
+[TUNING.md](TUNING.md): elenca ogni parametro, dove si trova e cosa cambia
+a video.**
 
 ## Avvio
 

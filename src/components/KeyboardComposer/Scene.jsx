@@ -33,7 +33,7 @@ export default function Scene({ modelUrl, finish }) {
     <Canvas
       shadows
       dpr={[1, 2]}
-      camera={{ position: [0, 1.4, 5.2], fov: 32 }}
+      camera={{ position: [0, 1.4, 5.2] }} // il fov deriva dalla focale (useComposerControls)
       gl={{
         antialias: true,
         toneMapping: THREE.ACESFilmicToneMapping,
