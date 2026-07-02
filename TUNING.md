@@ -94,54 +94,72 @@ l'auto-fit (il file sorgente è in centimetri, questa costante lo normalizza).
 
 ---
 
-## 4. Luci e atmosfera — `Scene.jsx`
+## 4. Luci e atmosfera — `LightRig.jsx`, `Backdrop.jsx`, `Scene.jsx`
 
-### Faro dall'alto (spotLight)
+### Il rig da studio (`LightRig.jsx`)
 
-```jsx
-<spotLight castShadow position={[0, 6, 0.6]} intensity={110}
-  angle={0.55} penumbra={0.9} decay={1.6} ... />
-```
+Le quattro luci sono in un unico group ancorato al pivot del modello che
+**copia l'orientamento della camera a ogni frame**: il rig segue i movimenti
+della camera (come lo studio che si muove col fotografo) ma resta a distanza
+costante dal soggetto, quindi zoom in/out non cambia né l'illuminazione né
+le ombre. Tutte le posizioni sono **rig-local**: +Z verso l'osservatore,
+−Z dietro il soggetto, qualunque cosa faccia la camera.
 
-- `intensity` (110): luminosità del cono. Più alto = area modello più
-  illuminata (l'effetto "faro" richiesto).
-- `angle` (0.55 rad): apertura del cono. Più stretto = cerchio di luce più
-  concentrato sul modello, resto più buio.
-- `penumbra` (0.9): sfumatura del bordo del cono. `0` = bordo netto da
-  faro teatrale, `1` = transizione morbidissima.
-- `position` ([0, 6, 0.6]): da dove arriva la luce. Alzare Y = ombre più
-  corte e verticali.
-- `decay` (1.6): caduta della luce con la distanza. Più basso = arriva più
-  luce al modello a parità di intensity.
+Le costanti sono in testa al file:
 
-### Luci di supporto
+| Costante | Ruolo | Valori chiave e effetto a video |
+| --- | --- | --- |
+| `MAIN` | Luce principale dall'alto, leggermente angolata (destra/avanti). Unico shadow caster. | `intensity 90` = luminosità generale del modello; `angle 0.5` = apertura del cono; `penumbra 0.85` = morbidezza del bordo; `position [0.9, 4.2, 2.2]` = da dove arriva (X≠0 dà l'angolazione richiesta, più X = ombre più laterali). |
+| `FILL_LEFT` | Laterale sinistra, morbida e leggermente fredda | `intensity 0.6`: alzare = meno contrasto sul lato sinistro. `color #e8ecff`. |
+| `FILL_RIGHT` | Laterale destra, più debole (l'asimmetria dà volume) | `intensity 0.45`: portarla uguale alla sinistra appiattisce il modello. |
+| `RIM` | Controluce da dietro il soggetto — bordo luminoso da silhouette | `intensity 70` = quanto "taglia" il bordo; `color #a9c1ff` = tinta del bordo (fredda); `RIM_TARGET [0, 0.3, 0]` = mira alta per marcare il profilo superiore. |
 
-- `directionalLight [3, 5, 2] intensity 1.8`: key light laterale, dà volume
-  ai tasti. Spegnerla appiattisce il modello.
-- `directionalLight [0, 1.5, 6] intensity 0.9`: fill frontale — tiene
-  leggibili le pose ruotate (retro verso camera). Abbassarla = pose ruotate
-  più scure e drammatiche.
-- `spotLight [-4, 3, -4] intensity 12 color #b9c6ff`: rim light fredda da
-  dietro, stacca la silhouette dal fondo scuro.
+- Nota tecnica: i target delle luci sono `<object3D>` figli del rig,
+  assegnati in `useLayoutEffect` — se si aggiunge una luce direzionata va
+  puntata allo stesso modo, altrimenti mira nel vuoto.
+- Le ombre della main: `shadow-mapSize [1024,1024]` (2048 = più definite,
+  più costose), `shadow-bias -0.0001` (se compaiono artefatti a strisce sui
+  keycap, renderlo più negativo).
 
-### Environment (riflessi)
+### Backdrop trasparente (`Backdrop.jsx`)
+
+Piano orizzontale con `MeshReflectorMaterial` che raccoglie il riflesso del
+modello e lascia trasparire lo sfondo CSS; una alphaMap radiale lo dissolve
+verso i bordi (nessuna cucitura visibile).
+
+- `opacity` (0.5): intensità complessiva di riflesso + vignettatura scura.
+- `mirror` (0.55): nitidezza speculare del riflesso (1 = specchio).
+- `mixStrength` (2): quanto il riflesso è luminoso. Il parametro da toccare
+  per "più/meno riflesso".
+- `blur [400, 100]` + `mixBlur` (0.9): sfocatura del riflesso — valori più
+  bassi = riflesso più definito, meno da "superficie satinata".
+- `resolution` (512): risoluzione del render target del riflesso; 256 su
+  device deboli (vedi §7), 1024 per riflessi più fini ma più costosi.
+- `color #000000`: tinta del piano. Deve restare molto scura, altrimenti il
+  piano si vede come un rettangolo più chiaro dello sfondo CSS.
+- Il gradiente radiale (funzione `alphaMap` nel file): gli stop
+  `(0→1, 0.5→0.5, 1→0)` regolano quanto lontano dal modello arriva il
+  riflesso prima di dissolversi.
+
+### Ombra a terra (ContactShadows, in `Scene.jsx`)
+
+`position [0, -1.5, 0]`: quota del piano ombra (il backdrop sta 1 mm sotto).
+`opacity 0.6` = intensità; `blur 2.6` = morbidezza; `scale 9` = estensione.
+
+### Environment (riflessi PBR sui metalli)
 
 I `<Lightformer>` dentro `<Environment>` sono i "softbox" riflessi dalle
-superfici metalliche. `intensity` di ciascuno = quanto brillano i riflessi
-sul body in alluminio; `position/scale` = dove appaiono i riflessi. Non
-illuminano le ombre: definiscono i riflessi PBR.
+superfici metalliche (`intensity` 1.1 / 0.7 / 0.55 — dimezzati rispetto al
+passato: il look ora lo definisce il rig). Non illuminano le ombre:
+definiscono i riflessi sul body in alluminio. Sono world-fixed: quando il
+modello ruota, i riflessi scorrono sulla superficie (comportamento
+fisicamente corretto).
 
 ### Esposizione globale
 
-`toneMappingExposure: 1.25` nelle props `gl` del `<Canvas>`: luminosità
-complessiva della scena. È il modo più rapido per schiarire/scurire tutto
-in una volta (valori tipici 0.8–1.6).
-
-### Ombra a terra (ContactShadows)
-
-`position [0, -1.5, 0]`: quota del piano ombra (più vicino al modello =
-ombra più attaccata). `opacity 0.6` = intensità; `blur 2.6` = morbidezza;
-`scale 9` = estensione del piano.
+`toneMappingExposure: 1.25` nelle props `gl` del `<Canvas>` in `Scene.jsx`:
+luminosità complessiva della scena. È il modo più rapido per
+schiarire/scurire tutto in una volta (valori tipici 0.8–1.6).
 
 ---
 
@@ -194,7 +212,11 @@ spostare `'Countersunk'` su un nuovo slot e aggiungerlo alle finiture.
 - `dpr={[1, 2]}`: risoluzione massima = 2× device pixel ratio. Abbassare a
   `[1, 1.5]` migliora gli FPS su schermi 4K/mobile deboli a lieve costo di
   nitidezza.
-- `shadow-mapSize={[1024, 1024]}` sullo spotLight: risoluzione delle ombre
-  proiettate (2048 = più definite, più costose).
+- `shadow-mapSize={[1024, 1024]}` sulla main light del rig: risoluzione
+  delle ombre proiettate (2048 = più definite, più costose).
+- Il backdrop riflettente ridisegna la scena una seconda volta per frame in
+  un render target da 512px: su device deboli abbassare `resolution` a 256
+  in `Backdrop.jsx`, o rimuovere `<Backdrop />` da `Scene.jsx` lasciando le
+  sole ContactShadows.
 - Asset: vedi README, sezione "Pipeline asset" (`--ratio` di simplify regola
   il dettaglio della mesh).
