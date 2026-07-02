@@ -29,6 +29,9 @@ export function useComposerControls(
     smoothTime = 0.4,
     minZoom = 3,
     focalLength = 100, // mm equivalenti (35mm): più alta = tele, prospettiva compressa
+    // Posa iniziale (multipli di 45° per coerenza con lo snap):
+    // pitch 45° = vista dall'alto in tre quarti, come lo shot di riferimento.
+    initialRotation = { x: Math.PI / 4, y: 0 },
   } = {},
 ) {
   const gl = useThree((s) => s.gl)
@@ -36,8 +39,9 @@ export function useComposerControls(
   const size = useThree((s) => s.size)
 
   const rot = useRef({
-    targetY: 0, // yaw   (drag orizzontale)
-    targetX: 0, // pitch (drag verticale)
+    targetY: initialRotation.y, // yaw   (drag orizzontale)
+    targetX: initialRotation.x, // pitch (drag verticale)
+    initialized: false,
     dragging: false,
     lastX: 0,
     lastY: 0,
@@ -206,6 +210,13 @@ export function useComposerControls(
     const r = rot.current
     const z = zoom.current
     if (group) {
+      if (!r.initialized) {
+        // Posa iniziale applicata secca al primo frame, senza animazione:
+        // deve combaciare con il poster sfocato mostrato durante il load.
+        group.rotation.x = r.targetX
+        group.rotation.y = r.targetY
+        r.initialized = true
+      }
       // Durante il drag il follow è quasi 1:1; al rilascio settle morbido.
       const t = r.dragging ? 0.06 : smoothTime
       easing.damp(group.rotation, 'y', r.targetY, t, delta)
