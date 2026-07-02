@@ -4,11 +4,18 @@ Componente React (Three.js / @react-three/fiber) per il sito di presentazione
 della tastiera: sezione scura con pannello pillole a sinistra e modello 3D
 interattivo a destra, stile Apple "Guardalo da vicino".
 
-- **Rotazione**: trascina (mouse o touch) per ruotare; al rilascio il modello
-  si assesta con easing organico sul multiplo di 45° più vicino. Un fling
-  deciso salta più stop.
+- **Rotazione**: trascina con un dito/mouse per ruotare su entrambi gli assi
+  (orizzontale → Y, verticale → X, 360°); al rilascio il modello si assesta
+  con easing organico sul multiplo di 45° più vicino per ciascun asse. Un
+  fling deciso salta più stop.
+- **Zoom**: rotella del mouse su desktop, pinch con due dita su touch.
+  Distanza clampata; la distanza iniziale è calcolata dall'aspect ratio del
+  canvas, così su mobile il modello entra intero nel frame.
 - **Finiture**: gli swatch nella pillola "Colori" cambiano i materiali in
   tempo reale, senza ricaricare il modello.
+
+I gesti sono gestiti in `useComposerControls.js` (un unico set di pointer
+event: 1 pointer = rotazione, 2 pointer = pinch, wheel = zoom).
 
 ## Avvio
 

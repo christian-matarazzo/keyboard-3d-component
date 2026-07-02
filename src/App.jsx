@@ -11,7 +11,7 @@ export default function App() {
           margin: '0 0 40px',
         }}
       >
-        Guardala da vicino.
+        Guarda il tuo gaba prendere vita.
       </h1>
       <KeyboardComposer />
     </main>

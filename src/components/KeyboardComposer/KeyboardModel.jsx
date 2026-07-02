@@ -2,8 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { useGLTF } from '@react-three/drei'
 import { collectSlotMeshes, applyFinish } from './materials/applyFinish'
-import { useDragRotation } from './useDragRotation'
-import { useWheelZoom } from './useWheelZoom'
+import { useComposerControls } from './useComposerControls'
 
 const DRACO_PATH = '/draco/'
 export const DEFAULT_MODEL_URL = '/models/keyboard.glb'
@@ -32,8 +31,7 @@ export function KeyboardModel({ url = DEFAULT_MODEL_URL, finish }) {
     if (finish) applyFinish(slotMeshes, finish)
   }, [slotMeshes, finish])
 
-  useDragRotation(groupRef)
-  useWheelZoom({ min: 3, max: 8 })
+  useComposerControls(groupRef)
 
   return (
     <group ref={groupRef}>
