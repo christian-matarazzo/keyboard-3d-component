@@ -33,18 +33,18 @@ export function KeyboardModel({ url = DEFAULT_MODEL_URL, finish }) {
     if (finish) applyFinish(slotMeshes, finish)
   }, [slotMeshes, finish])
 
-  // Mobile portrait: la tastiera si sviluppa in verticale (roll 90° sul
-  // wrapper esterno, così pitch/yaw del gesto restano sul group interno).
   const portrait = useThree((s) => s.size.width < s.size.height)
 
-  // Posa d'ingresso: hero a 80° su desktop; su mobile portrait invece 90°
-  // (vista dall'alto) combinato col roll del wrapper esterno riproduce lo
-  // shot verticale di riferimento (righe di tasti orizzontali, manopole in
-  // alto). Non è un semplice "stesso pitch ruotato": il roll è attorno
-  // all'asse Z del mondo, non all'asse di vista della camera, quindi pose
-  // diverse rispondono al roll in modo diverso — 90° è quella verificata.
+  // Posa d'ingresso: hero a 80° su desktop. Su mobile portrait la vista
+  // verticale (faccia tasti alla camera, asse lungo verticale, manopole in
+  // alto) è una POSA DELLA GRIGLIA: pitch 90° + yaw 90° (Rx·Ry, ordine
+  // 'XYZ'). Niente roll su wrapper esterno: così il pitch resta sull'asse
+  // orizzontale dello schermo e lo swipe verticale trascina il modello
+  // seguendo il dito, identico al desktop.
   useComposerControls(groupRef, {
-    initialRotation: { x: portrait ? Math.PI / 2 : (80 * Math.PI) / 180, y: 0 },
+    initialRotation: portrait
+      ? { x: Math.PI / 2, y: Math.PI / 2 }
+      : { x: (80 * Math.PI) / 180, y: 0 },
   })
 
   // Luce "orbitale": agganciata al group che ruota (non al rig camera-relative
@@ -58,12 +58,7 @@ export function KeyboardModel({ url = DEFAULT_MODEL_URL, finish }) {
   })
 
   return (
-    // L'inclinazione a 80° proietta il baricentro visivo un po' a sinistra:
-    // piccolo offset X di compensazione per una composizione centrata.
-    <group
-      rotation={[0, 0, portrait ? -Math.PI / 2 : 0]}
-      position={[portrait ? 0.3 : 0, 0, 0]}
-    >
+    <group>
       <group ref={groupRef}>
         <pointLight
           position={[-10, 1, 0.6]}

@@ -29,9 +29,9 @@ const stepFrom = (angle, dir) =>
  *  - drag OMNIDIREZIONALE con soft cap: durante il gesto il modello segue il
  *    dito su entrambi gli assi (pitch sempre, yaw solo dalla posa orizzontale),
  *    ma ciascun asse è clampato a ±45° dalla posa di partenza del gesto — mai
- *    rotazione libera. Al rilascio: snap alla posa PIÙ VICINA (soglia 50%) e
- *    committa UN SOLO asse, quello con lo spostamento maggiore (l'altro torna
- *    alla partenza); sotto soglia su entrambi → nessun cambio
+ *    rotazione libera. Al rilascio: OGNI asse snappa indipendentemente alla
+ *    propria posa più vicina (soglia 50% per asse); sotto soglia l'asse
+ *    torna alla posa di partenza
  *  - il flusso principale (pitch) è il flip front → alto → retro → sotto a
  *    step di 45°; lo slide laterale (yaw) è sbloccato solo nella posa
  *    orizzontale (pitch ≡ 0°), da lì prosegue a step di 45° fino al giro
@@ -43,11 +43,10 @@ const stepFrom = (angle, dir) =>
  *  - nessuno zoom: né rotella, né pinch. La distanza camera deriva solo dal
  *    fit responsive; focale tele (200mm) per la prospettiva compressa
  *    "commercial"
- *  - mobile portrait: il modello è rollato di 90° (tastiera in verticale),
- *    ma la mappatura del gesto NON cambia — swipe verticale = pitch (flusso
- *    principale), orizzontale = yaw; il roll è solo visivo. Il load è la vista
- *    dall'alto (pitch 90°); tumblando verso l'orizzontale (pitch 0) si vede il
- *    profilo del case (vista sottile, legittima come beauty shot)
+ *  - mobile portrait: NESSUN roll esterno — la vista verticale è la posa di
+ *    griglia pitch 90° + yaw 90° (manopole in alto). La mappatura del gesto
+ *    è identica al desktop: swipe verticale = pitch (il modello segue il
+ *    dito), orizzontale = yaw (solo da vista frontale)
  */
 export function useComposerControls(
   groupRef,
@@ -64,12 +63,12 @@ export function useComposerControls(
   // Parametri "feel" regolabili dal pannello (?debug): i default sono i
   // valori di produzione.
   const feel = useControls('Rotazione', {
-    dragSpeed: { value: 0.006, min: 0.001, max: 0.012, step: 0.0005, label: 'velocità drag' },
-    followTime: { value: 0.12, min: 0.05, max: 0.6, step: 0.01, label: 'inerzia in drag' },
+    dragSpeed: { value: 0.008, min: 0.001, max: 0.012, step: 0.0005, label: 'velocità drag' },
+    followTime: { value: 0.09, min: 0.05, max: 0.6, step: 0.01, label: 'inerzia in drag' },
     settleTime: { value: 0.6, min: 0.2, max: 1.5, step: 0.05, label: 'settle rilascio' },
     commitFraction: { value: 0.5, min: 0.1, max: 0.9, step: 0.05, label: 'soglia step' },
     fitMargin: { value: 1.4, min: 1, max: 2.5, step: 0.05, label: 'margine inquadratura' },
-    zoomOutMobile: { value: 1.05, min: 1, max: 1.8, step: 0.05, label: 'zoom-out mobile' },
+    zoomOutMobile: { value: 1.25, min: 1, max: 1.8, step: 0.05, label: 'zoom-out mobile' },
   })
   const feelRef = useRef(feel)
   feelRef.current = feel
@@ -205,24 +204,23 @@ export function useComposerControls(
       if (!d.moved) return
       d.moved = false
 
-      // Progresso normalizzato per asse (∈ [-1, 1] grazie al soft-cap).
-      const pitchProgress = (p.targetX - d.pitch0) / STEP
-      const yawProgress = (p.targetY - d.yaw0) / STEP
-      const threshold = feelRef.current.commitFraction // frazione di STEP (0.5 = nearest)
+      const threshold = feelRef.current.commitFraction // 0.5 = nearest
 
-      // Un solo asse committa: quello con lo spostamento maggiore. L'altro
-      // torna alla posa di partenza. Il candidato scatta solo oltre la soglia
-      // (nearest), altrimenti torna anch'esso (nessun cambio).
-      const pitchDominant = Math.abs(pitchProgress) >= Math.abs(yawProgress)
-      p.pitch = d.pitch0
-      p.yaw = d.yaw0
-      if (pitchDominant) {
-        if (Math.abs(pitchProgress) >= threshold) {
-          p.pitch = stepFrom(d.pitch0, Math.sign(pitchProgress))
-        }
-      } else if (Math.abs(yawProgress) >= threshold) {
-        p.yaw = stepFrom(d.yaw0, Math.sign(yawProgress))
+      // Ogni asse committa indipendentemente: oltre la soglia snappa alla
+      // posa adiacente, sotto torna alla partenza. Il progresso è la frazione
+      // della distanza start→posa adiacente (NON di 45° fissi): partendo da
+      // pose fuori griglia (hero 80°) il passo vicino dista solo 10°, e
+      // normalizzare su 45° renderebbe la soglia irraggiungibile. Lo yaw
+      // partecipa solo se era sbloccato nel gesto (vista frontale),
+      // altrimenti targetY è rimasto a yaw0 (progresso nullo).
+      const commitAxis = (start, target) => {
+        const delta = target - start
+        if (Math.abs(delta) < EPS) return start
+        const step = stepFrom(start, Math.sign(delta))
+        return Math.abs(delta / (step - start)) >= threshold ? step : start
       }
+      p.pitch = commitAxis(d.pitch0, p.targetX)
+      p.yaw = commitAxis(d.yaw0, p.targetY)
       p.targetX = p.pitch
       p.targetY = p.yaw
 
@@ -240,7 +238,7 @@ export function useComposerControls(
       el.removeEventListener('pointerup', onUp)
       el.removeEventListener('pointercancel', onUp)
     }
-  }, [gl, groupRef, initialRotation.x])
+  }, [gl, groupRef, initialRotation.x, initialRotation.y])
 
   useFrame((_, delta) => {
     const group = groupRef.current

@@ -36,19 +36,19 @@ export default function LightRig() {
   const rimTargetRef = useRef()
 
   const main = useControls('Luci · principale', {
-    intensity: { value: 15, min: 0, max: 200, step: 1 },
+    intensity: { value: 20, min: 0, max: 200, step: 1 },
     position: { value: [0.9, 4.2, 2.2] },
     angle: { value: 0.5, min: 0.1, max: 1.2 },
     penumbra: { value: 0.9, min: 0, max: 1 },
   })
   const fill = useControls('Luci · fill laterali', {
-    leftIntensity: { value: 0.7, min: 0, max: 4, step: 0.05 },
+    leftIntensity: { value: 1.2, min: 0, max: 4, step: 0.05 },
     leftColor: '#e8ecff',
-    rightIntensity: { value: 0.45, min: 0, max: 4, step: 0.05 },
+    rightIntensity: { value: 0.8, min: 0, max: 4, step: 0.05 },
     rightColor: '#ffffff',
   })
   const front = useControls('Luci · frontale', {
-    intensity: { value: 3, min: 0, max: 10, step: 0.25 },
+    intensity: { value: 5, min: 0, max: 10, step: 0.25 },
     color: '#ffffff',
   })
   const rim = useControls('Luci · rim (retro)', {

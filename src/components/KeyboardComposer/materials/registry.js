@@ -26,7 +26,7 @@ export const finishes = [
     label: 'Grafite',
     swatch: '#3a3a3c',
     slots: {
-      keycaps: { color: '#2e2e33', roughness: 1, metalness: 0.05, envMapIntensity: 0.95, clearcoat: 0.10, clearcoatRoughness: 0.35 },
+      keycaps: { color: '#35353b', roughness: 0.55, metalness: 0.05, envMapIntensity: 1.1, clearcoat: 0.35, clearcoatRoughness: 0.35 },
       body: { color: '#46464c', roughness: 0.35, metalness: 0.0, envMapIntensity: 1.0, clearcoat: 0.0, clearcoatRoughness: 0.2 },
       damping: { color: '#1c1c1e', roughness: 0.9, metalness: 0, envMapIntensity: 0.5 },
     },

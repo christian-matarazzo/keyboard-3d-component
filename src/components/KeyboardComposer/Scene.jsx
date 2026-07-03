@@ -35,7 +35,7 @@ function Loader() {
 function ExposureTuner() {
   const gl = useThree((s) => s.gl)
   const { exposure } = useControls('Resa', {
-    exposure: { value: 1.25, min: 0.4, max: 2, step: 0.05 },
+    exposure: { value: 1.5, min: 0.4, max: 2, step: 0.05 },
   })
   useEffect(() => {
     gl.toneMappingExposure = exposure
@@ -73,9 +73,10 @@ function MaterialTuner({ finish }) {
 
 export default function Scene({ modelUrl, finish }) {
   const env = useControls('Luci · ambiente', {
-    stripIntensity: { value: 5, min: 0, max: 15, step: 0.25, label: 'strip top' },
+    stripIntensity: { value: 7, min: 0, max: 15, step: 0.25, label: 'strip top' },
     edgeIntensity: { value: 2.5, min: 0, max: 10, step: 0.25, label: 'strip bordo' },
-    ambientIntensity: { value: 0.45, min: 0, max: 2, step: 0.05, label: 'base diffusa' },
+    ambientIntensity: { value: 0.9, min: 0, max: 2, step: 0.05, label: 'base diffusa' },
+    frontIntensity: { value: 1.8, min: 0, max: 6, step: 0.1, label: 'pannello frontale' },
   })
   const shadow = useControls('Ombra a contatto', {
     opacity: { value: 0.5, min: 0, max: 1, step: 0.05 },
@@ -93,6 +94,12 @@ export default function Scene({ modelUrl, finish }) {
         toneMappingExposure: 1.0,
       }}
       style={{ width: '100%', height: '100%' }}
+      // Con ?debug espone scena/camera per la verifica automatica delle pose
+      // (screenshot + drag sintetici), come il pannello leva.
+      onCreated={(state) => {
+        if (new URLSearchParams(window.location.search).has('debug'))
+          window.__r3f_state = state
+      }}
     >
       <ExposureTuner />
       <Suspense fallback={<Loader />}>
@@ -129,6 +136,15 @@ export default function Scene({ modelUrl, finish }) {
             rotation={[0, Math.PI / 3, 0]}
             scale={[7, 0.4, 1]}
             color="#cfd8ff"
+          />
+          {/* pannello frontale ampio e soffuso: solleva la faccia rivolta
+              alla camera (decisivo in portrait, dove i keycaps guardano
+              l'osservatore) senza appiattire le bande delle strip */}
+          <Lightformer
+            intensity={env.frontIntensity}
+            position={[0, 0.5, 5]}
+            rotation={[0, Math.PI, 0]}
+            scale={[6, 4, 1]}
           />
           {/* cupola debolissima: i neri restano leggibili, mai vuoti */}
           <Lightformer
