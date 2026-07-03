@@ -1,50 +1,31 @@
-import { useState } from 'react'
 import { useProgress } from '@react-three/drei'
+import { Leva } from 'leva'
 import styles from './KeyboardComposer.module.css'
-import ComposerPanel from './ComposerPanel'
 import Scene from './Scene'
 import { DEFAULT_MODEL_URL } from './KeyboardModel'
 import { finishes as defaultFinishes, getFinish } from './materials/registry'
 
-const DEFAULT_FEATURES = [
-  'Switch magnetici',
-  'Struttura in alluminio',
-  'Piastre intercambiabili',
-  'Smorzamento acustico',
-  'Layout ISO italiano',
-]
+// Pannello di tuning (luci, materiali, resa) visibile solo con `?debug`
+// nell'URL: in produzione il canvas resta pulito, a tutto schermo.
+const DEBUG = new URLSearchParams(window.location.search).has('debug')
 
 /**
- * Configuratore 3D della tastiera — sezione autonoma stile "Guardalo da
- * vicino": pannello pillole a sinistra, canvas Three.js a destra.
- * Trascina per ruotare (snap a 45°), swatch per cambiare finitura live.
+ * Vetrina 3D della tastiera a piena vista: nessun pannello di configurazione,
+ * solo il modello. Trascina in verticale per il flusso front/retro a step di
+ * 45°; in vista frontale trascina in orizzontale per i ±45° laterali.
  */
 export default function KeyboardComposer({
   modelUrl = DEFAULT_MODEL_URL,
   finishes = defaultFinishes,
-  features = DEFAULT_FEATURES,
-  onFinishChange,
-  onFeatureClick,
+  finishId,
 }) {
-  const [selectedFinishId, setSelectedFinishId] = useState(finishes[0]?.id)
-  const finish = getFinish(finishes, selectedFinishId)
+  const finish = getFinish(finishes, finishId)
   const { progress } = useProgress()
   const loaded = progress === 100
 
-  const selectFinish = (id) => {
-    setSelectedFinishId(id)
-    onFinishChange?.(id)
-  }
-
   return (
     <section className={styles.section}>
-      <ComposerPanel
-        finishes={finishes}
-        selectedFinishId={selectedFinishId}
-        onSelectFinish={selectFinish}
-        features={features}
-        onFeatureClick={onFeatureClick}
-      />
+      <Leva hidden={!DEBUG} collapsed />
       <div
         className={`${styles.canvasWrap} ${loaded ? styles.canvasWrapLoaded : ''}`}
       >

@@ -9,6 +9,16 @@
  * Quando il cliente fornirà i materiali definitivi basta aggiornare/aggiungere
  * voci qui: ogni slot accetta anche `map`, `normalMap`, `roughnessMap` come URL
  * di texture, caricate in modo asincrono senza cambi di API.
+ *
+ * Nota anti-"bruciature": metalness alta + roughness bassa produce riflessi
+ * speculari duri che bruciano su certe pose. Il body resta percettivamente
+ * alluminio con metalness ~0.65 e roughness ~0.5; `envMapIntensity` dosa
+ * quanto l'environment si riflette sul materiale (1 = pieno).
+ *
+ * Look cinematico (riferimento shooting Apple): `clearcoat` +
+ * `clearcoatRoughness` aggiungono lo strato "vetroso" che accende le bande
+ * speculari lunghe delle strip light durante la rotazione — è ciò che
+ * distingue il prodotto premium dalla plastica.
  */
 export const finishes = [
   {
@@ -16,9 +26,9 @@ export const finishes = [
     label: 'Grafite',
     swatch: '#3a3a3c',
     slots: {
-      keycaps: { color: '#2b2b2e', roughness: 0.55, metalness: 0.05 },
-      body: { color: '#4a4a4e', roughness: 0.35, metalness: 0.9 },
-      damping: { color: '#1c1c1e', roughness: 0.9, metalness: 0 },
+      keycaps: { color: '#2e2e33', roughness: 1, metalness: 0.05, envMapIntensity: 0.95, clearcoat: 0.10, clearcoatRoughness: 0.35 },
+      body: { color: '#46464c', roughness: 0.35, metalness: 0.0, envMapIntensity: 1.0, clearcoat: 0.0, clearcoatRoughness: 0.2 },
+      damping: { color: '#1c1c1e', roughness: 0.9, metalness: 0, envMapIntensity: 0.5 },
     },
   },
   {
@@ -26,9 +36,9 @@ export const finishes = [
     label: 'Argento',
     swatch: '#d6d6db',
     slots: {
-      keycaps: { color: '#e8e8ed', roughness: 0.5, metalness: 0.05 },
-      body: { color: '#c9c9ce', roughness: 0.3, metalness: 0.95 },
-      damping: { color: '#8e8e93', roughness: 0.9, metalness: 0 },
+      keycaps: { color: '#e8e8ed', roughness: 0.55, metalness: 0.30, envMapIntensity: 0.7 },
+      body: { color: '#c9c9ce', roughness: 0.45, metalness: 0.7, envMapIntensity: 0.7 },
+      damping: { color: '#8e8e93', roughness: 0.9, metalness: 0, envMapIntensity: 0.5 },
     },
   },
   {
@@ -36,9 +46,9 @@ export const finishes = [
     label: 'Arancio cosmico',
     swatch: '#f56300',
     slots: {
-      keycaps: { color: '#2b2b2e', roughness: 0.55, metalness: 0.05 },
-      body: { color: '#d15a1e', roughness: 0.32, metalness: 0.85 },
-      damping: { color: '#1c1c1e', roughness: 0.9, metalness: 0 },
+      keycaps: { color: '#2b2b2e', roughness: 0.6, metalness: 0.05, envMapIntensity: 0.7 },
+      body: { color: '#d15a1e', roughness: 0.48, metalness: 0.6, envMapIntensity: 0.7 },
+      damping: { color: '#1c1c1e', roughness: 0.9, metalness: 0, envMapIntensity: 0.5 },
     },
   },
   {
@@ -46,9 +56,9 @@ export const finishes = [
     label: 'Blu profondo',
     swatch: '#2d4a6b',
     slots: {
-      keycaps: { color: '#d9d9de', roughness: 0.55, metalness: 0.05 },
-      body: { color: '#2d4a6b', roughness: 0.35, metalness: 0.9 },
-      damping: { color: '#16222f', roughness: 0.9, metalness: 0 },
+      keycaps: { color: '#d9d9de', roughness: 0.6, metalness: 0.05, envMapIntensity: 0.7 },
+      body: { color: '#2d4a6b', roughness: 0.5, metalness: 0.65, envMapIntensity: 0.7 },
+      damping: { color: '#16222f', roughness: 0.9, metalness: 0, envMapIntensity: 0.5 },
     },
   },
 ]
