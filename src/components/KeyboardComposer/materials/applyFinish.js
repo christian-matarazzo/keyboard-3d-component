@@ -75,6 +75,21 @@ function getMaterial(finish, slotName) {
   return material
 }
 
+/**
+ * Ritocca dal vivo il materiale di uno slot già in scena (pannello ?debug).
+ * Muta il materiale in cache: lo swap è istantaneo, senza riallocazioni.
+ */
+export function tuneSlotMaterial(finishId, slotName, props) {
+  const material = materialCache.get(`${finishId}:${slotName}`)
+  if (!material) return
+  if (props.color != null) material.color.set(props.color)
+  if (props.roughness != null) material.roughness = props.roughness
+  if (props.metalness != null) material.metalness = props.metalness
+  if (props.envMapIntensity != null) material.envMapIntensity = props.envMapIntensity
+  if (props.clearcoat != null) material.clearcoat = props.clearcoat
+  if (props.clearcoatRoughness != null) material.clearcoatRoughness = props.clearcoatRoughness
+}
+
 /** Applica una finitura a tutti gli slot, in tempo reale. */
 export function applyFinish(slotMeshes, finish) {
   for (const [slotName, meshes] of Object.entries(slotMeshes)) {
