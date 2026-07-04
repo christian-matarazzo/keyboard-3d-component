@@ -5,6 +5,7 @@ import { useGLTF } from '@react-three/drei'
 import { useControls } from 'leva'
 import { collectSlotMeshes, applyFinish } from './materials/applyFinish'
 import { useComposerControls } from './useComposerControls'
+import { ENTRY_LANDSCAPE, ENTRY_PORTRAIT } from './poseGraph'
 
 const DRACO_PATH = '/draco/'
 export const DEFAULT_MODEL_URL = '/models/keyboard.glb'
@@ -35,16 +36,17 @@ export function KeyboardModel({ url = DEFAULT_MODEL_URL, finish }) {
 
   const portrait = useThree((s) => s.size.width < s.size.height)
 
-  // Posa d'ingresso: hero a 80° su desktop. Su mobile portrait la vista
-  // verticale (faccia tasti alla camera, asse lungo verticale, manopole in
-  // alto) è una POSA DELLA GRIGLIA: pitch 90° + yaw 90° (Rx·Ry, ordine
+  // Posa d'ingresso: su desktop il corner "initial position" del cliente
+  // (pitch 35.264° + yaw 45°, stop ViewCube — vedi poseGraph.js). Su mobile
+  // portrait la vista verticale (faccia tasti alla camera, asse lungo
+  // verticale, manopole in alto) resta pitch 90° + yaw 90° (Rx·Ry, ordine
   // 'XYZ'). Niente roll su wrapper esterno: così il pitch resta sull'asse
   // orizzontale dello schermo e lo swipe verticale trascina il modello
   // seguendo il dito, identico al desktop.
   useComposerControls(groupRef, {
     initialRotation: portrait
-      ? { x: Math.PI / 2, y: Math.PI / 2 }
-      : { x: (80 * Math.PI) / 180, y: 0 },
+      ? { x: ENTRY_PORTRAIT.x, y: ENTRY_PORTRAIT.y }
+      : { x: ENTRY_LANDSCAPE.x, y: ENTRY_LANDSCAPE.y },
   })
 
   // Luce "orbitale": agganciata al group che ruota (non al rig camera-relative

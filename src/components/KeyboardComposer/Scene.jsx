@@ -73,10 +73,10 @@ function MaterialTuner({ finish }) {
 
 export default function Scene({ modelUrl, finish }) {
   const env = useControls('Luci · ambiente', {
-    stripIntensity: { value: 7, min: 0, max: 15, step: 0.25, label: 'strip top' },
-    edgeIntensity: { value: 2.5, min: 0, max: 10, step: 0.25, label: 'strip bordo' },
-    ambientIntensity: { value: 0.9, min: 0, max: 2, step: 0.05, label: 'base diffusa' },
-    frontIntensity: { value: 1.8, min: 0, max: 6, step: 0.1, label: 'pannello frontale' },
+    topIntensity: { value: 7, min: 0, max: 15, step: 0.25, label: 'strip top' },
+    leftIntensity: { value: 12, min: 0, max: 20, step: 0.25, label: 'strip sinistra' },
+    rightIntensity: { value: 4.5, min: 0, max: 20, step: 0.25, label: 'strip destra' },
+    ambientIntensity: { value: 0.5, min: 0, max: 2, step: 0.05, label: 'base diffusa' },
   })
   const shadow = useControls('Ombra a contatto', {
     opacity: { value: 0.5, min: 0, max: 1, step: 0.05 },
@@ -87,7 +87,7 @@ export default function Scene({ modelUrl, finish }) {
     <Canvas
       shadows
       dpr={[1, 2]}
-      camera={{ position: [0, 1.4, 5.2] }} // il fov deriva dalla focale (useComposerControls)
+      camera={{ position: [0, 0.1, 5.2] }} // livellata sul pivot; il fov deriva dalla focale (useComposerControls)
       gl={{
         antialias: true,
         toneMapping: THREE.ACESFilmicToneMapping,
@@ -117,34 +117,36 @@ export default function Scene({ modelUrl, finish }) {
           resolution={512}
         />
 
-        {/* Environment cinematico (riferimento shooting Apple): strip light
-            lunghe e sottili = bande speculari che spazzolano keycaps e
-            alluminio durante la rotazione; base diffusa bassissima perché
-            le zone d'ombra scivolino verso il nero (contrasto commercial). */}
+        {/* Environment 1:1 con `rig set/light disposition .jpeg`: tre strip
+            a filo dei bordi del soggetto (sinistra a tutta altezza, destra
+            solo metà superiore, top lungo il bordo alto) = i segni verdi
+            del riferimento. Base diffusa bassissima: il falloff verso il
+            nero del riferimento resta drammatico. Dimensioni riscalate
+            sulla tastiera (molto più larga del telefono dimostrativo). */}
         <Environment resolution={256}>
-          {/* strip principale dall'alto, leggermente avanzata verso camera */}
+          {/* strip top: corre lungo il bordo superiore, copre tutta la
+              larghezza della tastiera */}
           <Lightformer
-            intensity={env.stripIntensity}
-            position={[0, 4, 1.5]}
+            intensity={env.topIntensity}
+            position={[0, 4, 1]}
             rotation={[Math.PI / 2, 0, 0]}
             scale={[9, 0.6, 1]}
           />
-          {/* strip di taglio da dietro-sinistra: glint freddi sui bordi */}
+          {/* strip sinistra: verticale, TUTTA l'altezza del soggetto — il
+              bordo sinistro del riferimento brilla per intero */}
           <Lightformer
-            intensity={env.edgeIntensity}
-            position={[-4.5, 2, -3]}
-            rotation={[0, Math.PI / 3, 0]}
-            scale={[7, 0.4, 1]}
-            color="#cfd8ff"
+            intensity={env.leftIntensity}
+            position={[-4, 0.1, 0.5]}
+            rotation={[0, Math.PI / 2, 0]}
+            scale={[0.8, 5, 1]}
           />
-          {/* pannello frontale ampio e soffuso: solleva la faccia rivolta
-              alla camera (decisivo in portrait, dove i keycaps guardano
-              l'osservatore) senza appiattire le bande delle strip */}
+          {/* strip destra: verticale ma solo la metà SUPERIORE, più corta e
+              debole — l'asimmetria voluta dal riferimento */}
           <Lightformer
-            intensity={env.frontIntensity}
-            position={[0, 0.5, 5]}
-            rotation={[0, Math.PI, 0]}
-            scale={[6, 4, 1]}
+            intensity={env.rightIntensity}
+            position={[4, 1.4, 0.5]}
+            rotation={[0, -Math.PI / 2, 0]}
+            scale={[0.8, 2.5, 1]}
           />
           {/* cupola debolissima: i neri restano leggibili, mai vuoti */}
           <Lightformer
