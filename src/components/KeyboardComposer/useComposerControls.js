@@ -74,9 +74,12 @@ export function useComposerControls(
   // valori di produzione.
   const feel = useControls('Rotazione', {
     dragSpeed: { value: 0.008, min: 0.001, max: 0.012, step: 0.0005, label: 'velocità drag' },
-    followTime: { value: 0.09, min: 0.05, max: 0.6, step: 0.01, label: 'inerzia in drag' },
+    followTime: { value: 0.13, min: 0.05, max: 0.6, step: 0.01, label: 'inerzia in drag' },
     commitFraction: { value: 0.5, min: 0.1, max: 0.9, step: 0.05, label: 'soglia step' },
-    springStiffness: { value: 90, min: 20, max: 300, step: 5, label: 'molla rigidità' },
+    // Molla più morbida (era 90): il drifting/assestamento al rilascio è più
+    // lento e pesante — inerzia più realistica. Lo smorzamento (ζ) resta
+    // invariato, quindi il carattere del bounce è preservato, solo più lento.
+    springStiffness: { value: 60, min: 20, max: 300, step: 5, label: 'molla rigidità' },
     springDamping: { value: 0.6, min: 0.2, max: 1.2, step: 0.05, label: 'molla smorzamento' },
     rubberFactor: { value: 0.25, min: 0, max: 0.6, step: 0.05, label: 'elastico oltre-step' },
     rubberCapDeg: { value: 10, min: 0, max: 20, step: 1, label: 'elastico max (°)' },
