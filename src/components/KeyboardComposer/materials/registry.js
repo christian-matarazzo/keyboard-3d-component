@@ -26,8 +26,11 @@ export const finishes = [
     label: 'Grafite',
     swatch: '#3a3a3c',
     slots: {
-      keycaps: { color: '#000000', roughness: 0.55, metalness: 0.05, envMapIntensity: 1.1, clearcoat: 0.35, clearcoatRoughness: 0.35 },
-      body: { color: '#46464c', roughness: 0.35, metalness: 0.0, envMapIntensity: 1.0, clearcoat: 0.0, clearcoatRoughness: 0.2 },
+      keycaps: { color: '#000000', roughness: 0.5, metalness: 0.05, envMapIntensity: 1.1, clearcoat: 0.5, clearcoatRoughness: 0.3 },
+      // Alluminio anodizzato SATINATO: roughness alta + envMap contenuta →
+      // niente speculari duri a incidenza radente (la bruciatura ricorrente
+      // del case). I solchi delle piastre restano leggibili via diffuso.
+      body: { color: '#46464c', roughness: 0.62, metalness: 0.0, envMapIntensity: 0.55, clearcoat: 0.0, clearcoatRoughness: 0.2 },
       damping: { color: '#1c1c1e', roughness: 0.9, metalness: 0, envMapIntensity: 0.5 },
     },
   },

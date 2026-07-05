@@ -6,6 +6,7 @@ import { useControls } from 'leva'
 import { collectSlotMeshes, applyFinish } from './materials/applyFinish'
 import { useComposerControls } from './useComposerControls'
 import { ENTRY_LANDSCAPE, ENTRY_PORTRAIT } from './poseGraph'
+import { RAKE_LAYER } from './LightRig'
 
 const DRACO_PATH = '/draco/'
 export const DEFAULT_MODEL_URL = '/models/keyboard.glb'
@@ -33,6 +34,12 @@ export function KeyboardModel({ url = DEFAULT_MODEL_URL, finish }) {
   useEffect(() => {
     if (finish) applyFinish(slotMeshes, finish)
   }, [slotMeshes, finish])
+
+  // Solo i keycaps stanno anche sul layer del rake: la luce radente rivela il
+  // loro rilievo senza toccare le piastre in alluminio (che brucerebbero).
+  useEffect(() => {
+    for (const mesh of slotMeshes.keycaps) mesh.layers.enable(RAKE_LAYER)
+  }, [slotMeshes])
 
   const portrait = useThree((s) => s.size.width < s.size.height)
 
