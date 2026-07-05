@@ -40,6 +40,13 @@ import { useControls } from 'leva'
 
 const RIG_POSITION = [0, 0.1, 0] // pivot del modello
 
+// Layer dedicato al rake: la luce radente illumina SOLO le mesh su questo
+// layer (i keycaps, marcati in KeyboardModel). Così il rake rivela il
+// dettaglio dei tasti senza rasare — e bruciare — le piastre in alluminio
+// del case, che restano sul solo layer 0. (three.js: luce e oggetto si
+// illuminano solo se condividono un layer.)
+export const RAKE_LAYER = 1
+
 export default function LightRig() {
   const camera = useThree((s) => s.camera)
   const rigRef = useRef()
@@ -89,6 +96,8 @@ export default function LightRig() {
     keyFillRef.current.target = targetRef.current
     rakeRef.current.target = targetRef.current
     rimRef.current.target = rimTargetRef.current
+    // Il rake illumina SOLO i keycaps (layer dedicato): niente burn sul case.
+    rakeRef.current.layers.set(RAKE_LAYER)
   }, [])
 
   // Le luci seguono la camera: oggi la camera non ruota (solo dolly), ma se

@@ -108,6 +108,27 @@ export function useComposerControls(
   const spring = useRef({ vx: 0, vy: 0 })
   const layout = useRef({ portrait: false })
 
+  // Debug-only: salto secco a una posa (audit multi-posa via ?debug).
+  // window.__setPose(pitchDeg, yawDeg) — non tocca il flusso di produzione.
+  useEffect(() => {
+    if (!new URLSearchParams(window.location.search).has('debug')) return
+    window.__setPose = (pitchDeg, yawDeg) => {
+      const p = pose.current
+      p.pitch = p.targetX = (pitchDeg * Math.PI) / 180
+      p.yaw = p.targetY = (yawDeg * Math.PI) / 180
+      spring.current.vx = spring.current.vy = 0
+      const g = groupRef.current
+      if (g) {
+        g.rotation.x = p.targetX
+        g.rotation.y = p.targetY
+      }
+      return { pitch: pitchDeg, yaw: yawDeg }
+    }
+    return () => {
+      delete window.__setPose
+    }
+  }, [groupRef])
+
   // Il primo render del <Canvas> spesso avviene prima che il container abbia
   // comunicato le sue dimensioni reali (size di default landscape), quindi
   // `initialRotation` calcolato dal chiamante in base al portrait può arrivare

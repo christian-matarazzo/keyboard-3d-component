@@ -50,13 +50,15 @@ Le luci sono "solidali alla camera": non serve spostarle quando il modello ruota
 
 > **Se una posa va piatta** (tipo il 45 laterale): NON alzare la base diffusa né aggiungere un frontale. Il piatto viene da luci troppo simmetriche/frontali: serve accentuare la diagonale (key alto-sx più radente, fill basso-dx). Un filo di `clearcoat` sui keycaps (finitura `grafite` in `registry.js`, ~0.5) aiuta il materiale a "risaltare" mostrando il rake — verificare sempre Top e laterale pura per non far ribruciare il case.
 
+> **Rake su layer dedicato (round 10)**: il `rake laterale` illumina SOLO i keycaps, non il case. Motivo: radendo l'alluminio delle piastre generava una spazzolata speculare bianca (bruciatura) sulle elevazioni. Meccanismo three.js `layers`: la costante `RAKE_LAYER` (esportata da `LightRig.jsx`) è settata sulla luce (`rake.layers.set`) e abilitata sulle sole mesh keycaps in `KeyboardModel.jsx` (`mesh.layers.enable`). Se aggiungi keycaps o cambi lo slot, ricontrolla che il layer sia abilitato lì. Per far "vedere" il rake anche al case NON togliere il layer: alza semmai la roughness del body così non brucia.
+
 ## Materiali (effetto "bruciatura" sulle mesh)
 
 **File: `src/components/KeyboardComposer/materials/registry.js`**
 
 Ogni finitura definisce 3 slot (`keycaps`, `body`, `damping`) con 4 parametri:
 
-- `roughness` (0–1): quanto è ruvida la superficie. **Più basso = riflessi più duri = rischio bruciatura.** Il body sta bene tra 0.45 e 0.55.
+- `roughness` (0–1): quanto è ruvida la superficie. **Più basso = riflessi più duri = rischio bruciatura.** Il body (alluminio anodizzato) va tenuto SATINATO, ~0.6: sotto 0.5 le piastre prendono speculari duri a incidenza radente e bruciano sulle elevazioni. I solchi delle piastre restano leggibili col diffuso (lo specular anzi li nasconde), quindi alzare la roughness NON toglie dettaglio.
 - `metalness` (0–1): quanto è metallico. Sopra 0.8 il materiale riflette in modo esponenziale la luce → è la causa principale delle bruciature. Tenere il body a ~0.6–0.7.
 - `envMapIntensity` (0–2): quanto l'ambiente si riflette sul materiale. 1 = pieno, 0.5 = metà. È il "volume" dei riflessi (e delle bande delle strip).
 - `clearcoat` (0–1) + `clearcoatRoughness` (0–1): lo strato "vetroso" sopra il materiale — è ciò che rende premium i keycaps (glint nitidi sui bordi). clearcoat alto + clearcoatRoughness bassa = vetro; abbassare il primo o alzare la seconda per un effetto più satinato.
