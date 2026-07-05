@@ -24,11 +24,18 @@ piatte (il 45 laterale su tutte). Le luci dirette:
 |---|---|---|
 | `Luci · key principale (alto-sx)` | Spot dominante da alto-sinistra, radente: rastrella di taglio la faccia visibile e fa "rotolare" la luce sui keycaps (genera la forma). Unico shadow caster | `intensity`, `position` (x, y, z), `angle`, `penumbra` |
 | `Luci · fill (basso-dx)` | Spot debole dall'angolo opposto basso-destra: solleva il lato in ombra senza pareggiare il gradiente | `intensity`, `position`, `angle`, `penumbra` |
+| `Luci · rake laterale` | Luce radente quasi orizzontale dal lato: spazzola le facce rivolte alla camera nelle elevazioni a pitch 0 (front/back/laterali), dove la key colpisce solo i top e le facce frontali resterebbero al buio. Rivela il rilievo come filo di luce sui bordi — NON è un fill frontale (round 9) | `intensity`, `position`, `color`, `angle`, `penumbra` |
+| `Luci · rim (profondità)` | Kicker da dietro-alto: accende il bordo lontano della sagoma così il prodotto si stacca dal fondo nero. È il principale segnale di PROFONDITÀ su set nero (round 9) | `intensity`, `position`, `color`, `angle`, `penumbra` |
 
 > **Niente point light frontale** (rimosso al round 8): riempiva ogni faccia
-> in modo uniforme e appiattiva le pose inclinate. Se serve leggibilità sulle
-> pose scure, alza la `base diffusa` (Scene.jsx) o l'orbitale (sotto), NON
-> reintrodurre un frontale forte.
+> in modo uniforme e appiattiva le pose inclinate. Il dettaglio delle facce
+> frontali nelle elevazioni a pitch 0 lo dà il `rake laterale` (radente = fa
+> forma), NON un frontale (che spiana). Se una elevazione resta scura, alza
+> il rake o la `base diffusa`, mai un frontale.
+>
+> **Profondità premium**: la separazione dal nero la fa il `rim`. È radente e
+> contenuto: verifica che non bruci il bordo del case sulla laterale pura
+> (yaw 90°, pitch 0°) e sulla Top (90°, 0°).
 
 **File: `src/components/KeyboardComposer/KeyboardModel.jsx`** — cartella `Luci · orbitale (sotto)`. Questa è la luce che risolve davvero il "buio quando si inclina": a differenza di tutte le altre (che seguono la camera e restano ferme nello spazio), questa è agganciata al GRUPPO CHE RUOTA col modello — quindi orbita insieme all'oggetto e resta sempre nella stessa posizione sotto la tastiera, qualunque sia la posa raggiunta. È quella che salva le viste di retro/sottoscocca e i tagli laterali estremi. `intensity`, `color`.
 
