@@ -7,7 +7,6 @@ import {
   YAW_STOPS,
   pitchStopsAt,
   adjacentStop,
-  toModelRotation,
   ENTRY_LANDSCAPE,
 } from './poseGraph'
 
@@ -40,7 +39,8 @@ const softClamp = (raw, lo, hi, factor, cap) => {
  *    posa orizzontale), ciascun asse limitato allo stop adiacente più una
  *    coda elastica compressa — mai rotazione libera
  *  - gli archi sono CLAMPATI: niente giro completo. Oltre l'ultima posa
- *    fotografata (bottom, 3-4 back, yaw ±135°) c'è solo l'elastico
+ *    (bottom, 3-4 back a 135°, back a yaw ±180°) c'è solo l'elastico;
+ *    ogni step è una rotazione semplice di 45° sul proprio asse
  *  - al rilascio ogni asse committa se ha superato la soglia (frazione della
  *    distanza start→stop adiacente); se entrambi superano, vince l'asse con
  *    più progresso: le pose combinate fuori dal set del cliente non esistono
@@ -86,10 +86,6 @@ export function useComposerControls(
   const feelRef = useRef(feel)
   feelRef.current = feel
 
-  // pitch/yaw sono i PARAMETRI del grafo (φ d'orbita verticale + yaw
-  // dell'anello); targetX/Y la rotazione Euler del modello che ne deriva
-  // via toModelRotation (identità fino allo zenit, spin oltre). La posa
-  // d'ingresso vive nella zona identità, quindi i valori coincidono.
   const pose = useRef({
     pitch: initialRotation.x, // ultima posa committata (φ)
     yaw: initialRotation.y,
@@ -215,13 +211,12 @@ export function useComposerControls(
           rubberCap,
         )
       }
-      // Salvati come parametri per il commit; il modello insegue la
-      // rotazione mappata (oltre lo zenit include lo spin di mezzo giro).
+      // Parametri = rotazione del modello: ogni step è una rotazione
+      // semplice di 45° sul proprio asse (round 7: nessuno spin composto).
       d.phiSoft = phiSoft
       d.yawSoft = yawSoft
-      const m = toModelRotation(phiSoft, yawSoft)
-      p.targetX = m.x
-      p.targetY = m.y
+      p.targetX = phiSoft
+      p.targetY = yawSoft
     }
 
     const onUp = (e) => {
@@ -263,9 +258,8 @@ export function useComposerControls(
 
       p.pitch = commitPitch ? pitchPlan.stop : d.pitch0
       p.yaw = commitYaw ? yawPlan.stop : d.yaw0
-      const m = toModelRotation(p.pitch, p.yaw)
-      p.targetX = m.x
-      p.targetY = m.y
+      p.targetX = p.pitch
+      p.targetY = p.yaw
       // Da qui in poi lavora la molla in useFrame: parte dalla posizione e
       // velocità correnti del modello → overshoot e bounce se il gesto era
       // più forte del necessario.

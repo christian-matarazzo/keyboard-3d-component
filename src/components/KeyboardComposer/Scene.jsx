@@ -73,10 +73,10 @@ function MaterialTuner({ finish }) {
 
 export default function Scene({ modelUrl, finish }) {
   const env = useControls('Luci · ambiente', {
-    topIntensity: { value: 7, min: 0, max: 15, step: 0.25, label: 'strip top' },
-    leftIntensity: { value: 12, min: 0, max: 20, step: 0.25, label: 'strip sinistra' },
-    rightIntensity: { value: 4.5, min: 0, max: 20, step: 0.25, label: 'strip destra' },
-    ambientIntensity: { value: 0.5, min: 0, max: 2, step: 0.05, label: 'base diffusa' },
+    topIntensity: { value: 5, min: 0, max: 15, step: 0.25, label: 'strip top' },
+    leftIntensity: { value: 7, min: 0, max: 20, step: 0.25, label: 'strip sinistra' },
+    rightIntensity: { value: 3.5, min: 0, max: 20, step: 0.25, label: 'strip destra' },
+    ambientIntensity: { value: 0.55, min: 0, max: 2, step: 0.05, label: 'base diffusa' },
   })
   const shadow = useControls('Ombra a contatto', {
     opacity: { value: 0.5, min: 0, max: 1, step: 0.05 },

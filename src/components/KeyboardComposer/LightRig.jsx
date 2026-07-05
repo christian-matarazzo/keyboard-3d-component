@@ -35,13 +35,13 @@ export default function LightRig() {
   const targetRef = useRef()
 
   const keyLeft = useControls('Luci · key sx (freccia)', {
-    intensity: { value: 22, min: 0, max: 200, step: 1 },
+    intensity: { value: 14, min: 0, max: 200, step: 1 },
     position: { value: [-3, 4, 2.2] },
     angle: { value: 0.55, min: 0.1, max: 1.2 },
     penumbra: { value: 0.9, min: 0, max: 1 },
   })
   const keyRight = useControls('Luci · key dx (freccia)', {
-    intensity: { value: 12, min: 0, max: 200, step: 1 },
+    intensity: { value: 8, min: 0, max: 200, step: 1 },
     position: { value: [3, 4, 2.2] },
     angle: { value: 0.55, min: 0.1, max: 1.2 },
     penumbra: { value: 0.9, min: 0, max: 1 },

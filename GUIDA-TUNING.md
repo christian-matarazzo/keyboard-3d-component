@@ -73,14 +73,14 @@ Nello stesso file, fuori dal pannello:
 
 ## Le pose (contratto col cliente)
 
-**File: `src/components/KeyboardComposer/poseGraph.js`** — ogni posa raggiungibile è 1:1 con un JPEG in `rig set/` (stop del ViewCube di Maya: facce 0°/90°, spigoli 45°, corner a 35.264°). La tabella `POSES` è nominata come i file del cliente: se un confronto visivo rivelasse uno scarto, si ritocca lì.
+**File: `src/components/KeyboardComposer/poseGraph.js`** — ogni posa raggiungibile è 1:1 con i riferimenti del cliente (i JPEG in `rig set/` + le due aggiunte a voce del round 7: `back` e `alto laterale`). Stop del ViewCube di Maya: facce 0°/90°, spigoli 45°, corner a 35.264°. La tabella `POSES` è nominata come i file del cliente: se un confronto visivo rivelasse uno scarto, si ritocca lì.
 
 Le **regole** della rotazione (logica, non parametri):
+- **ogni step è una rotazione SEMPLICE di 45° sul proprio asse** — mai flip/spin composti (round 7: lo spin verso la vista da dietro è stato respinto, "ogni rotazione deve avere i suoi 45 gradi");
 - **drag omnidirezionale con soft cap**: durante il gesto il modello segue il dito sugli assi dove il grafo ha stop (yaw solo dalla posa orizzontale), fino allo stop adiacente + coda elastica;
 - **al rilascio, snap se oltre soglia** committando UN SOLO asse — quello col progresso maggiore (l'altro torna alla partenza): le pose diagonali fuori dal set non esistono;
-- gli archi sono **clampati**: verticale da `bottom` (−90°) a `3-4 back` (135°), laterale ±135°. Niente retro puro: oltre l'ultimo stop c'è solo elastico + bounce di ritorno;
-- il passaggio `Top` → `3-4 back` scavalca lo zenit: il modello compie il mezzo giro di spin (comportamento ViewCube: la vista da dietro è dritta, manopola a sinistra come nel JPEG). La mappatura vive in `toModelRotation` (poseGraph.js);
-- i **corner** (`initial position`, `3-4 front right`) si raggiungono da `3-4 left`/`3-4 right` con un mini-step verticale di 35.264°;
+- gli archi sono **clampati**: verticale da `bottom` (−90°) a `3-4 back` (135°), laterale da `back` sx (−180°) a `back` dx (+180°). Oltre l'ultimo stop c'è solo elastico + bounce di ritorno;
+- i **corner** (`initial position`, `3-4 front right`) si raggiungono da `3-4 left`/`3-4 right` (yaw ±45°) con un mini-step verticale di 35.264°; le **viste `alto laterale`** da `left`/`right` (yaw ±90°) con uno step di 45°;
 - **posa d'ingresso** (`initialRotation` in `KeyboardModel.jsx`): desktop = corner `initial position` (35.264°, +45°); mobile portrait = vista top verticale (pitch 90° + yaw 90°, manopole in alto).
 
 **Mobile**: niente roll esterno — la posa verticale è pitch 90° + yaw 90° e l'arco verticale vive anche sull'asse yaw 90° (solo in portrait). La mappatura del gesto è identica al desktop: swipe verticale = flusso principale, orizzontale = yaw dalla posa orizzontale.
@@ -92,3 +92,4 @@ Le **regole** della rotazione (logica, non parametri):
 3. Ruota il modello su tutte le pose (soprattutto retro e sotto) prima di dare l'ok a un valore.
 4. Una luce direzionale non salva una faccia il cui normale guarda altrove: per riempire "a prescindere dall'orientamento" serve un point light (`Luci · frontale`) o alzare `base diffusa`, non un'altra direzionale.
 5. Se il buio persiste su TUTTE le pose ruotate (retro, tagli laterali) nonostante luci frontali/ambientali, il problema è che quelle luci sono ferme rispetto alla camera: serve una luce agganciata al gruppo che ruota col modello (vedi `Luci · orbitale (sotto)` sopra), che orbita insieme all'oggetto invece di restare fissa nello spazio.
+6. **Case che brucia nelle viste laterali/top (round 7)**: la scocca in alluminio prende una spazzolata speculare bianca quando gli spot chiave (`Luci · key sx/dx`) e le strip la colpiscono di taglio. Il fix NON è alzare l'esposizione o l'ambiente: è tenere gli spot chiave moderati (sx ~14, dx ~8) e le strip contenute (sinistra ~7, top ~5, destra ~3.5), lasciando che la `base diffusa` (~0.55) sollevi i neri. Verificare SEMPRE la vista laterale pura (yaw 90°, pitch 0°) e la Top (90°, 0°): sono quelle dove il case brucia per primo.

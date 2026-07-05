@@ -10,10 +10,11 @@
  * lato sinistro della tastiera verso la camera.
  *
  * A differenza della vecchia griglia uniforme (multipli di 45° su un toro
- * completo), qui esistono SOLO le pose fotografate dal cliente: gli archi
- * sono clampati (niente retro puro, niente retro-basso) e oltre l'ultima
- * posa il gesto incontra solo la resistenza elastica (vedi
- * useComposerControls).
+ * completo), qui esistono SOLO le pose richieste dal cliente (i JPEG del rig
+ * set + le due aggiunte a voce del round 7): gli archi sono clampati e oltre
+ * l'ultima posa il gesto incontra solo la resistenza elastica (vedi
+ * useComposerControls). Ogni step è una rotazione semplice di 45° sul
+ * proprio asse — nessun flip/spin composto.
  */
 
 export const DEG = Math.PI / 180
@@ -32,9 +33,16 @@ export const POSES = {
   front: { pitch: 0, yaw: 0 },
   '3-4 front': { pitch: -45 * DEG, yaw: 0 },
   bottom: { pitch: -90 * DEG, yaw: 0 },
-  // Spigolo top/retro VISTO DRITTO da dietro (manopola a sinistra, come nel
-  // JPEG): raggiunto dall'arco verticale a φ=135° via toModelRotation.
-  '3-4 back': { pitch: 45 * DEG, yaw: 180 * DEG },
+  // Round 7: rotazione SEMPLICE di 45° oltre Top ("ogni rotazione deve avere
+  // i suoi 45 gradi") — niente flip alla ViewCube verso la vista da dietro
+  // dritta: lo snap che "ruotava la tastiera su se stessa" è stato respinto.
+  '3-4 back': { pitch: 135 * DEG, yaw: 0 },
+  // Round 7, pose mancanti dal rig set (segnalate dal cliente a voce):
+  // scocca del retro rivolta alla camera, in coda all'anello orizzontale...
+  back: { pitch: 0, yaw: 180 * DEG },
+  // ...e vista laterale dall'alto: mini-arco verticale sulle viste left/right.
+  'alto laterale left': { pitch: 45 * DEG, yaw: 90 * DEG },
+  'alto laterale right': { pitch: 45 * DEG, yaw: -90 * DEG },
   '3-4 left': { pitch: 0, yaw: 45 * DEG },
   left: { pitch: 0, yaw: 90 * DEG },
   '3-4-left back': { pitch: 0, yaw: 135 * DEG },
@@ -43,21 +51,25 @@ export const POSES = {
   '3-4 right-back': { pitch: 0, yaw: -135 * DEG },
 }
 
-// Arco verticale principale, in parametro d'ORBITA φ: bottom → 3-4 front →
-// front → 3-4 top → Top → 3-4 back. Nessun wrap: il retro puro non è nel
-// set del cliente. Fino a 90° φ coincide col pitch del modello; oltre, la
-// vista scavalca lo zenit e toModelRotation aggiunge il mezzo giro di yaw
-// (stessa transizione animata del ViewCube di Maya da Top allo spigolo
-// retro: la scena "spinna" di 180° attraversando il polo).
+// Arco verticale principale: bottom → 3-4 front → front → 3-4 top → Top →
+// 3-4 back. Ogni step è una rotazione SEMPLICE di 45° attorno all'asse
+// orizzontale (round 7: il flip alla ViewCube oltre lo zenit è respinto).
+// Nessun wrap oltre 135°.
 const PITCH_ARC_MAIN = [-90, -45, 0, 45, 90, 135].map((d) => d * DEG)
 // Alle pose 3-4 left/right (yaw ±45°) l'unico passo verticale è il mini-step
 // che sale al corner fotografato ("initial position" / "3-4 front right").
 const PITCH_ARC_CORNER = [0, CORNER_PITCH]
+// Alle viste laterali pure (yaw ±90°) uno step da 45° sale alla "vista
+// laterale dall'alto" (round 7, mancava dal rig set).
+const PITCH_ARC_SIDE = [0, 45 * DEG]
 // Altrove il pitch non ha pose: il drag verticale trova solo l'elastico.
 const PITCH_LOCKED = [0]
 
-// Arco orizzontale (sbloccato solo a pitch 0): ±135° max, niente retro puro.
-export const YAW_STOPS = [-135, -90, -45, 0, 45, 90, 135].map((d) => d * DEG)
+// Arco orizzontale (sbloccato solo a pitch 0): fino a ±180° — la "scocca del
+// back frontale" (round 7) chiude l'anello su entrambi i lati; oltre, elastico.
+export const YAW_STOPS = [-180, -135, -90, -45, 0, 45, 90, 135, 180].map(
+  (d) => d * DEG,
+)
 
 // Pose d'ingresso: landscape = corner "initial position"; portrait = vista
 // top ruotata a schermo (pitch 90 + yaw 90, comportamento già in produzione).
@@ -76,21 +88,8 @@ export function pitchStopsAt(yaw, portrait = false) {
   if (nearAngle(yaw, 0)) return PITCH_ARC_MAIN
   if (portrait && nearAngle(yaw, 90 * DEG)) return PITCH_ARC_MAIN
   if (nearAngle(Math.abs(yaw), 45 * DEG)) return PITCH_ARC_CORNER
+  if (nearAngle(Math.abs(yaw), 90 * DEG)) return PITCH_ARC_SIDE
   return PITCH_LOCKED
-}
-
-/**
- * Mappa (φ verticale, yaw dell'anello) → rotazione Euler del modello.
- * Fino allo zenit (φ ≤ 90°) è l'identità; oltre, la vista prosegue verso lo
- * spigolo retro: pitch retrocede (180° − φ) mentre lo yaw compie il mezzo
- * giro, linearmente su φ ∈ (90°, 135°]. Continua in φ = 90°, quindi damp e
- * molla animano la transizione senza scatti — lo "spin da polo" di Maya.
- */
-export function toModelRotation(phi, ringYaw) {
-  const zenith = 90 * DEG
-  if (phi <= zenith) return { x: phi, y: ringYaw }
-  const t = (phi - zenith) / (45 * DEG)
-  return { x: Math.PI - phi, y: ringYaw + Math.PI * t }
 }
 
 /**
