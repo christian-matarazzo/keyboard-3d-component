@@ -73,9 +73,10 @@ function MaterialTuner({ finish }) {
 
 export default function Scene({ modelUrl, finish }) {
   const env = useControls('Luci · ambiente', {
-    topIntensity: { value: 5, min: 0, max: 15, step: 0.25, label: 'strip top' },
-    leftIntensity: { value: 7, min: 0, max: 20, step: 0.25, label: 'strip sinistra' },
-    rightIntensity: { value: 3.5, min: 0, max: 20, step: 0.25, label: 'strip destra' },
+    topIntensity: { value: 6, min: 0, max: 15, step: 0.25, label: 'strip top' },
+    rightIntensity: { value: 5, min: 0, max: 20, step: 0.25, label: 'strip destra' },
+    bottomRightIntensity: { value: 3.5, min: 0, max: 20, step: 0.25, label: 'strip basso-dx' },
+    leftIntensity: { value: 1.5, min: 0, max: 20, step: 0.25, label: 'strip sinistra (tenue)' },
     ambientIntensity: { value: 0.55, min: 0, max: 2, step: 0.05, label: 'base diffusa' },
   })
   const shadow = useControls('Ombra a contatto', {
@@ -117,36 +118,47 @@ export default function Scene({ modelUrl, finish }) {
           resolution={512}
         />
 
-        {/* Environment 1:1 con `rig set/light disposition .jpeg`: tre strip
-            a filo dei bordi del soggetto (sinistra a tutta altezza, destra
-            solo metà superiore, top lungo il bordo alto) = i segni verdi
-            del riferimento. Base diffusa bassissima: il falloff verso il
-            nero del riferimento resta drammatico. Dimensioni riscalate
-            sulla tastiera (molto più larga del telefono dimostrativo). */}
+        {/* Environment = il "filo di luce" continuo dello sketch cliente
+            (round 8): un unico riflesso speculare che avvolge il prodotto
+            top → angolo alto-destra → lato destro → basso-destra. Le tre
+            strip sono posizionate per congiungersi agli angoli (nessuno
+            stacco). La sinistra è solo una presenza tenue: nello sketch la
+            dominante di sinistra è la key DIRETTA (LightRig), non un bordo
+            speculare acceso. Base diffusa bassissima: falloff drammatico
+            verso il nero. */}
         <Environment resolution={256}>
-          {/* strip top: corre lungo il bordo superiore, copre tutta la
-              larghezza della tastiera */}
+          {/* strip top: lungo il bordo superiore, tutta la larghezza; il suo
+              estremo destro arriva fino all'angolo alto-destra */}
           <Lightformer
             intensity={env.topIntensity}
             position={[0, 4, 1]}
             rotation={[Math.PI / 2, 0, 0]}
             scale={[9, 0.6, 1]}
           />
-          {/* strip sinistra: verticale, TUTTA l'altezza del soggetto — il
-              bordo sinistro del riferimento brilla per intero */}
+          {/* strip destra: verticale, parte dall'angolo alto-destra (si
+              congiunge alla top) e scende lungo tutto il lato destro */}
+          <Lightformer
+            intensity={env.rightIntensity}
+            position={[4.2, 1.2, 0.5]}
+            rotation={[0, -Math.PI / 2, 0]}
+            scale={[0.8, 4.6, 1]}
+          />
+          {/* strip basso-destra: chiude il filo all'angolo in basso a destra
+              — la seconda sorgente dello sketch che risale a incontrare la
+              coda della strip destra */}
+          <Lightformer
+            intensity={env.bottomRightIntensity}
+            position={[3.4, -3, 0.8]}
+            rotation={[Math.PI / 2, 0, -Math.PI / 4]}
+            scale={[4, 0.6, 1]}
+          />
+          {/* strip sinistra: presenza tenue, solo perché il bordo sinistro
+              non sprofondi nel nero assoluto (la forma a sx la fa la key) */}
           <Lightformer
             intensity={env.leftIntensity}
             position={[-4, 0.1, 0.5]}
             rotation={[0, Math.PI / 2, 0]}
             scale={[0.8, 5, 1]}
-          />
-          {/* strip destra: verticale ma solo la metà SUPERIORE, più corta e
-              debole — l'asimmetria voluta dal riferimento */}
-          <Lightformer
-            intensity={env.rightIntensity}
-            position={[4, 1.4, 0.5]}
-            rotation={[0, -Math.PI / 2, 0]}
-            scale={[0.8, 2.5, 1]}
           />
           {/* cupola debolissima: i neri restano leggibili, mai vuoti */}
           <Lightformer
@@ -157,7 +169,8 @@ export default function Scene({ modelUrl, finish }) {
           />
         </Environment>
 
-        {/* Studio fotografico: main + fill + rim, solidali alla camera. */}
+        {/* Studio fotografico: key diagonale (alto-sx) + fill (basso-dx),
+            solidali alla camera. */}
         <LightRig />
       </Suspense>
     </Canvas>

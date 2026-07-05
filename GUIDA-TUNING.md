@@ -14,24 +14,34 @@ Senza `?debug` il pannello non esiste e l'utente vede solo il modello.
 
 **File: `src/components/KeyboardComposer/LightRig.jsx`**
 
-Il set riproduce il riferimento del cliente `rig set/light disposition .jpeg`
-(frecce verdi = punti d'ingresso della luce). Le luci dirette:
+Impianto DIAGONALE (round 8, sketch cliente): una sorgente dominante da
+alto-sinistra + un fill dall'angolo opposto basso-destra. La diagonale
+key→fill è ciò che crea il gradiente (la FORMA) su OGNI posa — il set
+simmetrico precedente (due key in alto) lavava le pose inclinate rendendole
+piatte (il 45 laterale su tutte). Le luci dirette:
 
 | Cartella nel pannello | Cosa fa | Valori da ricopiare |
 |---|---|---|
-| `Luci · key sx (freccia)` | Spot che entra in diagonale dall'angolo alto-sinistra (la freccia verde sx del riferimento); unico shadow caster, lato dominante | `intensity`, `position` (x, y, z), `angle`, `penumbra` |
-| `Luci · key dx (freccia)` | Spot gemello dall'angolo alto-destra (freccia verde dx), più debole | `intensity`, `position`, `angle`, `penumbra` |
-| `Luci · frontale` | Point light debole vicino camera: riempie le pose inclinate senza appiattire il falloff verso il nero | `intensity`, `color` |
+| `Luci · key principale (alto-sx)` | Spot dominante da alto-sinistra, radente: rastrella di taglio la faccia visibile e fa "rotolare" la luce sui keycaps (genera la forma). Unico shadow caster | `intensity`, `position` (x, y, z), `angle`, `penumbra` |
+| `Luci · fill (basso-dx)` | Spot debole dall'angolo opposto basso-destra: solleva il lato in ombra senza pareggiare il gradiente | `intensity`, `position`, `angle`, `penumbra` |
+
+> **Niente point light frontale** (rimosso al round 8): riempiva ogni faccia
+> in modo uniforme e appiattiva le pose inclinate. Se serve leggibilità sulle
+> pose scure, alza la `base diffusa` (Scene.jsx) o l'orbitale (sotto), NON
+> reintrodurre un frontale forte.
 
 **File: `src/components/KeyboardComposer/KeyboardModel.jsx`** — cartella `Luci · orbitale (sotto)`. Questa è la luce che risolve davvero il "buio quando si inclina": a differenza di tutte le altre (che seguono la camera e restano ferme nello spazio), questa è agganciata al GRUPPO CHE RUOTA col modello — quindi orbita insieme all'oggetto e resta sempre nella stessa posizione sotto la tastiera, qualunque sia la posa raggiunta. È quella che salva le viste di retro/sottoscocca e i tagli laterali estremi. `intensity`, `color`.
 
 Le luci sono "solidali alla camera": non serve spostarle quando il modello ruota.
 
-**File: `src/components/KeyboardComposer/Scene.jsx`** — cartella `Luci · ambiente`: le strip verdi del riferimento, come riflessi speculari (Lightformer nell'Environment):
-- `strip top`: strip lunga lungo il bordo superiore — crea le bande speculari che spazzolano i tasti durante la rotazione.
-- `strip sinistra`: verticale a TUTTA altezza sul lato sinistro (il bordo sx del riferimento brilla per intero) — la più intensa.
-- `strip destra`: verticale ma solo metà SUPERIORE, più corta e debole: l'asimmetria del riferimento è voluta, non pareggiarle.
-- `base diffusa`: cupola debolissima che tiene leggibili i neri. Alzarla = look più piatto e "cheap"; il falloff scuro è la cifra del riferimento.
+**File: `src/components/KeyboardComposer/Scene.jsx`** — cartella `Luci · ambiente`: le strip Lightformer sono il "filo di luce" speculare che, nello sketch round 8, deve AVVOLGERE il prodotto in un tratto continuo (top → angolo alto-destra → lato destro → basso-destra). Sono posizionate per congiungersi agli angoli, senza stacco:
+- `strip top`: lungo il bordo superiore, tutta la larghezza; il suo estremo destro raggiunge l'angolo alto-destra.
+- `strip destra`: verticale, parte dall'angolo alto-destra (si salda alla top) e scende su tutto il lato destro.
+- `strip basso-dx`: corta, all'angolo in basso a destra — chiude il filo incontrando la coda della strip destra (è la seconda sorgente dello sketch).
+- `strip sinistra (tenue)`: presenza minima, solo perché il bordo sinistro non sprofondi nel nero — a sinistra la forma la fa la KEY diretta, non un bordo speculare acceso.
+- `base diffusa`: cupola debolissima che tiene leggibili i neri. Alzarla = look più piatto e "cheap"; il falloff scuro è la cifra premium.
+
+> **Se una posa va piatta** (tipo il 45 laterale): NON alzare la base diffusa né aggiungere un frontale. Il piatto viene da luci troppo simmetriche/frontali: serve accentuare la diagonale (key alto-sx più radente, fill basso-dx). Un filo di `clearcoat` sui keycaps (finitura `grafite` in `registry.js`, ~0.5) aiuta il materiale a "risaltare" mostrando il rake — verificare sempre Top e laterale pura per non far ribruciare il case.
 
 ## Materiali (effetto "bruciatura" sulle mesh)
 
