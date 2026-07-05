@@ -2,58 +2,68 @@ import { useEffect, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { useControls } from 'leva'
 import { easing } from 'maath'
+import {
+  DEG,
+  YAW_STOPS,
+  pitchStopsAt,
+  adjacentStop,
+  ENTRY_LANDSCAPE,
+} from './poseGraph'
 
-const STEP = Math.PI / 4 // 45°: unità base di ogni movimento
-const FULL_TURN = Math.PI * 2
 // Mezza larghezza del modello + margine: usata per il fit responsive.
 const FIT_HALF_WIDTH = 2.0
+// Altezza del pivot del modello: la camera è livellata su questa quota
+// (le viste frontali/laterali del cliente hanno elevazione zero).
+const PIVOT_Y = 0.1
 // Sotto questa distanza (px) il gesto non ha ancora un asse dominante.
 const AXIS_DEADZONE = 6
 const EPS = 1e-6
 
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v))
-const nearlyEqualAngle = (a, b) => {
-  const d = (((a - b) % FULL_TURN) + FULL_TURN) % FULL_TURN
-  return d < 1e-3 || FULL_TURN - d < 1e-3
+const atZeroAngle = (a) => Math.abs(a) < 1e-3
+
+// Oltre lo stop adiacente (o l'estremo d'arco) il target non si ferma secco:
+// l'eccesso prosegue compresso — la "resistenza elastica" che si sente
+// tirando più forte del necessario, e che al rilascio alimenta il bounce.
+const softClamp = (raw, lo, hi, factor, cap) => {
+  if (raw > hi) return hi + Math.min((raw - hi) * factor, cap)
+  if (raw < lo) return lo - Math.min((lo - raw) * factor, cap)
+  return raw
 }
-// Posa a 45° adiacente nella direzione del gesto. Funziona anche partendo da
-// pose fuori griglia (es. la posa hero d'ingresso a 80°): da 80° in giù → 90°,
-// in su → 45°.
-const stepFrom = (angle, dir) =>
-  dir > 0
-    ? (Math.floor(angle / STEP + EPS) + 1) * STEP
-    : (Math.ceil(angle / STEP - EPS) - 1) * STEP
 
 /**
- * Controlli del configuratore — rotazione guidata a pose fisse (stile Apple):
- *  - drag OMNIDIREZIONALE con soft cap: durante il gesto il modello segue il
- *    dito su entrambi gli assi (pitch sempre, yaw solo dalla posa orizzontale),
- *    ma ciascun asse è clampato a ±45° dalla posa di partenza del gesto — mai
- *    rotazione libera. Al rilascio: OGNI asse snappa indipendentemente alla
- *    propria posa più vicina (soglia 50% per asse); sotto soglia l'asse
- *    torna alla posa di partenza
- *  - il flusso principale (pitch) è il flip front → alto → retro → sotto a
- *    step di 45°; lo slide laterale (yaw) è sbloccato solo nella posa
- *    orizzontale (pitch ≡ 0°), da lì prosegue a step di 45° fino al giro
- *    completo (normalizzato a 360°). Ordine Euler 'XYZ': il pitch resta
- *    sull'asse orizzontale dello schermo a qualunque yaw
- *  - la posa d'ingresso è un hero shot a 80° (fuori griglia, solo estetica):
- *    il primo drag aggancia la griglia dei 45° e il giro completo ritorna
- *    esattamente alla posa hero
+ * Controlli del configuratore — rotazione a pose fisse, 1:1 con i riferimenti
+ * del cliente in `rig set/` (stop ViewCube di Maya, vedi poseGraph.js):
+ *  - drag omnidirezionale con soft cap: durante il gesto il modello segue il
+ *    dito su entrambi gli assi (pitch dove il grafo ha stop, yaw solo dalla
+ *    posa orizzontale), ciascun asse limitato allo stop adiacente più una
+ *    coda elastica compressa — mai rotazione libera
+ *  - gli archi sono CLAMPATI: niente giro completo. Oltre l'ultima posa
+ *    (bottom, 3-4 back a 135°, back a yaw ±180°) c'è solo l'elastico;
+ *    ogni step è una rotazione semplice di 45° sul proprio asse
+ *  - al rilascio ogni asse committa se ha superato la soglia (frazione della
+ *    distanza start→stop adiacente); se entrambi superano, vince l'asse con
+ *    più progresso: le pose combinate fuori dal set del cliente non esistono
+ *  - BOUNCE: il settle è una molla smorzata (sotto-smorzata) seminata con la
+ *    velocità reale del modello al rilascio. Un gesto più forte del
+ *    necessario arriva sulla posa con overshoot visibile e ritorno elastico
+ *    proporzionale all'energia; un gesto delicato atterra morbido. Lo stesso
+ *    meccanismo fa rimbalzare il modello sugli estremi d'arco
+ *  - dal corner d'ingresso ("initial position": pitch 35.264°, yaw 45°) il
+ *    drag verticale scende a "3-4 left"; il gemello "3-4 front right" si
+ *    raggiunge da "3-4 right" con lo stesso mini-step verticale
  *  - nessuno zoom: né rotella, né pinch. La distanza camera deriva solo dal
  *    fit responsive; focale tele (200mm) per la prospettiva compressa
  *    "commercial"
- *  - mobile portrait: NESSUN roll esterno — la vista verticale è la posa di
- *    griglia pitch 90° + yaw 90° (manopole in alto). La mappatura del gesto
- *    è identica al desktop: swipe verticale = pitch (il modello segue il
- *    dito), orizzontale = yaw (solo da vista frontale)
+ *  - mobile portrait: ingresso nella posa top verticale (pitch 90° + yaw 90°,
+ *    manopole in alto); l'arco verticale vive anche su quell'asse, per il
+ *    resto il grafo è identico al desktop
  */
 export function useComposerControls(
   groupRef,
   {
     focalLength = 200, // mm equivalenti (35mm): tele spinto, effetto commercial
-    // Posa d'ingresso hero (fuori griglia, vedi sopra).
-    initialRotation = { x: (80 * Math.PI) / 180, y: 0 },
+    initialRotation = { x: ENTRY_LANDSCAPE.x, y: ENTRY_LANDSCAPE.y },
   } = {},
 ) {
   const gl = useThree((s) => s.gl)
@@ -65,8 +75,11 @@ export function useComposerControls(
   const feel = useControls('Rotazione', {
     dragSpeed: { value: 0.008, min: 0.001, max: 0.012, step: 0.0005, label: 'velocità drag' },
     followTime: { value: 0.09, min: 0.05, max: 0.6, step: 0.01, label: 'inerzia in drag' },
-    settleTime: { value: 0.6, min: 0.2, max: 1.5, step: 0.05, label: 'settle rilascio' },
     commitFraction: { value: 0.5, min: 0.1, max: 0.9, step: 0.05, label: 'soglia step' },
+    springStiffness: { value: 90, min: 20, max: 300, step: 5, label: 'molla rigidità' },
+    springDamping: { value: 0.6, min: 0.2, max: 1.2, step: 0.05, label: 'molla smorzamento' },
+    rubberFactor: { value: 0.25, min: 0, max: 0.6, step: 0.05, label: 'elastico oltre-step' },
+    rubberCapDeg: { value: 10, min: 0, max: 20, step: 1, label: 'elastico max (°)' },
     fitMargin: { value: 1.4, min: 1, max: 2.5, step: 0.05, label: 'margine inquadratura' },
     zoomOutMobile: { value: 1.25, min: 1, max: 1.8, step: 0.05, label: 'zoom-out mobile' },
   })
@@ -74,9 +87,9 @@ export function useComposerControls(
   feelRef.current = feel
 
   const pose = useRef({
-    pitch: initialRotation.x, // ultima posa committata
+    pitch: initialRotation.x, // ultima posa committata (φ)
     yaw: initialRotation.y,
-    targetX: initialRotation.x, // target visuale inseguito dal damping
+    targetX: initialRotation.x, // target visuale inseguito da damp/molla
     targetY: initialRotation.y,
     initialized: false,
   })
@@ -85,9 +98,14 @@ export function useComposerControls(
     moved: false, // true una volta superata la deadzone iniziale
     startX: 0,
     startY: 0,
-    pitch0: 0, // posa committata all'inizio del gesto (ancora di soft-cap)
+    pitch0: 0, // posa committata all'inizio del gesto (ancora del soft-cap)
     yaw0: 0,
+    phiSoft: 0, // parametri correnti del gesto (pre-mappatura)
+    yawSoft: 0,
   })
+  // Velocità angolare corrente del modello (rad/s), misurata in drag e
+  // integrata dalla molla al rilascio: la continuità dito→bounce è gratis.
+  const spring = useRef({ vx: 0, vy: 0 })
   const layout = useRef({ portrait: false })
 
   // Il primo render del <Canvas> spesso avviene prima che il container abbia
@@ -104,9 +122,10 @@ export function useComposerControls(
     pose.current.targetY = initialRotation.y
   }
 
-  // Fit responsive a distanza fissa (nessuno zoom utente). In portrait il
-  // modello è rollato in verticale, quindi l'ingombro lungo è sull'asse
-  // verticale del frame: si fitta sull'altezza, con zoom-out extra.
+  // Fit responsive a distanza fissa (nessuno zoom utente), camera LIVELLATA
+  // sulla quota del pivot: le viste front/left/right del cliente sono a
+  // elevazione zero, ogni inclinazione viene dal pitch del modello. In
+  // portrait il modello è in verticale, quindi si fitta sull'altezza.
   useEffect(() => {
     camera.setFocalLength(focalLength) // imposta il fov dalla focale (film 35mm)
     const aspect = size.width / Math.max(size.height, 1)
@@ -118,8 +137,8 @@ export function useComposerControls(
       : FIT_HALF_WIDTH / (tanHalfV * aspect)
     fit *= feel.fitMargin
     if (portrait) fit *= feel.zoomOutMobile
-    camera.position.setLength(clamp(fit, 5.2, 200))
-    camera.lookAt(0, 0.1, 0) // mira al pivot del modello: composizione centrata
+    camera.position.set(0, PIVOT_Y, clamp(fit, 5.2, 200))
+    camera.lookAt(0, PIVOT_Y, 0) // mira al pivot: composizione centrata
   }, [size, camera, focalLength, feel.fitMargin, feel.zoomOutMobile])
 
   useEffect(() => {
@@ -129,9 +148,9 @@ export function useComposerControls(
     el.style.cursor = 'grab'
     el.style.touchAction = 'none'
 
-    // Vista frontale = scocca frontale rivolta alla camera (pitch ≡ 0 mod 360):
-    // unica posizione da cui è concesso slittare lateralmente.
-    const atFrontView = () => nearlyEqualAngle(p.pitch, 0)
+    // Vista orizzontale = pitch 0: unica posizione da cui è concesso
+    // slittare lateralmente (regola invariata dal set precedente).
+    const atFrontView = () => atZeroAngle(p.pitch)
 
     const onDown = (e) => {
       if (d.pointerId != null) return // gesto già in corso: dita extra ignorate
@@ -141,6 +160,8 @@ export function useComposerControls(
       d.startY = e.clientY
       d.pitch0 = p.pitch
       d.yaw0 = p.yaw
+      d.phiSoft = p.pitch
+      d.yawSoft = p.yaw
       try {
         el.setPointerCapture(e.pointerId)
       } catch {
@@ -154,8 +175,6 @@ export function useComposerControls(
       const dx = e.clientX - d.startX
       const dy = e.clientY - d.startY
       // Swipe verticale → pitch (flusso principale), orizzontale → yaw.
-      // Vale anche in portrait: il roll del modello è solo visivo, la
-      // semantica del gesto resta la stessa (verificato a schermo).
       const pitchDelta = dy
       const yawDelta = dx
 
@@ -164,36 +183,40 @@ export function useComposerControls(
         d.moved = true
       }
 
-      // Drag omnidirezionale: entrambi gli assi seguono il dito nello stesso
-      // gesto, ciascuno soft-cappato a ±45° dalla posa di partenza (mai
-      // rotazione libera). Il pitch è sempre attivo; lo yaw solo dalla posa
-      // orizzontale (da lì il ring laterale prosegue a step di 45°).
-      const speed = feelRef.current.dragSpeed
-      p.targetX = clamp(
+      const f = feelRef.current
+      const speed = f.dragSpeed
+      const rubberCap = f.rubberCapDeg * DEG
+
+      // Limiti del gesto = stop adiacenti nel grafo; agli estremi d'arco
+      // (stop assente) l'ancora è la posa di partenza e resta solo l'elastico.
+      const pitchStops = pitchStopsAt(d.yaw0, layout.current.portrait)
+      const loP = adjacentStop(pitchStops, d.pitch0, -1) ?? d.pitch0
+      const hiP = adjacentStop(pitchStops, d.pitch0, 1) ?? d.pitch0
+      const phiSoft = softClamp(
         d.pitch0 + pitchDelta * speed,
-        stepFrom(d.pitch0, -1),
-        stepFrom(d.pitch0, 1),
+        loP,
+        hiP,
+        f.rubberFactor,
+        rubberCap,
       )
+      let yawSoft = d.yaw0
       if (atFrontView()) {
-        p.targetY = clamp(
+        const loY = adjacentStop(YAW_STOPS, d.yaw0, -1) ?? d.yaw0
+        const hiY = adjacentStop(YAW_STOPS, d.yaw0, 1) ?? d.yaw0
+        yawSoft = softClamp(
           d.yaw0 + yawDelta * speed,
-          stepFrom(d.yaw0, -1),
-          stepFrom(d.yaw0, 1),
+          loY,
+          hiY,
+          f.rubberFactor,
+          rubberCap,
         )
       }
-    }
-
-    // Rinormalizza i giri interi su un asse: sottrarre un multiplo di 360°
-    // sia dal target che dalla rotazione corrente è visivamente invisibile e
-    // tiene i contatori vicini alla posa d'ingresso (nessun accumulo).
-    const normalizeTurns = (axis, poseKey, targetKey, anchor) => {
-      const turns = Math.trunc((p[poseKey] - anchor) / FULL_TURN)
-      if (turns === 0) return
-      const offset = turns * FULL_TURN
-      p[poseKey] -= offset
-      p[targetKey] -= offset
-      const group = groupRef.current
-      if (group) group.rotation[axis] -= offset
+      // Parametri = rotazione del modello: ogni step è una rotazione
+      // semplice di 45° sul proprio asse (round 7: nessuno spin composto).
+      d.phiSoft = phiSoft
+      d.yawSoft = yawSoft
+      p.targetX = phiSoft
+      p.targetY = yawSoft
     }
 
     const onUp = (e) => {
@@ -206,26 +229,40 @@ export function useComposerControls(
 
       const threshold = feelRef.current.commitFraction // 0.5 = nearest
 
-      // Ogni asse committa indipendentemente: oltre la soglia snappa alla
-      // posa adiacente, sotto torna alla partenza. Il progresso è la frazione
-      // della distanza start→posa adiacente (NON di 45° fissi): partendo da
-      // pose fuori griglia (hero 80°) il passo vicino dista solo 10°, e
-      // normalizzare su 45° renderebbe la soglia irraggiungibile. Lo yaw
-      // partecipa solo se era sbloccato nel gesto (vista frontale),
-      // altrimenti targetY è rimasto a yaw0 (progresso nullo).
-      const commitAxis = (start, target) => {
+      // Progresso di un asse verso lo stop adiacente nella direzione del
+      // gesto. Oltre 1 (coda elastica) committa comunque; senza stop
+      // (estremo d'arco) il progresso è nullo e si torna alla partenza.
+      const axisPlan = (start, target, stops) => {
         const delta = target - start
-        if (Math.abs(delta) < EPS) return start
-        const step = stepFrom(start, Math.sign(delta))
-        return Math.abs(delta / (step - start)) >= threshold ? step : start
+        if (Math.abs(delta) < EPS) return { stop: null, progress: 0 }
+        const stop = adjacentStop(stops, start, Math.sign(delta))
+        if (stop == null) return { stop: null, progress: 0 }
+        return { stop, progress: Math.abs(delta / (stop - start)) }
       }
-      p.pitch = commitAxis(d.pitch0, p.targetX)
-      p.yaw = commitAxis(d.yaw0, p.targetY)
+
+      const pitchPlan = axisPlan(
+        d.pitch0,
+        d.phiSoft,
+        pitchStopsAt(d.yaw0, layout.current.portrait),
+      )
+      const yawPlan = axisPlan(d.yaw0, d.yawSoft, YAW_STOPS)
+
+      let commitPitch = pitchPlan.stop != null && pitchPlan.progress >= threshold
+      let commitYaw = yawPlan.stop != null && yawPlan.progress >= threshold
+      // Mai entrambi: le pose diagonali non sono nel set del cliente.
+      // Vince l'asse con più progresso.
+      if (commitPitch && commitYaw) {
+        if (pitchPlan.progress >= yawPlan.progress) commitYaw = false
+        else commitPitch = false
+      }
+
+      p.pitch = commitPitch ? pitchPlan.stop : d.pitch0
+      p.yaw = commitYaw ? yawPlan.stop : d.yaw0
       p.targetX = p.pitch
       p.targetY = p.yaw
-
-      normalizeTurns('x', 'pitch', 'targetX', initialRotation.x)
-      normalizeTurns('y', 'yaw', 'targetY', initialRotation.y)
+      // Da qui in poi lavora la molla in useFrame: parte dalla posizione e
+      // velocità correnti del modello → overshoot e bounce se il gesto era
+      // più forte del necessario.
     }
 
     el.addEventListener('pointerdown', onDown)
@@ -244,6 +281,7 @@ export function useComposerControls(
     const group = groupRef.current
     if (!group) return
     const p = pose.current
+    const s = spring.current
     if (!p.initialized) {
       // Ordine Euler di default 'XYZ': R = Rx·Ry, quindi lo yaw ruota il
       // modello attorno al proprio asse verticale e il pitch tumbla il tutto
@@ -253,13 +291,44 @@ export function useComposerControls(
       // deve combaciare con il poster sfocato mostrato durante il load.
       group.rotation.x = p.targetX
       group.rotation.y = p.targetY
+      s.vx = 0
+      s.vy = 0
       p.initialized = true
     }
-    // Follow lento e "pastoso" anche durante il drag (riferimento Apple);
-    // al rilascio il settle è ancora più morbido.
     const f = feelRef.current
-    const t = drag.current.pointerId != null ? f.followTime : f.settleTime
-    easing.damp(group.rotation, 'x', p.targetX, t, delta)
-    easing.damp(group.rotation, 'y', p.targetY, t, delta)
+    // dt clampato: stabilità della molla anche dopo un frame lungo (tab
+    // in background, hiccup) e con rigidità alta dal pannello.
+    const dt = Math.min(delta, 1 / 30)
+    if (dt <= 0) return
+
+    if (drag.current.pointerId != null) {
+      // In drag: follow damp "pastoso" (riferimento Apple). La velocità
+      // risultante viene misurata per seminare la molla al rilascio.
+      const px = group.rotation.x
+      const py = group.rotation.y
+      easing.damp(group.rotation, 'x', p.targetX, f.followTime, delta)
+      easing.damp(group.rotation, 'y', p.targetY, f.followTime, delta)
+      s.vx = (group.rotation.x - px) / dt
+      s.vy = (group.rotation.y - py) / dt
+      return
+    }
+
+    // Rilascio: molla smorzata per asse (semi-implicita, quindi stabile).
+    // springDamping < 1 = sotto-smorzata: l'energia in eccesso del gesto
+    // diventa overshoot oltre la posa e ritorno elastico — il bounce.
+    const k = f.springStiffness
+    const c = 2 * f.springDamping * Math.sqrt(k)
+    const integrate = (axis, vKey, target) => {
+      const x = group.rotation[axis]
+      if (Math.abs(x - target) < 1e-4 && Math.abs(s[vKey]) < 1e-3) {
+        group.rotation[axis] = target
+        s[vKey] = 0
+        return
+      }
+      s[vKey] += (k * (target - x) - c * s[vKey]) * dt
+      group.rotation[axis] = x + s[vKey] * dt
+    }
+    integrate('x', 'vx', p.targetX)
+    integrate('y', 'vy', p.targetY)
   })
 }
