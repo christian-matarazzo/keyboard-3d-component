@@ -4,9 +4,10 @@ import { useControls } from 'leva'
 import { easing } from 'maath'
 import {
   DEG,
-  YAW_STOPS,
   pitchStopsAt,
   adjacentStop,
+  nextYawStop,
+  cornerArcStep,
   ENTRY_LANDSCAPE,
 } from './poseGraph'
 
@@ -18,6 +19,19 @@ const PIVOT_Y = 0.1
 // Sotto questa distanza (px) il gesto non ha ancora un asse dominante.
 const AXIS_DEADZONE = 6
 const EPS = 1e-6
+
+// Stima della "velocità di interazione" da tastiera, dalla cadenza dei
+// commit sullo stesso asse (il drag ha già una velocità reale misurata dal
+// gesto). Oltre KEY_BOUNCE_MAX_DT tra due step si considera una pressione
+// isolata: nessuna velocità extra, il bounce resta quello "di base" della
+// molla. Sotto quella soglia la velocità implicita (step/intervallo) semina
+// la molla come farebbe un rilascio di drag veloce — più le pressioni sono
+// ravvicinate (tenendo il tasto, o premendolo a raffica), più bounce
+// all'arrivo. KEY_BOUNCE_MAX_SPEED è un tetto di sicurezza contro overshoot
+// eccessivi con ripetizioni fortissime.
+const KEY_BOUNCE_MIN_DT = 0.02
+const KEY_BOUNCE_MAX_DT = 0.6
+const KEY_BOUNCE_MAX_SPEED = 8 // rad/s
 
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v))
 const atZeroAngle = (a) => Math.abs(a) < 1e-3
@@ -38,9 +52,14 @@ const softClamp = (raw, lo, hi, factor, cap) => {
  *    dito su entrambi gli assi (pitch dove il grafo ha stop, yaw solo dalla
  *    posa orizzontale), ciascun asse limitato allo stop adiacente più una
  *    coda elastica compressa — mai rotazione libera
- *  - gli archi sono CLAMPATI: niente giro completo. Oltre l'ultima posa
- *    (bottom, 3-4 back a 135°, back a yaw ±180°) c'è solo l'elastico;
- *    ogni step è una rotazione semplice di 45° sul proprio asse
+ *  - l'arco di pitch è CLAMPATO: oltre l'ultima posa (bottom / 3-4 back a
+ *    135°) c'è solo l'elastico. L'arco di yaw invece, oltre il "back"
+ *    (±180°, raggiunto da 3-4-left back o 3-4 right-back), NON si ferma:
+ *    prosegue a step di 45° in loop, permettendo un giro completo e oltre
+ *    nella stessa direzione (vedi `nextYawStop` in poseGraph.js)
+ *  - ogni step è una rotazione semplice di 45° sul proprio asse
+ *  - frecce direzionali (↑↓←→): stesso step a 45° del drag, attive solo con
+ *    hover o focus sul canvas
  *  - al rilascio ogni asse committa se ha superato la soglia (frazione della
  *    distanza start→stop adiacente); se entrambi superano, vince l'asse con
  *    più progresso: le pose combinate fuori dal set del cliente non esistono
@@ -49,9 +68,14 @@ const softClamp = (raw, lo, hi, factor, cap) => {
  *    necessario arriva sulla posa con overshoot visibile e ritorno elastico
  *    proporzionale all'energia; un gesto delicato atterra morbido. Lo stesso
  *    meccanismo fa rimbalzare il modello sugli estremi d'arco
- *  - dal corner d'ingresso ("initial position": pitch 35.264°, yaw 45°) il
- *    drag verticale scende a "3-4 left"; il gemello "3-4 front right" si
- *    raggiunge da "3-4 right" con lo stesso mini-step verticale
+ *  - alle pose corner (yaw ±45°) il verticale (drag o freccia) naviga
+ *    un'unica sequenza continua a 4 tappe — CORNER_ARC in poseGraph.js:
+ *    "3-4 left" (pitch 0) → "3-4 front left"/"initial position" (corner,
+ *    35.264°) → "3-4 front right" (corner, yaw -45°) → "3-4 right" (pitch
+ *    0, yaw -45°). Giù avanza, su retrocede, sempre; il giro fra i due
+ *    corner cambia yaw invece di pitch (unico punto del grafo dove un
+ *    singolo step cambia asse), ma resta un solo asse per volta — mai una
+ *    posa diagonale
  *  - nessuno zoom: né rotella, né pinch. La distanza camera deriva solo dal
  *    fit responsive; focale tele (200mm) per la prospettiva compressa
  *    "commercial"
@@ -73,14 +97,17 @@ export function useComposerControls(
   // Parametri "feel" regolabili dal pannello (?debug): i default sono i
   // valori di produzione.
   const feel = useControls('Rotazione', {
-    dragSpeed: { value: 0.008, min: 0.001, max: 0.012, step: 0.0005, label: 'velocità drag' },
-    followTime: { value: 0.13, min: 0.05, max: 0.6, step: 0.01, label: 'inerzia in drag' },
+    // Drag più lento (era 0.008) e più attrito in assestamento: gesto più
+    // pesante. Damping 0.8→0.55 e stiffness 40→50: il bounce (quasi
+    // impercettibile a 0.8, ζ≈0.8 → ~1.5% di overshoot) torna visibile
+    // (ζ≈0.55 → ~13% di overshoot) restando comunque più lento/pesante di
+    // prima (il tempo di assestamento a riposo, senza extra-velocità, è
+    // ~1.3s contro ~1s del preset precedente).
+    dragSpeed: { value: 0.005, min: 0.001, max: 0.012, step: 0.0005, label: 'velocità drag' },
+    followTime: { value: 0.2, min: 0.05, max: 0.6, step: 0.01, label: 'inerzia in drag' },
     commitFraction: { value: 0.5, min: 0.1, max: 0.9, step: 0.05, label: 'soglia step' },
-    // Molla più morbida (era 90): il drifting/assestamento al rilascio è più
-    // lento e pesante — inerzia più realistica. Lo smorzamento (ζ) resta
-    // invariato, quindi il carattere del bounce è preservato, solo più lento.
-    springStiffness: { value: 60, min: 20, max: 300, step: 5, label: 'molla rigidità' },
-    springDamping: { value: 0.6, min: 0.2, max: 1.2, step: 0.05, label: 'molla smorzamento' },
+    springStiffness: { value: 50, min: 20, max: 300, step: 5, label: 'molla rigidità' },
+    springDamping: { value: 0.55, min: 0.2, max: 1.2, step: 0.05, label: 'molla smorzamento' },
     rubberFactor: { value: 0.25, min: 0, max: 0.6, step: 0.05, label: 'elastico oltre-step' },
     rubberCapDeg: { value: 10, min: 0, max: 20, step: 1, label: 'elastico max (°)' },
     fitMargin: { value: 1.4, min: 1, max: 2.5, step: 0.05, label: 'margine inquadratura' },
@@ -110,6 +137,12 @@ export function useComposerControls(
   // integrata dalla molla al rilascio: la continuità dito→bounce è gratis.
   const spring = useRef({ vx: 0, vy: 0 })
   const layout = useRef({ portrait: false })
+  // Timestamp (ms) dell'ultimo commit da tastiera per asse: misura quanto
+  // sono ravvicinati gli step per stimare una "velocità" di interazione e
+  // seminare il bounce di conseguenza (vedi commitStep/seedKeyBounce) — il
+  // drag ha già una velocità reale misurata durante il gesto, qui la si
+  // ricava dalla cadenza delle pressioni.
+  const keyCommitAt = useRef({ pitch: 0, yaw: 0 })
 
   // Debug-only: salto secco a una posa (audit multi-posa via ?debug).
   // window.__setPose(pitchDeg, yawDeg) — non tocca il flusso di produzione.
@@ -171,10 +204,98 @@ export function useComposerControls(
     const d = drag.current
     el.style.cursor = 'grab'
     el.style.touchAction = 'none'
+    // Il canvas non è nativamente focus-abile: serve per intercettare le
+    // frecce direzionali senza ascoltare su tutta la window.
+    el.tabIndex = 0
+    el.style.outline = 'none'
 
     // Vista orizzontale = pitch 0: unica posizione da cui è concesso
     // slittare lateralmente (regola invariata dal set precedente).
     const atFrontView = () => atZeroAngle(p.pitch)
+
+    // Velocità implicita di un asse dalla cadenza dei commit da tastiera:
+    // semina la molla così il bounce risponde a QUANTO VELOCEMENTE si
+    // ripetono gli step, non solo al singolo salto di 45°.
+    const seedKeyBounce = (axisKey, delta) => {
+      const now = performance.now()
+      const last = keyCommitAt.current[axisKey]
+      keyCommitAt.current[axisKey] = now
+      const vKey = axisKey === 'pitch' ? 'vx' : 'vy'
+      const dt = (now - last) / 1000
+      if (last === 0 || dt > KEY_BOUNCE_MAX_DT) {
+        spring.current[vKey] = 0 // prima pressione o pausa lunga: solo il bounce "di base"
+        return
+      }
+      const v = delta / Math.max(dt, KEY_BOUNCE_MIN_DT)
+      spring.current[vKey] = clamp(v, -KEY_BOUNCE_MAX_SPEED, KEY_BOUNCE_MAX_SPEED)
+    }
+
+    // Un singolo step di 45° nella direzione data, come farebbe il commit a
+    // fine drag: la molla in useFrame anima l'assestamento (bounce incluso)
+    // esattamente come dopo un rilascio, seminata dalla velocità implicita
+    // della cadenza di pressione (vedi seedKeyBounce).
+    const commitStep = (axis, dir) => {
+      if (axis === 'pitch') {
+        // Alle pose dell'arco corner (yaw ±45°, vedi CORNER_ARC in
+        // poseGraph.js) il verticale naviga l'intera sequenza a 4 tappe
+        // 3-4-left ↔ front-left ↔ front-right ↔ 3-4-right, cambiando anche
+        // yaw dove serve (il giro sull'altro lato). Altrove resta il
+        // mini-step di solo pitch.
+        const arcNext = cornerArcStep(p.pitch, p.yaw, dir)
+        if (arcNext) {
+          seedKeyBounce('pitch', arcNext.pitch - p.pitch)
+          seedKeyBounce('yaw', arcNext.yaw - p.yaw)
+          p.pitch = arcNext.pitch
+          p.yaw = arcNext.yaw
+          p.targetX = arcNext.pitch
+          p.targetY = arcNext.yaw
+          return
+        }
+        const stop = adjacentStop(
+          pitchStopsAt(p.yaw, layout.current.portrait),
+          p.pitch,
+          dir,
+        )
+        if (stop == null) return
+        seedKeyBounce('pitch', stop - p.pitch)
+        p.pitch = stop
+        p.targetX = stop
+      } else {
+        if (!atFrontView()) return
+        const stop = nextYawStop(p.yaw, dir)
+        seedKeyBounce('yaw', stop - p.yaw)
+        p.yaw = stop
+        p.targetY = stop
+      }
+    }
+
+    let hovered = false
+    const onPointerEnter = () => {
+      hovered = true
+    }
+    const onPointerLeave = () => {
+      hovered = false
+    }
+    const onKeyDown = (e) => {
+      if (!hovered && document.activeElement !== el) return
+      switch (e.key) {
+        case 'ArrowUp':
+          commitStep('pitch', -1)
+          break
+        case 'ArrowDown':
+          commitStep('pitch', 1)
+          break
+        case 'ArrowLeft':
+          commitStep('yaw', -1)
+          break
+        case 'ArrowRight':
+          commitStep('yaw', 1)
+          break
+        default:
+          return
+      }
+      e.preventDefault()
+    }
 
     const onDown = (e) => {
       if (d.pointerId != null) return // gesto già in corso: dita extra ignorate
@@ -186,6 +307,7 @@ export function useComposerControls(
       d.yaw0 = p.yaw
       d.phiSoft = p.pitch
       d.yawSoft = p.yaw
+      d.cornerArc = undefined // deciso al primo superamento della deadzone
       try {
         el.setPointerCapture(e.pointerId)
       } catch {
@@ -205,11 +327,41 @@ export function useComposerControls(
       if (!d.moved) {
         if (Math.hypot(dx, dy) < AXIS_DEADZONE) return
         d.moved = true
+        // Deciso una sola volta, al primo superamento della deadzone: se il
+        // gesto parte da una tappa di CORNER_ARC e va nel verso giusto,
+        // resta in modalità "arco corner" per tutto il gesto — niente
+        // cambio di modalità a metà drag se il dito inverte rotta.
+        d.cornerArc = cornerArcStep(d.pitch0, d.yaw0, Math.sign(pitchDelta))
       }
 
       const f = feelRef.current
       const speed = f.dragSpeed
       const rubberCap = f.rubberCapDeg * DEG
+
+      if (d.cornerArc) {
+        // Un solo asse cambia per step di CORNER_ARC (mai una posa
+        // diagonale): quello fermo resta ancorato, il progresso verticale
+        // del gesto guida l'altro verso la tappa successiva.
+        const target = d.cornerArc
+        const dPitch = target.pitch - d.pitch0
+        const dYaw = target.yaw - d.yaw0
+        const raw = Math.abs(pitchDelta) * speed
+        const along = (start, span) =>
+          softClamp(
+            start + Math.sign(span) * raw,
+            Math.min(start, start + span),
+            Math.max(start, start + span),
+            f.rubberFactor,
+            rubberCap,
+          )
+        const phiSoft = dPitch !== 0 ? along(d.pitch0, dPitch) : d.pitch0
+        const yawSoft = dYaw !== 0 ? along(d.yaw0, dYaw) : d.yaw0
+        d.phiSoft = phiSoft
+        d.yawSoft = yawSoft
+        p.targetX = phiSoft
+        p.targetY = yawSoft
+        return
+      }
 
       // Limiti del gesto = stop adiacenti nel grafo; agli estremi d'arco
       // (stop assente) l'ancora è la posa di partenza e resta solo l'elastico.
@@ -225,8 +377,11 @@ export function useComposerControls(
       )
       let yawSoft = d.yaw0
       if (atFrontView()) {
-        const loY = adjacentStop(YAW_STOPS, d.yaw0, -1) ?? d.yaw0
-        const hiY = adjacentStop(YAW_STOPS, d.yaw0, 1) ?? d.yaw0
+        // Oltre l'ultimo stop nominale (±180°, il "back") il tetto/pavimento
+        // segue di 45° in 45° invece di restare fisso: il drag può continuare
+        // a girare in loop senza mai sentire l'elastico da quel punto in poi.
+        const loY = nextYawStop(d.yaw0, -1)
+        const hiY = nextYawStop(d.yaw0, 1)
         yawSoft = softClamp(
           d.yaw0 + yawDelta * speed,
           loY,
@@ -253,23 +408,40 @@ export function useComposerControls(
 
       const threshold = feelRef.current.commitFraction // 0.5 = nearest
 
+      if (d.cornerArc) {
+        // Commit dedicato: la tappa successiva di CORNER_ARC (sul suo unico
+        // asse mobile), o ritorno alla tappa di partenza se il gesto non ha
+        // superato la soglia — stessa logica soglia/rilascio degli altri assi.
+        const target = d.cornerArc
+        const dPitch = target.pitch - d.pitch0
+        const dYaw = target.yaw - d.yaw0
+        const progress = dPitch !== 0
+          ? Math.abs((d.phiSoft - d.pitch0) / dPitch)
+          : Math.abs((d.yawSoft - d.yaw0) / dYaw)
+        const commit = progress >= threshold
+        p.pitch = commit ? target.pitch : d.pitch0
+        p.yaw = commit ? target.yaw : d.yaw0
+        p.targetX = p.pitch
+        p.targetY = p.yaw
+        return
+      }
+
       // Progresso di un asse verso lo stop adiacente nella direzione del
       // gesto. Oltre 1 (coda elastica) committa comunque; senza stop
       // (estremo d'arco) il progresso è nullo e si torna alla partenza.
-      const axisPlan = (start, target, stops) => {
+      const axisPlan = (start, target, findStop) => {
         const delta = target - start
         if (Math.abs(delta) < EPS) return { stop: null, progress: 0 }
-        const stop = adjacentStop(stops, start, Math.sign(delta))
+        const stop = findStop(start, Math.sign(delta))
         if (stop == null) return { stop: null, progress: 0 }
         return { stop, progress: Math.abs(delta / (stop - start)) }
       }
 
-      const pitchPlan = axisPlan(
-        d.pitch0,
-        d.phiSoft,
-        pitchStopsAt(d.yaw0, layout.current.portrait),
+      const pitchPlan = axisPlan(d.pitch0, d.phiSoft, (start, dir) =>
+        adjacentStop(pitchStopsAt(d.yaw0, layout.current.portrait), start, dir),
       )
-      const yawPlan = axisPlan(d.yaw0, d.yawSoft, YAW_STOPS)
+      // yaw: nextYawStop non si ferma mai al back, permette il loop completo.
+      const yawPlan = axisPlan(d.yaw0, d.yawSoft, nextYawStop)
 
       let commitPitch = pitchPlan.stop != null && pitchPlan.progress >= threshold
       let commitYaw = yawPlan.stop != null && yawPlan.progress >= threshold
@@ -293,11 +465,17 @@ export function useComposerControls(
     el.addEventListener('pointermove', onMove)
     el.addEventListener('pointerup', onUp)
     el.addEventListener('pointercancel', onUp)
+    el.addEventListener('pointerenter', onPointerEnter)
+    el.addEventListener('pointerleave', onPointerLeave)
+    el.addEventListener('keydown', onKeyDown)
     return () => {
       el.removeEventListener('pointerdown', onDown)
       el.removeEventListener('pointermove', onMove)
       el.removeEventListener('pointerup', onUp)
       el.removeEventListener('pointercancel', onUp)
+      el.removeEventListener('pointerenter', onPointerEnter)
+      el.removeEventListener('pointerleave', onPointerLeave)
+      el.removeEventListener('keydown', onKeyDown)
     }
   }, [gl, groupRef, initialRotation.x, initialRotation.y])
 
