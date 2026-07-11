@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { useProgress } from '@react-three/drei'
 import { Leva } from 'leva'
 import styles from './KeyboardComposer.module.css'
@@ -21,7 +22,18 @@ export default function KeyboardComposer({
 }) {
   const finish = getFinish(finishes, finishId)
   const { progress } = useProgress()
-  const loaded = progress === 100
+  // Stato (non derivato al volo da `progress`): con l'asset già in cache
+  // (visita successiva, mobile o desktop) `progress` può essere 100 già al
+  // primissimo render, prima che il browser abbia dipinto lo stato opacity:0
+  // di partenza — la transizione CSS del fade non avrebbe nulla da cui
+  // animare e sparirebbe. Il giro di rAF garantisce che il primo paint
+  // avvenga sempre a opacità 0, così il fade-in resta visibile in ogni caso.
+  const [loaded, setLoaded] = useState(false)
+  useEffect(() => {
+    if (progress !== 100) return
+    const raf = requestAnimationFrame(() => setLoaded(true))
+    return () => cancelAnimationFrame(raf)
+  }, [progress])
 
   return (
     <section className={styles.section}>
