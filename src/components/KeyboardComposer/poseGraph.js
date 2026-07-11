@@ -28,6 +28,16 @@ export const CORNER_PITCH = Math.atan(Math.SQRT1_2) // ≈ 35.264°
 export const POSES = {
   'initial position': { pitch: CORNER_PITCH, yaw: 45 * DEG },
   '3-4 front right': { pitch: CORNER_PITCH, yaw: -45 * DEG },
+  // Round 9 (cartella "TASTIERA 3-4"): i due corner ALTI mancanti sul retro,
+  // gemelli di 'initial position'/'3-4 front right' ma a yaw ±135°.
+  '3-4 back left': { pitch: CORNER_PITCH, yaw: 135 * DEG },
+  '3-4 back right': { pitch: CORNER_PITCH, yaw: -135 * DEG },
+  // Round 9: i quattro corner BASSI (elevazione -CORNER_PITCH, verso il
+  // bottom), uno per ciascuna delle quattro colonne fronte/retro × sx/dx.
+  '3-4 front left bottom': { pitch: -CORNER_PITCH, yaw: 45 * DEG },
+  '3-4 front right bottom': { pitch: -CORNER_PITCH, yaw: -45 * DEG },
+  '3-4 back left bottom': { pitch: -CORNER_PITCH, yaw: 135 * DEG },
+  '3-4 back right bottom': { pitch: -CORNER_PITCH, yaw: -135 * DEG },
   Top: { pitch: 90 * DEG, yaw: 0 },
   '3-4 top': { pitch: 45 * DEG, yaw: 0 },
   front: { pitch: 0, yaw: 0 },
@@ -101,9 +111,9 @@ export function pitchStopsAt(yaw, portrait = false) {
   if (nearAngle(y, 0)) return PITCH_ARC_MAIN
   if (portrait && nearAngle(y, 90 * DEG)) return PITCH_ARC_MAIN
   if (nearAngle(Math.abs(y), 90 * DEG)) return PITCH_ARC_SIDE
-  // yaw ±45°: il verticale vive interamente su CORNER_ARC (vedi sotto),
-  // interrogato PRIMA di questa funzione da chi guida il gesto — qui non
-  // c'è altro stop di pitch puro.
+  // yaw ±45°/±135°: il verticale vive interamente sui CORNER_ARCS (vedi
+  // sotto), interrogati PRIMA di questa funzione da chi guida il gesto —
+  // qui non c'è altro stop di pitch puro.
   return PITCH_LOCKED
 }
 
@@ -123,47 +133,78 @@ export function adjacentStop(stops, value, dir) {
 }
 
 /**
- * Arco verticale delle pose corner (yaw ±45°): un'unica sequenza continua
- * A→B→C→D, l'unico punto del grafo dove un singolo step di gesto cambia
- * SIA pitch SIA yaw insieme (B↔C, il giro sull'altro lato) — rappresenta
- * visivamente un giro continuo sul fronte del case, non una posa diagonale
- * fuori contratto. Giù avanza (dir +1), su retrocede (dir -1), sempre:
- *   A "3-4 left"       (pitch 0,            yaw +45°)
- *   B "3-4 front left" (pitch CORNER_PITCH, yaw +45°) — "initial position"
- *   C "3-4 front right"(pitch CORNER_PITCH, yaw -45°)
- *   D "3-4 right"       (pitch 0,            yaw -45°)
+ * Archi verticali delle pose corner: quattro colonne — fronte (yaw ±45°) e
+ * retro (yaw ±135°), ciascuna con un corner ALTO (+CORNER_PITCH, verso Top)
+ * e uno BASSO (-CORNER_PITCH, verso il bottom). Ogni arco è una sequenza
+ * continua di 4 tappe A→B→C→D, l'unico punto del grafo dove un singolo step
+ * cambia SIA pitch SIA yaw insieme (B↔C, il giro sull'altro lato) —
+ * rappresenta visivamente un giro continuo sul case, non una posa diagonale
+ * fuori contratto. Giù avanza (dir +1), su retrocede (dir -1), sempre. Gli
+ * estremi A/D di ogni arco sono gli anelli orizzontali (pitch 0): FRONT_TOP
+ * e FRONT_BOTTOM condividono gli stessi due estremi (3-4 left/3-4 right) ma
+ * sui lati liberi opposti (3-4 left aveva già il suo "giù" occupato da
+ * FRONT_TOP verso l'alto, quindi FRONT_BOTTOM lo raggiunge dal "su" libero,
+ * e viceversa per 3-4 right) — mai un conflitto, ciascuna posa ha sempre e
+ * solo un vicino per direzione. Stesso schema per il retro.
  */
-const CORNER_ARC = [
-  { pitch: 0, yaw: 45 * DEG },
-  { pitch: CORNER_PITCH, yaw: 45 * DEG },
-  { pitch: CORNER_PITCH, yaw: -45 * DEG },
-  { pitch: 0, yaw: -45 * DEG },
+const FRONT_TOP_ARC = [
+  { pitch: 0, yaw: 45 * DEG }, // 3-4 left
+  { pitch: CORNER_PITCH, yaw: 45 * DEG }, // 3-4 front left ("initial position")
+  { pitch: CORNER_PITCH, yaw: -45 * DEG }, // 3-4 front right
+  { pitch: 0, yaw: -45 * DEG }, // 3-4 right
 ]
-
-const cornerArcIndex = (pitch, yaw) => {
-  const y = wrapYaw(yaw)
-  return CORNER_ARC.findIndex(
-    (p) => nearAngle(p.pitch, pitch) && nearAngle(p.yaw, y),
-  )
-}
+const BACK_TOP_ARC = [
+  { pitch: 0, yaw: 135 * DEG }, // 3-4-left back
+  { pitch: CORNER_PITCH, yaw: 135 * DEG }, // 3-4 back left
+  { pitch: CORNER_PITCH, yaw: -135 * DEG }, // 3-4 back right
+  { pitch: 0, yaw: -135 * DEG }, // 3-4 right-back
+]
+// Estremi in ordine inverso rispetto a FRONT_TOP_ARC (parte da 3-4 right,
+// non da 3-4 left): è il lato libero di ciascun estremo a decidere l'ordine,
+// non una convenzione arbitraria — vedi commento sopra.
+const FRONT_BOTTOM_ARC = [
+  { pitch: 0, yaw: -45 * DEG }, // 3-4 right
+  { pitch: -CORNER_PITCH, yaw: -45 * DEG }, // 3-4 front right bottom
+  { pitch: -CORNER_PITCH, yaw: 45 * DEG }, // 3-4 front left bottom
+  { pitch: 0, yaw: 45 * DEG }, // 3-4 left
+]
+const BACK_BOTTOM_ARC = [
+  { pitch: 0, yaw: -135 * DEG }, // 3-4 right-back
+  { pitch: -CORNER_PITCH, yaw: -135 * DEG }, // 3-4 back right bottom
+  { pitch: -CORNER_PITCH, yaw: 135 * DEG }, // 3-4 back left bottom
+  { pitch: 0, yaw: 135 * DEG }, // 3-4-left back
+]
+const CORNER_ARCS = [FRONT_TOP_ARC, BACK_TOP_ARC, FRONT_BOTTOM_ARC, BACK_BOTTOM_ARC]
 
 /**
- * Prossima tappa di CORNER_ARC nella direzione `dir` a partire da
- * (pitch, yaw), oppure null se non si è su una tappa dell'arco o si è già
- * all'estremo (lì il gesto trova solo l'elastico, come gli altri archi).
- * Lo yaw restituito è relativo al valore grezzo passato (yaw + delta
- * canonico), non lo stop canonico assoluto: dopo N giri completi lo yaw
- * grezzo può essere molto lontano da ±45°, e "agganciarsi" al valore
- * canonico produrrebbe un salto visivo di N giri interi invece del solo
- * step richiesto.
+ * Prossima tappa nella direzione `dir` a partire da (pitch, yaw), cercando
+ * fra tutti gli archi corner (ciascuna posa vive in al più un arco per
+ * ciascuna direzione, mai in conflitto — vedi commento sopra), oppure null
+ * se non si è su una tappa di alcun arco o si è già all'estremo (lì il
+ * gesto trova solo l'elastico, come gli altri archi). Lo yaw restituito è
+ * relativo al valore grezzo passato (yaw + delta canonico), non lo stop
+ * canonico assoluto: dopo N giri completi lo yaw grezzo può essere molto
+ * lontano dal valore canonico, e "agganciarsi" ad esso produrrebbe un salto
+ * visivo di N giri interi invece del solo step richiesto.
  */
 export function cornerArcStep(pitch, yaw, dir) {
-  const i = cornerArcIndex(pitch, yaw)
-  if (i === -1) return null
-  const j = i + (dir > 0 ? 1 : -1)
-  if (j < 0 || j >= CORNER_ARC.length) return null
-  const delta = CORNER_ARC[j].yaw - CORNER_ARC[i].yaw
-  return { pitch: CORNER_ARC[j].pitch, yaw: yaw + delta }
+  const y = wrapYaw(yaw)
+  for (const arc of CORNER_ARCS) {
+    const i = arc.findIndex(
+      (p) => nearAngle(p.pitch, pitch) && nearAngle(p.yaw, y),
+    )
+    if (i === -1) continue
+    const j = i + (dir > 0 ? 1 : -1)
+    if (j < 0 || j >= arc.length) continue
+    // Delta normalizzato al percorso più breve: sugli archi del retro la
+    // differenza fra i valori canonici dei corner gemelli (±135°) è ±270°
+    // — il giro lungo passando dal fronte. Il flip deve invece attraversare
+    // il retro con gli stessi 90° dell'arco frontale: wrapYaw riduce -270°
+    // a +90° (e viceversa), lasciando intatti i delta già brevi.
+    const delta = wrapYaw(arc[j].yaw - arc[i].yaw)
+    return { pitch: arc[j].pitch, yaw: yaw + delta }
+  }
+  return null
 }
 
 // Passo di 45° sull'arco yaw, ma senza mai fermarsi al "back" (±180°): oltre

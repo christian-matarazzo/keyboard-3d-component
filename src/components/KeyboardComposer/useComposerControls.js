@@ -68,14 +68,16 @@ const softClamp = (raw, lo, hi, factor, cap) => {
  *    necessario arriva sulla posa con overshoot visibile e ritorno elastico
  *    proporzionale all'energia; un gesto delicato atterra morbido. Lo stesso
  *    meccanismo fa rimbalzare il modello sugli estremi d'arco
- *  - alle pose corner (yaw ±45°) il verticale (drag o freccia) naviga
- *    un'unica sequenza continua a 4 tappe — CORNER_ARC in poseGraph.js:
- *    "3-4 left" (pitch 0) → "3-4 front left"/"initial position" (corner,
- *    35.264°) → "3-4 front right" (corner, yaw -45°) → "3-4 right" (pitch
- *    0, yaw -45°). Giù avanza, su retrocede, sempre; il giro fra i due
- *    corner cambia yaw invece di pitch (unico punto del grafo dove un
- *    singolo step cambia asse), ma resta un solo asse per volta — mai una
- *    posa diagonale
+ *  - alle pose corner (yaw ±45° fronte, ±135° retro) il verticale (drag o
+ *    freccia) naviga una delle quattro sequenze continue a 4 tappe —
+ *    CORNER_ARCS in poseGraph.js: un anello orizzontale (pitch 0) → corner
+ *    ALTO o BASSO (±CORNER_PITCH, 35.264°) → corner gemello sull'altro lato
+ *    (stesso segno di elevazione, yaw opposto) → l'altro anello. Giù
+ *    avanza, su retrocede, sempre; il giro fra i due corner gemelli cambia
+ *    yaw invece di pitch (unico punto del grafo dove un singolo step
+ *    cambia asse), ma resta un solo asse per volta — mai una posa
+ *    diagonale. Ogni anello ha un corner alto e uno basso, su direzioni
+ *    verticali opposte (mai in conflitto: vedi CORNER_ARCS)
  *  - nessuno zoom: né rotella, né pinch. La distanza camera deriva solo dal
  *    fit responsive; focale tele (200mm) per la prospettiva compressa
  *    "commercial"
@@ -108,6 +110,16 @@ export function useComposerControls(
     commitFraction: { value: 0.5, min: 0.1, max: 0.9, step: 0.05, label: 'soglia step' },
     springStiffness: { value: 50, min: 20, max: 300, step: 5, label: 'molla rigidità' },
     springDamping: { value: 0.55, min: 0.2, max: 1.2, step: 0.05, label: 'molla smorzamento' },
+    // Il giro fra i due corner gemelli (front-left↔front-right ecc.) copre
+    // 90° con la STESSA molla degli altri step (45°): a parità di tempo di
+    // assestamento risulta uno "sferzata" visivamente troppo rapida. Questo
+    // fattore dilata SOLO il tempo percepito dalla molla durante il flip
+    // (vedi useFrame → integrate), lasciando invariata la velocità di tutte
+    // le altre transizioni. 0.29 (era 0.2, troppo lento): misurato per un
+    // arrivo sul target ~20% più rapido del preset precedente — il valore
+    // compensa anche lo smorzamento extra del flip (cFlip, vedi useFrame)
+    // che di suo rallenterebbe leggermente l'avvicinamento.
+    flipSpeed: { value: 0.29, min: 0.05, max: 1, step: 0.01, label: 'velocità flip' },
     rubberFactor: { value: 0.25, min: 0, max: 0.6, step: 0.05, label: 'elastico oltre-step' },
     rubberCapDeg: { value: 10, min: 0, max: 20, step: 1, label: 'elastico max (°)' },
     fitMargin: { value: 1.4, min: 1, max: 2.5, step: 0.05, label: 'margine inquadratura' },
@@ -135,7 +147,10 @@ export function useComposerControls(
   })
   // Velocità angolare corrente del modello (rad/s), misurata in drag e
   // integrata dalla molla al rilascio: la continuità dito→bounce è gratis.
-  const spring = useRef({ vx: 0, vy: 0 })
+  // flipSlow: per asse, true mentre è in corso il giro fra due corner
+  // gemelli — l'integratore in useFrame dilata il tempo percepito su
+  // quell'asse (vedi feel.flipSpeed), si azzera da sé al termine.
+  const spring = useRef({ vx: 0, vy: 0, flipSlow: { x: false, y: false } })
   const layout = useRef({ portrait: false })
   // Timestamp (ms) dell'ultimo commit da tastiera per asse: misura quanto
   // sono ravvicinati gli step per stimare una "velocità" di interazione e
@@ -243,6 +258,13 @@ export function useComposerControls(
         // mini-step di solo pitch.
         const arcNext = cornerArcStep(p.pitch, p.yaw, dir)
         if (arcNext) {
+          // Flip = solo yaw cambia (giro fra i due corner gemelli): rallenta
+          // quell'asse. I mini-step ring↔corner (solo pitch) restano veloci.
+          // Tolleranza invece di === : pitch arriva sempre dalle stesse
+          // costanti in uso normale, ma resta robusto anche da fonti esterne
+          // (es. window.__setPose di debug) con arrotondamenti diversi.
+          spring.current.flipSlow.y = Math.abs(arcNext.pitch - p.pitch) < 1e-6
+          spring.current.flipSlow.x = false
           seedKeyBounce('pitch', arcNext.pitch - p.pitch)
           seedKeyBounce('yaw', arcNext.yaw - p.yaw)
           p.pitch = arcNext.pitch
@@ -251,6 +273,8 @@ export function useComposerControls(
           p.targetY = arcNext.yaw
           return
         }
+        spring.current.flipSlow.x = false
+        spring.current.flipSlow.y = false
         const stop = adjacentStop(
           pitchStopsAt(p.yaw, layout.current.portrait),
           p.pitch,
@@ -262,6 +286,8 @@ export function useComposerControls(
         p.targetX = stop
       } else {
         if (!atFrontView()) return
+        spring.current.flipSlow.x = false
+        spring.current.flipSlow.y = false
         const stop = nextYawStop(p.yaw, dir)
         seedKeyBounce('yaw', stop - p.yaw)
         p.yaw = stop
@@ -327,11 +353,19 @@ export function useComposerControls(
       if (!d.moved) {
         if (Math.hypot(dx, dy) < AXIS_DEADZONE) return
         d.moved = true
-        // Deciso una sola volta, al primo superamento della deadzone: se il
-        // gesto parte da una tappa di CORNER_ARC e va nel verso giusto,
-        // resta in modalità "arco corner" per tutto il gesto — niente
-        // cambio di modalità a metà drag se il dito inverte rotta.
-        d.cornerArc = cornerArcStep(d.pitch0, d.yaw0, Math.sign(pitchDelta))
+        // Deciso una sola volta, al primo superamento della deadzone, e
+        // tenuto per tutto il gesto (niente cambio di modalità a metà drag).
+        // Dai corner (pitch ≠ 0) qualunque gesto vive sull'arco — lì
+        // l'orizzontale è sempre stato muto. Dagli anelli (pitch 0), invece,
+        // entra nell'arco SOLO un gesto a dominante verticale: con i 4 archi
+        // del round 9 gli stop a yaw ±45°/±135° hanno entrambe le direzioni
+        // verticali occupate, e senza questo filtro catturavano anche i
+        // gesti orizzontali, uccidendo il drag dell'anello yaw da lì.
+        const vertical = Math.abs(dy) >= Math.abs(dx)
+        d.cornerArc =
+          !atZeroAngle(d.pitch0) || vertical
+            ? cornerArcStep(d.pitch0, d.yaw0, Math.sign(pitchDelta) || 1)
+            : null
       }
 
       const f = feelRef.current
@@ -419,12 +453,18 @@ export function useComposerControls(
           ? Math.abs((d.phiSoft - d.pitch0) / dPitch)
           : Math.abs((d.yawSoft - d.yaw0) / dYaw)
         const commit = progress >= threshold
+        // Flip = solo yaw cambia e il rilascio l'ha effettivamente
+        // committato: rallenta quell'asse (vedi commitStep per il perché).
+        spring.current.flipSlow.y = commit && Math.abs(dPitch) < 1e-6
+        spring.current.flipSlow.x = false
         p.pitch = commit ? target.pitch : d.pitch0
         p.yaw = commit ? target.yaw : d.yaw0
         p.targetX = p.pitch
         p.targetY = p.yaw
         return
       }
+      spring.current.flipSlow.x = false
+      spring.current.flipSlow.y = false
 
       // Progresso di un asse verso lo stop adiacente nella direzione del
       // gesto. Oltre 1 (coda elastica) committa comunque; senza stop
@@ -520,17 +560,35 @@ export function useComposerControls(
     // diventa overshoot oltre la posa e ritorno elastico — il bounce.
     const k = f.springStiffness
     const c = 2 * f.springDamping * Math.sqrt(k)
-    const integrate = (axis, vKey, target) => {
+    // Flip: corsa doppia (90° contro i 45° di uno step normale) → a parità
+    // di ζ l'overshoot in GRADI raddoppia, e il bounce sembra enorme
+    // rispetto al resto. Compensazione: ζ alzato quel tanto che dimezza la
+    // frazione di overshoot (nel dominio log u = πζ/√(1-ζ²) basta u+ln2),
+    // così il rimbalzo assoluto resta quello di uno step normale — il
+    // bounce non scala con la distanza di partenza dell'animazione.
+    let cFlip = c
+    if (f.springDamping < 1) {
+      const z = f.springDamping
+      const u = (Math.PI * z) / Math.sqrt(1 - z * z) + Math.LN2
+      cFlip = 2 * (u / Math.sqrt(Math.PI * Math.PI + u * u)) * Math.sqrt(k)
+    }
+    const integrate = (axis, vKey, target, slow) => {
+      // Durante il flip fra due corner gemelli la STESSA molla lavora in
+      // slow motion: dt ridotto solo per quest'asse (feel.flipSpeed) e
+      // smorzamento compensato (cFlip). Si azzera da sé all'assestamento.
+      const axisDt = slow ? dt * f.flipSpeed : dt
+      const cAxis = slow ? cFlip : c
       const x = group.rotation[axis]
       if (Math.abs(x - target) < 1e-4 && Math.abs(s[vKey]) < 1e-3) {
         group.rotation[axis] = target
         s[vKey] = 0
+        if (slow) s.flipSlow[axis === 'x' ? 'x' : 'y'] = false
         return
       }
-      s[vKey] += (k * (target - x) - c * s[vKey]) * dt
-      group.rotation[axis] = x + s[vKey] * dt
+      s[vKey] += (k * (target - x) - cAxis * s[vKey]) * axisDt
+      group.rotation[axis] = x + s[vKey] * axisDt
     }
-    integrate('x', 'vx', p.targetX)
-    integrate('y', 'vy', p.targetY)
+    integrate('x', 'vx', p.targetX, s.flipSlow.x)
+    integrate('y', 'vy', p.targetY, s.flipSlow.y)
   })
 }
