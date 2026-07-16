@@ -1,20 +1,33 @@
 /**
- * Grafo delle pose — mappatura 1:1 con i riferimenti del cliente in `rig set/`.
+ * Grafo delle pose — navigazione a vicini espliciti (round 10).
  *
  * Convenzione ViewCube di Maya (il cliente lavora in Maya): facce a 0°/90°,
- * spigoli a 45°, angoli guardando lungo la diagonale del cubo, cioè
- * elevazione atan(1/√2) ≈ 35.264° con azimut ±45°.
+ * spigoli a 45°, angoli (i "3/4") guardando lungo la diagonale del cubo, cioè
+ * elevazione atan(1/√2) ≈ 35.264° con azimut ±45°/±135°.
  *
  * Nel nostro schema è il MODELLO a ruotare (camera fissa e livellata):
  * rotation.x = pitch, rotation.y = yaw (Euler 'XYZ'); yaw positivo porta il
  * lato sinistro della tastiera verso la camera.
  *
- * A differenza della vecchia griglia uniforme (multipli di 45° su un toro
- * completo), qui esistono SOLO le pose richieste dal cliente (i JPEG del rig
- * set + le due aggiunte a voce del round 7): gli archi sono clampati e oltre
- * l'ultima posa il gesto incontra solo la resistenza elastica (vedi
- * useComposerControls). Ogni step è una rotazione semplice di 45° sul
- * proprio asse — nessun flip/spin composto.
+ * A differenza dei round precedenti (archi di stop separati per pitch/yaw +
+ * un meccanismo di "flip" tra corner gemelli) qui la navigazione è un GRAFO
+ * DI ADIACENZA esplicito: ogni posa ha al più un vicino per direzione
+ * (`up`/`down`/`left`/`right`) e uno step è semplicemente "vai a quella posa".
+ * Questo mappa 1:1 il modello mentale del cliente ("da posa X, freccia Y →
+ * posa Z"), vieta per costruzione qualunque flip (uno step è un vicino
+ * nominato o niente) e rende le frecce letterali.
+ *
+ * Regole del round 10 (confermate dal cliente):
+ *  - LEFT = yaw crescente, RIGHT = yaw calante, UP = pitch crescente (verso il
+ *    top), DOWN = pitch calante (verso il basso).
+ *  - Sui 3/4 (corner) left/right ruotano di 90° saltando la vista laterale
+ *    pura (yaw ±90°), che esce dalla navigazione. Il back piatto (yaw 180°)
+ *    invece resta, simmetrico al front sull'anello centrale.
+ *  - Colonna centrale yaw 0 (TBACK·TOP·CFT·FRONT·CFB·BOTTOM): unica via allo
+ *    zenit/nadir. In cima la colonna prosegue di un ultimo step da 45° OLTRE
+ *    il Top, fino a "3-4 back" (pitch 135°). Non è un flip: è una rotazione
+ *    semplice di pitch, il modello non ruota mai su se stesso.
+ *  - Banda bassa: solo i corner frontali (niente corner del retro in basso).
  */
 
 export const DEG = Math.PI / 180
@@ -22,205 +35,136 @@ export const DEG = Math.PI / 180
 // Elevazione dei corner ViewCube: vista lungo la diagonale del cubo.
 export const CORNER_PITCH = Math.atan(Math.SQRT1_2) // ≈ 35.264°
 
-// Tabella di riferimento nominata come i file JPEG (per confronto visivo e
-// tooling di verifica). Non è usata a runtime dal gesto — il gesto naviga
-// gli archi qui sotto — ma ogni valore è il contratto con il cliente.
-export const POSES = {
-  'initial position': { pitch: CORNER_PITCH, yaw: 45 * DEG },
-  '3-4 front right': { pitch: CORNER_PITCH, yaw: -45 * DEG },
-  // Round 9 (cartella "TASTIERA 3-4"): i due corner ALTI mancanti sul retro,
-  // gemelli di 'initial position'/'3-4 front right' ma a yaw ±135°.
-  '3-4 back left': { pitch: CORNER_PITCH, yaw: 135 * DEG },
-  '3-4 back right': { pitch: CORNER_PITCH, yaw: -135 * DEG },
-  // Round 9: i quattro corner BASSI (elevazione -CORNER_PITCH, verso il
-  // bottom), uno per ciascuna delle quattro colonne fronte/retro × sx/dx.
-  '3-4 front left bottom': { pitch: -CORNER_PITCH, yaw: 45 * DEG },
-  '3-4 front right bottom': { pitch: -CORNER_PITCH, yaw: -45 * DEG },
-  '3-4 back left bottom': { pitch: -CORNER_PITCH, yaw: 135 * DEG },
-  '3-4 back right bottom': { pitch: -CORNER_PITCH, yaw: -135 * DEG },
-  Top: { pitch: 90 * DEG, yaw: 0 },
-  '3-4 top': { pitch: 45 * DEG, yaw: 0 },
-  front: { pitch: 0, yaw: 0 },
-  '3-4 front': { pitch: -45 * DEG, yaw: 0 },
-  bottom: { pitch: -90 * DEG, yaw: 0 },
-  // Round 7: rotazione SEMPLICE di 45° oltre Top ("ogni rotazione deve avere
-  // i suoi 45 gradi") — niente flip alla ViewCube verso la vista da dietro
-  // dritta: lo snap che "ruotava la tastiera su se stessa" è stato respinto.
-  '3-4 back': { pitch: 135 * DEG, yaw: 0 },
-  // Round 7, pose mancanti dal rig set (segnalate dal cliente a voce):
-  // scocca del retro rivolta alla camera, in coda all'anello orizzontale...
-  back: { pitch: 0, yaw: 180 * DEG },
-  // ...e vista laterale dall'alto: mini-arco verticale sulle viste left/right.
-  'alto laterale left': { pitch: 45 * DEG, yaw: 90 * DEG },
-  'alto laterale right': { pitch: 45 * DEG, yaw: -90 * DEG },
-  '3-4 left': { pitch: 0, yaw: 45 * DEG },
-  left: { pitch: 0, yaw: 90 * DEG },
-  '3-4-left back': { pitch: 0, yaw: 135 * DEG },
-  '3-4 right': { pitch: 0, yaw: -45 * DEG },
-  right: { pitch: 0, yaw: -90 * DEG },
-  '3-4 right-back': { pitch: 0, yaw: -135 * DEG },
+// Le 17 pose raggiungibili, con coordinate canoniche (yaw ridotto in
+// (-180°, 180°]). Le chiavi brevi sono il contratto interno del grafo; fra
+// parentesi il nome del file JPEG del rig set (contratto visivo col cliente).
+export const POSE_COORD = {
+  // 3-4 back: 45° OLTRE il Top, rotazione SEMPLICE di pitch (nessuno spin del
+  // modello su se stesso — quello fu respinto al round 7). Il JPEG del rig set
+  // omonimo mostra la tastiera capovolta perché lì la vista da dietro è
+  // "raddrizzata" con mezzo giro: NON è il nostro contratto, il cliente ha
+  // confermato per screenshot questa posa (spacebar in basso, lamelle in alto).
+  TBACK: { pitch: 135 * DEG, yaw: 0 }, // 3-4 back
+  TOP: { pitch: 90 * DEG, yaw: 0 }, // Top
+  CFT: { pitch: 45 * DEG, yaw: 0 }, // 3-4 top
+  FRONT: { pitch: 0, yaw: 0 }, // front
+  CFB: { pitch: -45 * DEG, yaw: 0 }, // 3-4 front
+  BOTTOM: { pitch: -90 * DEG, yaw: 0 }, // bottom
+  TL: { pitch: CORNER_PITCH, yaw: 45 * DEG }, // initial position (3-4 front left)
+  TR: { pitch: CORNER_PITCH, yaw: -45 * DEG }, // 3-4 front right
+  TBL: { pitch: CORNER_PITCH, yaw: 135 * DEG }, // 3-4 back left
+  TBR: { pitch: CORNER_PITCH, yaw: -135 * DEG }, // 3-4 back right
+  CFL: { pitch: 0, yaw: 45 * DEG }, // 3-4 left
+  CFR: { pitch: 0, yaw: -45 * DEG }, // 3-4 right
+  CBL: { pitch: 0, yaw: 135 * DEG }, // 3-4-left back
+  CBR: { pitch: 0, yaw: -135 * DEG }, // 3-4 right-back
+  // back: elevazione posteriore, simmetrica al front sull'anello centrale
+  // (sliver sottile con la camera livellata — è corretto così).
+  BACK: { pitch: 0, yaw: 180 * DEG }, // back
+  BFL: { pitch: -CORNER_PITCH, yaw: 45 * DEG }, // 3-4 front left bottom
+  BFR: { pitch: -CORNER_PITCH, yaw: -45 * DEG }, // 3-4 front right bottom
 }
 
-// Arco verticale principale: bottom → 3-4 front → front → 3-4 top → Top →
-// 3-4 back. Ogni step è una rotazione SEMPLICE di 45° attorno all'asse
-// orizzontale (round 7: il flip alla ViewCube oltre lo zenit è respinto).
-// Nessun wrap oltre 135°.
-const PITCH_ARC_MAIN = [-90, -45, 0, 45, 90, 135].map((d) => d * DEG)
-// Alle viste laterali pure (yaw ±90°) uno step da 45° sale alla "vista
-// laterale dall'alto" (round 7, mancava dal rig set).
-const PITCH_ARC_SIDE = [0, 45 * DEG]
-// Altrove il pitch non ha pose: il drag verticale trova solo l'elastico.
-const PITCH_LOCKED = [0]
+/**
+ * Vicini per direzione. `null` = nessuna posa in quella direzione: lì il
+ * gesto trova solo la resistenza elastica (drag) o non committa (freccia).
+ *
+ * Anelli orizzontali (left = +yaw, right = -yaw), un giro per banda:
+ *  - alto:   CFT(0) ↔ TL(45) ↔ TBL(135) ↔ TBR(-135) ↔ TR(-45) ↔ CFT
+ *  - centro: FRONT(0) ↔ CFL(45) ↔ CBL(135) ↔ BACK(180) ↔ CBR(-135) ↔ CFR(-45)
+ *    ↔ FRONT — BACK sta a 45° dai due corner del retro esattamente come FRONT
+ *    dai due corner frontali: l'anello è simmetrico fronte/retro. I 90° dei
+ *    3/4 restano dove non c'è una posa intermedia (i salti sui fianchi puri).
+ *  - basso:  arco BFR(-45) ↔ CFB(0) ↔ BFL(45) (niente corner retro in basso)
+ * Colonne verticali (up = +pitch), a yaw costante:
+ *  - yaw 0:  TBACK ↔ TOP ↔ CFT ↔ FRONT ↔ CFB ↔ BOTTOM
+ *  - yaw ±45 fronte: T? ↔ C?L/R ↔ B?L/R (i corner alti/bassi frontali)
+ *  - yaw ±135 retro: T?  ↔ C?  (solo alto↔centro; niente back in basso)
+ */
+export const NEIGHBORS = {
+  TBACK: { up: null, down: 'TOP', left: null, right: null },
+  TOP: { up: 'TBACK', down: 'CFT', left: null, right: null },
+  CFT: { up: 'TOP', down: 'FRONT', left: 'TL', right: 'TR' },
+  FRONT: { up: 'CFT', down: 'CFB', left: 'CFL', right: 'CFR' },
+  CFB: { up: 'FRONT', down: 'BOTTOM', left: 'BFL', right: 'BFR' },
+  BOTTOM: { up: 'CFB', down: null, left: null, right: null },
+  TL: { up: null, down: 'CFL', left: 'TBL', right: 'CFT' },
+  TR: { up: null, down: 'CFR', left: 'CFT', right: 'TBR' },
+  TBL: { up: null, down: 'CBL', left: 'TBR', right: 'TL' },
+  TBR: { up: null, down: 'CBR', left: 'TR', right: 'TBL' },
+  CFL: { up: 'TL', down: 'BFL', left: 'CBL', right: 'FRONT' },
+  CFR: { up: 'TR', down: 'BFR', left: 'FRONT', right: 'CBR' },
+  CBL: { up: 'TBL', down: null, left: 'BACK', right: 'CFL' },
+  CBR: { up: 'TBR', down: null, left: 'CFR', right: 'BACK' },
+  // Su/giù bloccati: il back non si raggiunge né si lascia in verticale
+  // (regola cliente) — solo l'anello orizzontale lo attraversa.
+  BACK: { up: null, down: null, left: 'CBR', right: 'CBL' },
+  BFL: { up: 'CFL', down: null, left: null, right: 'CFB' },
+  BFR: { up: 'CFR', down: null, left: 'CFB', right: null },
+}
 
-// Arco orizzontale (sbloccato solo a pitch 0): fino a ±180° — la "scocca del
-// back frontale" (round 7) chiude l'anello su entrambi i lati; oltre, elastico.
-export const YAW_STOPS = [-180, -135, -90, -45, 0, 45, 90, 135, 180].map(
-  (d) => d * DEG,
-)
-
-// Pose d'ingresso: landscape = corner "initial position"; portrait = vista
-// top ruotata a schermo (pitch 90 + yaw 90, comportamento già in produzione).
+// Pose d'ingresso: landscape = corner "initial position" (TL); portrait =
+// vista top con l'asse lungo verticale a schermo (pitch 90 + yaw 90). In
+// portrait TUTTO il grafo è ruotato di +90° in yaw per il fit su schermo
+// alto: la navigazione applica quell'offset (vedi PORTRAIT_YAW_OFFSET) così
+// il grafo resta identico, solo traslato. La posa d'ingresso portrait è
+// quindi TOP viste attraverso l'offset.
 export const ENTRY_LANDSCAPE = { x: CORNER_PITCH, y: 45 * DEG }
 export const ENTRY_PORTRAIT = { x: 90 * DEG, y: 90 * DEG }
+export const PORTRAIT_YAW_OFFSET = 90 * DEG
 
 const EPS_ANGLE = 1e-3
-const nearAngle = (a, b) => Math.abs(a - b) < EPS_ANGLE
+export const nearAngle = (a, b) => Math.abs(a - b) < EPS_ANGLE
 
-// Dopo un giro (o più) oltre ±180° (vedi `nextYawStop`) lo yaw grezzo non è
-// più uno dei valori "canonici" (0°, ±45°, ±90°...) su cui si riconoscono le
-// pose verticali, anche se visivamente il modello è tornato nella stessa
-// posa: 405° "è" 45° dopo un giro intero. Chi deve riconoscere QUALE arco
-// verticale si applica (pitchStopsAt, CORNER_ARC) lavora quindi sempre sullo
-// yaw ridotto a (-180°, 180°] — mai sul valore grezzo, che invece resta
-// intatto per la navigazione dell'anello orizzontale (nextYawStop).
+// Riduce lo yaw a (-180°, 180°]: lo yaw grezzo del modello può accumulare più
+// giri (il loop orizzontale non normalizza mai, vedi stepTo), ma il
+// riconoscimento della posa lavora sempre sul valore ridotto. Serve anche a
+// scegliere il percorso più breve fra due corner del retro (±135°): il loro
+// delta canonico "lungo" è ±270°, che wrapYaw riduce a ∓90° — il giro breve
+// attraverso il back, non quello attraverso il fronte.
+// L'intervallo è semi-aperto per davvero: −180° va riportato a +180°, non lasciato
+// com'è. La posa `back` è canonicamente a +180° ma ci si arriva a −180° venendo
+// da CBR (−135° − 45°): senza questa riduzione `findPoseKey` non la
+// riconoscerebbe (|−180 − 180| = 360) e la navigazione morirebbe sul back
+// arrivandoci da destra. La soglia è quindi `<= −180 + EPS`, non `−180 − EPS`.
 const TAU = 360 * DEG
-const wrapYaw = (yaw) => {
+export const wrapYaw = (yaw) => {
   let w = yaw % TAU
   if (w > 180 * DEG + EPS_ANGLE) w -= TAU
-  else if (w <= -180 * DEG - EPS_ANGLE) w += TAU
+  else if (w <= -180 * DEG + EPS_ANGLE) w += TAU
   return w
 }
 
-/**
- * Stop di pitch disponibili allo yaw corrente. In portrait l'arco principale
- * vive anche sull'asse d'ingresso (yaw 90°), così il flusso verticale parte
- * dalla posa top verticale esattamente come oggi.
- */
-export function pitchStopsAt(yaw, portrait = false) {
-  const y = wrapYaw(yaw)
-  if (nearAngle(y, 0)) return PITCH_ARC_MAIN
-  if (portrait && nearAngle(y, 90 * DEG)) return PITCH_ARC_MAIN
-  if (nearAngle(Math.abs(y), 90 * DEG)) return PITCH_ARC_SIDE
-  // yaw ±45°/±135°: il verticale vive interamente sui CORNER_ARCS (vedi
-  // sotto), interrogati PRIMA di questa funzione da chi guida il gesto —
-  // qui non c'è altro stop di pitch puro.
-  return PITCH_LOCKED
-}
-
-/**
- * Prossimo stop dell'arco oltre `value` nella direzione `dir` (±1), oppure
- * null all'estremo: lì il gesto incontra solo la resistenza elastica.
- * Funziona anche partendo fuori-stop (confronto strettamente oltre value).
- */
-export function adjacentStop(stops, value, dir) {
-  if (dir > 0) {
-    for (const s of stops) if (s > value + EPS_ANGLE) return s
-    return null
-  }
-  for (let i = stops.length - 1; i >= 0; i--)
-    if (stops[i] < value - EPS_ANGLE) return stops[i]
-  return null
-}
-
-/**
- * Archi verticali delle pose corner: quattro colonne — fronte (yaw ±45°) e
- * retro (yaw ±135°), ciascuna con un corner ALTO (+CORNER_PITCH, verso Top)
- * e uno BASSO (-CORNER_PITCH, verso il bottom). Ogni arco è una sequenza
- * continua di 4 tappe A→B→C→D, l'unico punto del grafo dove un singolo step
- * cambia SIA pitch SIA yaw insieme (B↔C, il giro sull'altro lato) —
- * rappresenta visivamente un giro continuo sul case, non una posa diagonale
- * fuori contratto. Giù avanza (dir +1), su retrocede (dir -1), sempre. Gli
- * estremi A/D di ogni arco sono gli anelli orizzontali (pitch 0): FRONT_TOP
- * e FRONT_BOTTOM condividono gli stessi due estremi (3-4 left/3-4 right) ma
- * sui lati liberi opposti (3-4 left aveva già il suo "giù" occupato da
- * FRONT_TOP verso l'alto, quindi FRONT_BOTTOM lo raggiunge dal "su" libero,
- * e viceversa per 3-4 right) — mai un conflitto, ciascuna posa ha sempre e
- * solo un vicino per direzione. Stesso schema per il retro.
- */
-const FRONT_TOP_ARC = [
-  { pitch: 0, yaw: 45 * DEG }, // 3-4 left
-  { pitch: CORNER_PITCH, yaw: 45 * DEG }, // 3-4 front left ("initial position")
-  { pitch: CORNER_PITCH, yaw: -45 * DEG }, // 3-4 front right
-  { pitch: 0, yaw: -45 * DEG }, // 3-4 right
-]
-const BACK_TOP_ARC = [
-  { pitch: 0, yaw: 135 * DEG }, // 3-4-left back
-  { pitch: CORNER_PITCH, yaw: 135 * DEG }, // 3-4 back left
-  { pitch: CORNER_PITCH, yaw: -135 * DEG }, // 3-4 back right
-  { pitch: 0, yaw: -135 * DEG }, // 3-4 right-back
-]
-// Estremi in ordine inverso rispetto a FRONT_TOP_ARC (parte da 3-4 right,
-// non da 3-4 left): è il lato libero di ciascun estremo a decidere l'ordine,
-// non una convenzione arbitraria — vedi commento sopra.
-const FRONT_BOTTOM_ARC = [
-  { pitch: 0, yaw: -45 * DEG }, // 3-4 right
-  { pitch: -CORNER_PITCH, yaw: -45 * DEG }, // 3-4 front right bottom
-  { pitch: -CORNER_PITCH, yaw: 45 * DEG }, // 3-4 front left bottom
-  { pitch: 0, yaw: 45 * DEG }, // 3-4 left
-]
-const BACK_BOTTOM_ARC = [
-  { pitch: 0, yaw: -135 * DEG }, // 3-4 right-back
-  { pitch: -CORNER_PITCH, yaw: -135 * DEG }, // 3-4 back right bottom
-  { pitch: -CORNER_PITCH, yaw: 135 * DEG }, // 3-4 back left bottom
-  { pitch: 0, yaw: 135 * DEG }, // 3-4-left back
-]
-const CORNER_ARCS = [FRONT_TOP_ARC, BACK_TOP_ARC, FRONT_BOTTOM_ARC, BACK_BOTTOM_ARC]
-
-/**
- * Prossima tappa nella direzione `dir` a partire da (pitch, yaw), cercando
- * fra tutti gli archi corner (ciascuna posa vive in al più un arco per
- * ciascuna direzione, mai in conflitto — vedi commento sopra), oppure null
- * se non si è su una tappa di alcun arco o si è già all'estremo (lì il
- * gesto trova solo l'elastico, come gli altri archi). Lo yaw restituito è
- * relativo al valore grezzo passato (yaw + delta canonico), non lo stop
- * canonico assoluto: dopo N giri completi lo yaw grezzo può essere molto
- * lontano dal valore canonico, e "agganciarsi" ad esso produrrebbe un salto
- * visivo di N giri interi invece del solo step richiesto.
- */
-export function cornerArcStep(pitch, yaw, dir) {
-  const y = wrapYaw(yaw)
-  for (const arc of CORNER_ARCS) {
-    const i = arc.findIndex(
-      (p) => nearAngle(p.pitch, pitch) && nearAngle(p.yaw, y),
-    )
-    if (i === -1) continue
-    const j = i + (dir > 0 ? 1 : -1)
-    if (j < 0 || j >= arc.length) continue
-    // Delta normalizzato al percorso più breve: sugli archi del retro la
-    // differenza fra i valori canonici dei corner gemelli (±135°) è ±270°
-    // — il giro lungo passando dal fronte. Il flip deve invece attraversare
-    // il retro con gli stessi 90° dell'arco frontale: wrapYaw riduce -270°
-    // a +90° (e viceversa), lasciando intatti i delta già brevi.
-    const delta = wrapYaw(arc[j].yaw - arc[i].yaw)
-    return { pitch: arc[j].pitch, yaw: yaw + delta }
+// Chiave della posa canonica a (pitch, yaw). `yawOffset` sottrae la
+// traslazione di banda (portrait): la coordinata grezza del modello meno
+// l'offset ricade sulle coordinate canoniche del grafo.
+export function findPoseKey(pitch, yaw, yawOffset = 0) {
+  const y = wrapYaw(yaw - yawOffset)
+  for (const key in POSE_COORD) {
+    const c = POSE_COORD[key]
+    if (nearAngle(c.pitch, pitch) && nearAngle(c.yaw, y)) return key
   }
   return null
 }
 
-// Passo di 45° sull'arco yaw, ma senza mai fermarsi al "back" (±180°): oltre
-// l'ultimo stop nominale il valore continua a crescere/calare di 45° a
-// oltranza, non normalizzato — permette di completare un giro intero (e
-// oltre, in loop) proseguendo nella stessa direzione dal back a destra o a
-// sinistra, invece di trovare solo l'elastico come per gli altri estremi.
-export function nextYawStop(value, dir) {
-  // Oltre ±180° (già in "giro libero", vedi sopra) `adjacentStop` non va
-  // bene: la sua ricerca all'indietro trova il primo stop nominale minore
-  // del valore corrente (es. 180°) e vi "risucchia" il giro anche quando la
-  // direzione richiesta è quella opposta — un singolo step tornerebbe
-  // indietro di più di 45° invece di proseguire di un solo passo. Fuori da
-  // ±180° si resta quindi SEMPRE sul passo libero, in entrambe le direzioni.
-  if (Math.abs(value) > 180 * DEG + EPS_ANGLE) return value + dir * 45 * DEG
-  const stop = adjacentStop(YAW_STOPS, value, dir)
-  if (stop != null) return stop
-  return value + dir * 45 * DEG
+/**
+ * Target dello step da (pitch, yaw) nella direzione `dir`
+ * ('up'|'down'|'left'|'right'), oppure `null` se non si è su una posa nota o
+ * il vicino in quella direzione non esiste (estremo: solo elastico).
+ *
+ * Lo yaw restituito è relativo al valore GREZZO passato (yaw + delta più
+ * breve), non lo yaw canonico assoluto del vicino: dopo N giri completi lo
+ * yaw grezzo può essere lontano dal canonico, e agganciarsi ad esso
+ * produrrebbe un salto di N giri invece del solo step richiesto. Il pitch
+ * invece non fa mai il giro, quindi resta il valore canonico assoluto.
+ */
+export function stepTo(pitch, yaw, dir, yawOffset = 0) {
+  const key = findPoseKey(pitch, yaw, yawOffset)
+  if (!key) return null
+  const nextKey = NEIGHBORS[key][dir]
+  if (!nextKey) return null
+  const cur = POSE_COORD[key]
+  const target = POSE_COORD[nextKey]
+  const delta = wrapYaw(target.yaw - cur.yaw)
+  return { pitch: target.pitch, yaw: yaw + delta }
 }
