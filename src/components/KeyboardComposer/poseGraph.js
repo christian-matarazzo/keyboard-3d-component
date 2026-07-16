@@ -23,10 +23,11 @@
  *  - Sui 3/4 (corner) left/right ruotano di 90° saltando la vista laterale
  *    pura (yaw ±90°), che esce dalla navigazione. Il back piatto (yaw 180°)
  *    invece resta, simmetrico al front sull'anello centrale.
- *  - Colonna centrale yaw 0 (TBACK·TOP·CFT·FRONT·CFB·BOTTOM): unica via allo
- *    zenit/nadir. In cima la colonna prosegue di un ultimo step da 45° OLTRE
- *    il Top, fino a "3-4 back" (pitch 135°). Non è un flip: è una rotazione
- *    semplice di pitch, il modello non ruota mai su se stesso.
+ *  - Colonna centrale yaw 0 (TBACK·TOP·CFT·FRONT·CFB·BOTTOM·BBACK): unica via
+ *    allo zenit/nadir. Ai due estremi prosegue di un ultimo step da 45° OLTRE
+ *    il Top (TBACK, pitch 135°) e OLTRE il bottom (BBACK, pitch -135°, il
+ *    sottoscocca): la colonna è simmetrica. Non sono flip: sono rotazioni
+ *    semplici di pitch, il modello non ruota mai su se stesso.
  *  - Banda bassa: solo i corner frontali (niente corner del retro in basso).
  */
 
@@ -35,7 +36,7 @@ export const DEG = Math.PI / 180
 // Elevazione dei corner ViewCube: vista lungo la diagonale del cubo.
 export const CORNER_PITCH = Math.atan(Math.SQRT1_2) // ≈ 35.264°
 
-// Le 17 pose raggiungibili, con coordinate canoniche (yaw ridotto in
+// Le 18 pose raggiungibili, con coordinate canoniche (yaw ridotto in
 // (-180°, 180°]). Le chiavi brevi sono il contratto interno del grafo; fra
 // parentesi il nome del file JPEG del rig set (contratto visivo col cliente).
 export const POSE_COORD = {
@@ -50,6 +51,10 @@ export const POSE_COORD = {
   FRONT: { pitch: 0, yaw: 0 }, // front
   CFB: { pitch: -45 * DEG, yaw: 0 }, // 3-4 front
   BOTTOM: { pitch: -90 * DEG, yaw: 0 }, // bottom
+  // Speculare esatta di TBACK sotto l'orizzonte: 45° OLTRE il bottom, vista
+  // del sottoscocca (piastra inferiore + piedini). Non è nel rig set — è una
+  // posa aggiunta dal cliente al round 10, confermata a riferimento Maya.
+  BBACK: { pitch: -135 * DEG, yaw: 0 }, // 3-4 back bottom
   TL: { pitch: CORNER_PITCH, yaw: 45 * DEG }, // initial position (3-4 front left)
   TR: { pitch: CORNER_PITCH, yaw: -45 * DEG }, // 3-4 front right
   TBL: { pitch: CORNER_PITCH, yaw: 135 * DEG }, // 3-4 back left
@@ -77,7 +82,9 @@ export const POSE_COORD = {
  *    3/4 restano dove non c'è una posa intermedia (i salti sui fianchi puri).
  *  - basso:  arco BFR(-45) ↔ CFB(0) ↔ BFL(45) (niente corner retro in basso)
  * Colonne verticali (up = +pitch), a yaw costante:
- *  - yaw 0:  TBACK ↔ TOP ↔ CFT ↔ FRONT ↔ CFB ↔ BOTTOM
+ *  - yaw 0:  TBACK ↔ TOP ↔ CFT ↔ FRONT ↔ CFB ↔ BOTTOM ↔ BBACK — simmetrica:
+ *    agli estremi prosegue di un ultimo 45° oltre lo zenit (TBACK) e oltre il
+ *    nadir (BBACK, il sottoscocca), mai un flip
  *  - yaw ±45 fronte: T? ↔ C?L/R ↔ B?L/R (i corner alti/bassi frontali)
  *  - yaw ±135 retro: T?  ↔ C?  (solo alto↔centro; niente back in basso)
  */
@@ -87,7 +94,8 @@ export const NEIGHBORS = {
   CFT: { up: 'TOP', down: 'FRONT', left: 'TL', right: 'TR' },
   FRONT: { up: 'CFT', down: 'CFB', left: 'CFL', right: 'CFR' },
   CFB: { up: 'FRONT', down: 'BOTTOM', left: 'BFL', right: 'BFR' },
-  BOTTOM: { up: 'CFB', down: null, left: null, right: null },
+  BOTTOM: { up: 'CFB', down: 'BBACK', left: null, right: null },
+  BBACK: { up: 'BOTTOM', down: null, left: null, right: null },
   TL: { up: null, down: 'CFL', left: 'TBL', right: 'CFT' },
   TR: { up: null, down: 'CFR', left: 'CFT', right: 'TBR' },
   TBL: { up: null, down: 'CBL', left: 'TBR', right: 'TL' },

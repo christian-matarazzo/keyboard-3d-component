@@ -32,26 +32,29 @@ const KEY_BOUNCE_MIN_DT = 0.02
 const KEY_BOUNCE_MAX_DT = 0.6
 const KEY_BOUNCE_MAX_SPEED = 8 // rad/s
 
-// Passo di riferimento: la transizione "sui mezzi" (45°) detta la velocità
-// ANGOLARE di tutto il grafo. Una molla lineare si assesta nello stesso TEMPO
-// qualunque sia l'ampiezza, quindi uno step da 90° (i 3/4 corner→corner)
-// percorrerebbe il doppio dell'angolo nello stesso tempo = velocità angolare
-// doppia, una "sferzata" rispetto ai 45°. Per allinearli si dilata il tempo
-// percepito dalla molla di REF_STEP/ampiezza: un 90° dura il doppio di un 45°
-// e i due si muovono agli stessi gradi al secondo. Vedi stepTimeScale.
+// Passo di riferimento: la transizione "sui mezzi" (45°) detta il feel di
+// tutto il grafo. Uno step da 90° (i 3/4 corner→corner) con la STESSA molla si
+// sente diverso in due modi indipendenti, e servono due correzioni distinte:
+//  1) VELOCITÀ — una molla lineare si assesta nello stesso TEMPO qualunque sia
+//     l'ampiezza, quindi un 90° percorre il doppio dell'angolo nello stesso
+//     tempo = velocità angolare doppia (una "sferzata"). Si dilata il tempo
+//     percepito di 1/amp: un 90° dura il doppio, stessi gradi al secondo.
+//  2) BOUNCE — l'overshoot è una FRAZIONE dell'ampiezza che dipende solo da ζ,
+//     e la dilatazione temporale non la tocca: un 90° rimbalza il doppio dei
+//     GRADI di un 45°. Si alza ζ quel tanto che riporta l'overshoot assoluto a
+//     quello del passo di riferimento (vedi la molla in useFrame).
 const REF_STEP = 45 * DEG
 
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v))
 
-// Fattore di dilatazione temporale di uno step (1 = velocità piena dei 45°).
-// Si guarda l'ampiezza dell'asse che si muove di PIÙ e si applica lo stesso
-// fattore a entrambi gli assi: gli step che muovono due assi insieme
-// (CFT↔TL/TR: 45° di yaw + ~10° di pitch) devono restare sincronizzati, non
-// veder finire il pitch molto prima dello yaw. Mai > 1: gli step più corti dei
-// 45° restano come sono oggi, si corregge solo la sferzata dei 90°.
-const stepTimeScale = (dPitch, dYaw) => {
+// Ampiezza di uno step in "unità di 45°", da cui derivano entrambe le
+// correzioni qui sopra. Si guarda l'asse che si muove di PIÙ e il fattore vale
+// per entrambi: gli step a due assi (CFT↔TL/TR: 45° di yaw + ~10° di pitch)
+// devono restare sincronizzati, non veder finire il pitch molto prima dello
+// yaw. Mai < 1: gli step più corti dei 45° restano esattamente come sono oggi.
+const stepAmp = (dPitch, dYaw) => {
   const m = Math.max(Math.abs(dPitch), Math.abs(dYaw))
-  return m > REF_STEP ? REF_STEP / m : 1
+  return m > REF_STEP ? m / REF_STEP : 1
 }
 
 // Oltre lo stop adiacente (o l'estremo d'arco) il target non si ferma secco:
@@ -72,9 +75,10 @@ const softClamp = (raw, lo, hi, factor, cap) => {
  *    direzione premuta (`stepTo`), o resta ferma se quel vicino non esiste.
  *  - sui 3/4 (corner) left/right ruotano di 90° saltando la vista laterale
  *    pura; verso il centro-fronte lo step è 45°. Colonna centrale yaw 0
- *    (TBACK·TOP·CFT·FRONT·CFB·BOTTOM): unica via a zenit/nadir, e in cima
- *    prosegue di un ultimo step da 45° oltre il Top fino a "3-4 back"
- *    (pitch 135°). Nessun flip: il modello non ruota mai su se stesso.
+ *    (TBACK·TOP·CFT·FRONT·CFB·BOTTOM·BBACK): unica via a zenit/nadir, e ai due
+ *    estremi prosegue di un ultimo step da 45° oltre il Top ("3-4 back",
+ *    pitch 135°) e oltre il bottom (il sottoscocca, pitch -135°) — simmetrica.
+ *    Nessun flip: il modello non ruota mai su se stesso.
  *  - drag omnidirezionale con soft cap: l'asse dominante del gesto sceglie il
  *    vicino (drag ↓/→ = pitch/yaw crescente → up/left; drag ↑/← = down/right),
  *    il modello interpola verso quella posa con coda elastica compressa. Se il
@@ -83,11 +87,12 @@ const softClamp = (raw, lo, hi, factor, cap) => {
  *  - al rilascio committa se il progresso verso il vicino supera la soglia
  *    (commitFraction), altrimenti torna alla posa di partenza.
  *  - BOUNCE: il settle è una molla smorzata (sotto-smorzata) seminata con la
- *    velocità reale del modello al rilascio (o con la cadenza dei tasti). La
- *    molla è UNICA per ogni step (stessa rigidità/smorzamento); il tempo è
- *    dilatato da stepTimeScale così ogni step viaggia alla stessa velocità
- *    ANGOLARE dei 45° di riferimento — un 90° dei 3/4 dura il doppio, non
- *    sferza.
+ *    velocità reale del modello al rilascio (o con la cadenza dei tasti). Un
+ *    solo preset di molla, tarato sul passo di riferimento da 45°: gli step
+ *    più ampi (i 90° dei 3/4) vi si riconducono con due correzioni derivate
+ *    dall'ampiezza (vedi stepAmp e la molla in useFrame) — tempo dilatato di
+ *    1/amp (stessa velocità angolare) e ζ alzato di ln(amp) (stesso overshoot
+ *    in gradi). Un 90° quindi dura il doppio di un 45° e rimbalza uguale.
  *  - nessuno zoom: né rotella, né pinch. La distanza camera deriva solo dal
  *    fit responsive; focale tele (200mm) per la prospettiva compressa
  *    "commercial".
@@ -149,10 +154,11 @@ export function useComposerControls(
   })
   // Velocità angolare corrente del modello (rad/s), misurata in drag e
   // integrata dalla molla al rilascio: la continuità dito→bounce è gratis.
-  // Una sola molla per TUTTI gli step (round 10), con il tempo dilatato da
-  // timeScale (vedi stepTimeScale) così ogni step si muove alla stessa
-  // velocità ANGOLARE dei 45° di riferimento.
-  const spring = useRef({ vx: 0, vy: 0, timeScale: 1 })
+  // Una sola molla per TUTTI gli step (round 10). `amp` = ampiezza dello step
+  // corrente in unità di 45° (vedi stepAmp): da lì la molla in useFrame ricava
+  // sia la dilatazione del tempo (stessa velocità angolare) sia lo smorzamento
+  // compensato (stesso overshoot in gradi). 1 = passo di riferimento.
+  const spring = useRef({ vx: 0, vy: 0, amp: 1 })
   // Frame del grafo = traslazione in yaw delle pose canoniche. Dedotto UNA
   // VOLTA dalla posa d'ingresso (vedi sotto), MAI dal viewport corrente: in
   // portrait si entra a yaw 90° e tutto il grafo vive traslato di +90°, ma il
@@ -270,7 +276,7 @@ export function useComposerControls(
       if (!target) return
       const dPitch = target.pitch - p.pitch
       const dYaw = target.yaw - p.yaw
-      spring.current.timeScale = stepTimeScale(dPitch, dYaw)
+      spring.current.amp = stepAmp(dPitch, dYaw)
       if (Math.abs(dPitch) > EPS) seedKeyBounce('pitch', dPitch)
       if (Math.abs(dYaw) > EPS) seedKeyBounce('yaw', dYaw)
       p.pitch = target.pitch
@@ -418,7 +424,7 @@ export function useComposerControls(
 
       if (!d.step) {
         // Nessun vicino: torna alla posa di partenza (l'elastico si riassorbe).
-        spring.current.timeScale = 1
+        spring.current.amp = 1
         p.pitch = d.pitch0
         p.yaw = d.yaw0
         p.targetX = p.pitch
@@ -439,7 +445,7 @@ export function useComposerControls(
       const commit = progress >= threshold
       // Solo se lo step viene davvero committato: il rientro alla posa di
       // partenza è una corsa corta, va alla velocità piena.
-      spring.current.timeScale = commit ? stepTimeScale(dPitch, dYaw) : 1
+      spring.current.amp = commit ? stepAmp(dPitch, dYaw) : 1
 
       p.pitch = commit ? target.pitch : d.pitch0
       p.yaw = commit ? target.yaw : d.yaw0
@@ -506,14 +512,27 @@ export function useComposerControls(
     // Rilascio: molla smorzata per asse (semi-implicita, quindi stabile).
     // springDamping < 1 = sotto-smorzata: l'energia in eccesso del gesto
     // diventa overshoot oltre la posa e ritorno elastico — il bounce.
-    // Molla UNICA per ogni step (round 10): stessa rigidità e smorzamento per
-    // i 45° e per i 90° dei 3/4 — nessun preset speciale. L'unica differenza è
-    // il TEMPO, dilatato da timeScale (uguale su entrambi gli assi) in modo che
-    // la velocità ANGOLARE sia la stessa ovunque: un 90° dura il doppio di un
-    // 45° invece di sferzare. Il rimbalzo resta la stessa frazione della corsa.
+    // Molla UNICA per ogni step (round 10): un solo preset (rigidità +
+    // smorzamento) tarato sul passo di riferimento da 45°. Gli step più ampi
+    // (i 90° dei 3/4) non hanno una molla "loro": la stessa molla viene
+    // riportata al feel dei 45° con due correzioni derivate da s.amp.
     const k = f.springStiffness
-    const c = 2 * f.springDamping * Math.sqrt(k)
-    const stepDt = dt * s.timeScale
+    let c = 2 * f.springDamping * Math.sqrt(k)
+    // BOUNCE. L'overshoot è la frazione e^(-πζ/√(1-ζ²)) dell'ampiezza: dipende
+    // solo da ζ, quindi un 90° rimbalza il doppio dei GRADI di un 45° (e la
+    // dilatazione del tempo qui sotto non lo tocca, rallenta e basta). Nel
+    // dominio log u = πζ/√(1-ζ²) dividere l'overshoot per `amp` costa un
+    // + ln(amp); si rinverte u → ζ = u/√(π²+u²). Così il rimbalzo assoluto
+    // resta quello del passo di riferimento invece di scalare con la corsa.
+    if (s.amp > 1 && f.springDamping < 1) {
+      const z = f.springDamping
+      const u = (Math.PI * z) / Math.sqrt(1 - z * z) + Math.log(s.amp)
+      c = 2 * (u / Math.sqrt(Math.PI * Math.PI + u * u)) * Math.sqrt(k)
+    }
+    // VELOCITÀ. Tempo dilatato di 1/amp (uguale su entrambi gli assi, così gli
+    // step a due assi restano sincronizzati): un 90° dura il doppio di un 45°
+    // e i due si muovono agli stessi gradi al secondo, invece di sferzare.
+    const stepDt = dt / s.amp
     const integrate = (axis, vKey, target) => {
       const x = group.rotation[axis]
       if (Math.abs(x - target) < 1e-4 && Math.abs(s[vKey]) < 1e-3) {
