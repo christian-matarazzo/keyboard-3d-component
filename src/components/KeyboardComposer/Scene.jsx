@@ -71,7 +71,7 @@ function MaterialTuner({ finish }) {
   return null
 }
 
-export default function Scene({ modelUrl, finish }) {
+export default function Scene({ modelUrl, finish, apiRef }) {
   const env = useControls('Luci · ambiente', {
     topIntensity: { value: 6, min: 0, max: 15, step: 0.25, label: 'strip top' },
     rightIntensity: { value: 5, min: 0, max: 20, step: 0.25, label: 'strip destra' },
@@ -106,7 +106,7 @@ export default function Scene({ modelUrl, finish }) {
       <Suspense fallback={<Loader />}>
         {/* Modello centrato: ruotando su X i bordi non escono dal frame. */}
         <group position={[0, 0.1, 0]}>
-          <KeyboardModel url={modelUrl} finish={finish} />
+          <KeyboardModel url={modelUrl} finish={finish} apiRef={apiRef} />
         </group>
         <MaterialTuner finish={finish} />
         <ContactShadows

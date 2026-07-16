@@ -15,7 +15,7 @@ export const DEFAULT_MODEL_URL = '/models/keyboard.glb'
 // del file sorgente (l'OBJ è in centimetri).
 const TARGET_WIDTH = 3.2
 
-export function KeyboardModel({ url = DEFAULT_MODEL_URL, finish }) {
+export function KeyboardModel({ url = DEFAULT_MODEL_URL, finish, apiRef }) {
   const groupRef = useRef()
   const { scene } = useGLTF(url, DRACO_PATH)
 
@@ -54,6 +54,7 @@ export function KeyboardModel({ url = DEFAULT_MODEL_URL, finish }) {
     initialRotation: portrait
       ? { x: ENTRY_PORTRAIT.x, y: ENTRY_PORTRAIT.y }
       : { x: ENTRY_LANDSCAPE.x, y: ENTRY_LANDSCAPE.y },
+    apiRef, // esposto alla pulsantiera delle viste, che sta fuori dal Canvas
   })
 
   // Luce "orbitale": agganciata al group che ruota (non al rig camera-relative

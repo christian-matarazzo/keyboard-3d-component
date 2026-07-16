@@ -6,6 +6,8 @@ import {
   DEG,
   stepTo,
   findPoseKey,
+  wrapYaw,
+  POSE_COORD,
   ENTRY_LANDSCAPE,
   PORTRAIT_YAW_OFFSET,
 } from './poseGraph'
@@ -25,9 +27,10 @@ const EPS = 1e-6
 // isolata: nessuna velocità extra, il bounce resta quello "di base" della
 // molla. Sotto quella soglia la velocità implicita (step/intervallo) semina
 // la molla come farebbe un rilascio di drag veloce — più le pressioni sono
-// ravvicinate (tenendo il tasto, o premendolo a raffica), più bounce
-// all'arrivo. KEY_BOUNCE_MAX_SPEED è un tetto di sicurezza contro overshoot
-// eccessivi con ripetizioni fortissime.
+// ravvicinate (premendo a raffica), più bounce all'arrivo. NB: tenere premuto
+// NON conta più come raffica — l'auto-repeat è filtrato (vedi heldKeys), una
+// pressione continuata vale un solo step. KEY_BOUNCE_MAX_SPEED è un tetto di
+// sicurezza contro overshoot eccessivi con ripetizioni fortissime.
 const KEY_BOUNCE_MIN_DT = 0.02
 const KEY_BOUNCE_MAX_DT = 0.6
 const KEY_BOUNCE_MAX_SPEED = 8 // rad/s
@@ -44,6 +47,15 @@ const KEY_BOUNCE_MAX_SPEED = 8 // rad/s
 //     GRADI di un 45°. Si alza ζ quel tanto che riporta l'overshoot assoluto a
 //     quello del passo di riferimento (vedi la molla in useFrame).
 const REF_STEP = 45 * DEG
+
+// Frecce → direzione nel grafo. Letterali: Su = verso il top, Sinistra = yaw
+// crescente (vedi il commento del hook).
+const ARROW_DIR = {
+  ArrowUp: 'up',
+  ArrowDown: 'down',
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+}
 
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v))
 
@@ -73,6 +85,8 @@ const softClamp = (raw, lo, hi, factor, cap) => {
  *    Sinistra = yaw crescente, Destra = yaw calante, Su = pitch crescente
  *    (verso il top), Giù = pitch calante. Ogni pressione va al vicino nella
  *    direzione premuta (`stepTo`), o resta ferma se quel vicino non esiste.
+ *    Una pressione = UNO step: l'auto-repeat del sistema è filtrato, quindi
+ *    tenere premuto non fa girare il modello da solo (vedi heldKeys).
  *  - sui 3/4 (corner) left/right ruotano di 90° saltando la vista laterale
  *    pura; verso il centro-fronte lo step è 45°. Colonna centrale yaw 0
  *    (TBACK·TOP·CFT·FRONT·CFB·BOTTOM·BBACK): unica via a zenit/nadir, e ai due
@@ -107,6 +121,10 @@ export function useComposerControls(
   {
     focalLength = 200, // mm equivalenti (35mm): tele spinto, effetto commercial
     initialRotation = { x: ENTRY_LANDSCAPE.x, y: ENTRY_LANDSCAPE.y },
+    // Ref opzionale su cui esporre `{ goTo(poseKey) }`: serve alla
+    // pulsantiera delle viste, che vive nel DOM FUORI dal Canvas e non può
+    // quindi raggiungere questi ref altrimenti.
+    apiRef,
   } = {},
 ) {
   const gl = useThree((s) => s.gl)
@@ -174,6 +192,35 @@ export function useComposerControls(
   // drag ha già una velocità reale misurata durante il gesto, qui la si
   // ricava dalla cadenza delle pressioni.
   const keyCommitAt = useRef({ pitch: 0, yaw: 0 })
+
+  // API imperativa per la pulsantiera delle viste (ViewPad), che vive nel DOM
+  // fuori dal Canvas. `goTo` non è un salto secco come __setPose: imposta il
+  // target e lascia animare la STESSA molla del resto (stessa velocità
+  // angolare, stesso bounce), e committa la posa così le frecce riprendono da
+  // lì senza casi speciali.
+  useEffect(() => {
+    if (!apiRef) return
+    apiRef.current = {
+      goTo(key) {
+        const c = POSE_COORD[key]
+        if (!c) return
+        const p = pose.current
+        // Percorso più breve dallo yaw GREZZO corrente (che può aver
+        // accumulato giri) al target nel frame corrente: mai un giro intero
+        // in più solo per raggiungere la stessa posa.
+        const yaw =
+          p.yaw + wrapYaw(c.yaw + frame.current.yawOffset - p.yaw)
+        spring.current.amp = stepAmp(c.pitch - p.pitch, yaw - p.yaw)
+        p.pitch = c.pitch
+        p.yaw = yaw
+        p.targetX = c.pitch
+        p.targetY = yaw
+      },
+    }
+    return () => {
+      apiRef.current = null
+    }
+  }, [apiRef])
 
   // Debug-only: salto secco a una posa (audit multi-posa via ?debug).
   // window.__setPose(pitchDeg, yawDeg) — non tocca il flusso di produzione.
@@ -292,25 +339,31 @@ export function useComposerControls(
     const onPointerLeave = () => {
       hovered = false
     }
+    // Tasti freccia attualmente premuti. Serve a rendere la pressione
+    // CONTINUATA equivalente a una singola: tenendo giù una freccia il sistema
+    // operativo sparerebbe un auto-repeat a raffica e il modello girerebbe da
+    // solo (spinning) senza altre pressioni. Una pressione = uno step; per il
+    // successivo bisogna rilasciare e ripremere.
+    const heldKeys = new Set()
     const onKeyDown = (e) => {
       if (!hovered && document.activeElement !== el) return
-      switch (e.key) {
-        case 'ArrowUp':
-          commitStep('up')
-          break
-        case 'ArrowDown':
-          commitStep('down')
-          break
-        case 'ArrowLeft':
-          commitStep('left')
-          break
-        case 'ArrowRight':
-          commitStep('right')
-          break
-        default:
-          return
-      }
-      e.preventDefault()
+      const dir = ARROW_DIR[e.key]
+      if (!dir) return
+      e.preventDefault() // niente scroll della pagina, anche sui ripetuti
+      // `e.repeat` copre l'auto-repeat vero; il set copre anche i casi in cui
+      // il flag non arriva (eventi sintetici) e i keydown doppi.
+      if (e.repeat || heldKeys.has(e.key)) return
+      heldKeys.add(e.key)
+      commitStep(dir)
+    }
+    // keyup/blur su window, non su el: se il focus si sposta mentre il tasto è
+    // giù, il keyup non arriverebbe mai al canvas e la freccia resterebbe
+    // "premuta" per sempre, bloccando ogni pressione successiva.
+    const onKeyUp = (e) => {
+      heldKeys.delete(e.key)
+    }
+    const onWindowBlur = () => {
+      heldKeys.clear()
     }
 
     const onDown = (e) => {
@@ -462,6 +515,8 @@ export function useComposerControls(
     el.addEventListener('pointerenter', onPointerEnter)
     el.addEventListener('pointerleave', onPointerLeave)
     el.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', onWindowBlur)
     return () => {
       el.removeEventListener('pointerdown', onDown)
       el.removeEventListener('pointermove', onMove)
@@ -470,6 +525,8 @@ export function useComposerControls(
       el.removeEventListener('pointerenter', onPointerEnter)
       el.removeEventListener('pointerleave', onPointerLeave)
       el.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', onWindowBlur)
     }
   }, [gl, groupRef, initialRotation.x, initialRotation.y])
 

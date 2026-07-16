@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useProgress } from '@react-three/drei'
 import { Leva } from 'leva'
 import styles from './KeyboardComposer.module.css'
 import Scene from './Scene'
+import ViewPad from './ViewPad'
 import { DEFAULT_MODEL_URL } from './KeyboardModel'
 import { finishes as defaultFinishes, getFinish } from './materials/registry'
 
@@ -35,13 +36,18 @@ export default function KeyboardComposer({
     return () => cancelAnimationFrame(raf)
   }, [progress])
 
+  // Ponte fra la pulsantiera (DOM) e i controlli (dentro il Canvas): il ref
+  // viene popolato da useComposerControls con `{ goTo(poseKey) }`.
+  const poseApi = useRef(null)
+
   return (
     <section className={styles.section}>
       <Leva hidden={!DEBUG} collapsed />
       <div
         className={`${styles.canvasWrap} ${loaded ? styles.canvasWrapLoaded : ''}`}
       >
-        <Scene modelUrl={modelUrl} finish={finish} />
+        <Scene modelUrl={modelUrl} finish={finish} apiRef={poseApi} />
+        <ViewPad apiRef={poseApi} />
       </div>
     </section>
   )

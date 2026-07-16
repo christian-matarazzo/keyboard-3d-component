@@ -17,3 +17,77 @@
 .canvasWrapLoaded {
   opacity: 1;
 }
+
+/* Pulsantiera delle viste: croce di 4 freccette in alto a sinistra, sopra il
+   canvas (fuori dall'ingombro del modello, che resta centrato). Griglia 3x3
+   con solo le caselle a croce occupate. */
+.viewPad {
+  position: absolute;
+  top: clamp(12px, 5vh, 44px);
+  left: clamp(12px, 3vw, 44px);
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  grid-template-rows: repeat(3, auto);
+  gap: 5px;
+  z-index: 2;
+}
+
+.viewBtn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 4%);
+  color: rgb(255 255 255 / 65%);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease,
+    transform 0.12s ease;
+}
+
+.viewBtn svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.viewBtn:hover {
+  background: rgb(255 255 255 / 10%);
+  border-color: rgb(255 255 255 / 32%);
+  color: #fff;
+}
+
+.viewBtn:active {
+  transform: scale(0.92);
+}
+
+.viewBtn:focus-visible {
+  outline: 2px solid rgb(255 255 255 / 60%);
+  outline-offset: 2px;
+}
+
+/* Solo la croce: gli angoli della griglia restano vuoti. */
+.up {
+  grid-area: 1 / 2;
+}
+.left {
+  grid-area: 2 / 1;
+}
+.right {
+  grid-area: 2 / 3;
+}
+.down {
+  grid-area: 3 / 2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .viewBtn {
+    transition: none;
+  }
+}

@@ -111,6 +111,20 @@ export const NEIGHBORS = {
   BFR: { up: 'CFR', down: null, left: 'CFB', right: null },
 }
 
+/**
+ * Viste della pulsantiera (ViewPad): le 4 pose che il cliente vuole a un
+ * click, con la freccetta che le richiama. Sono SCORCIATOIE — saltano
+ * direttamente alla posa, senza percorrere il grafo passo-passo come fanno
+ * le frecce della tastiera — ma restano pose del grafo, quindi da lì la
+ * navigazione normale riprende senza casi speciali.
+ */
+export const VIEW_SHORTCUTS = {
+  up: 'TOP', // vista dall'alto piena
+  left: 'TL', // 3/4 sinistro ("initial position")
+  right: 'TR', // 3/4 destro ("3-4 front right")
+  down: 'BOTTOM', // sottoscocca piatto
+}
+
 // Pose d'ingresso: landscape = corner "initial position" (TL); portrait =
 // vista top con l'asse lungo verticale a schermo (pitch 90 + yaw 90). In
 // portrait TUTTO il grafo è ruotato di +90° in yaw per il fit su schermo
