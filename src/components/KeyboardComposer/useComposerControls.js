@@ -35,6 +35,15 @@ const KEY_BOUNCE_MIN_DT = 0.02
 const KEY_BOUNCE_MAX_DT = 0.6
 const KEY_BOUNCE_MAX_SPEED = 8 // rad/s
 
+// Debounce anti-raffica sulle frecce. `heldKeys`/`e.repeat` già filtrano
+// l'auto-repeat del TENERE premuto (una pressione continuata = uno step); questo
+// copre l'altro caso, il MARTELLARE il tasto: pressioni distinte troppo
+// ravvicinate sommavano step e slancio (vedi seedKeyBounce) fino a far frustare
+// il modello oltre le pose ("spinning"). Sotto questa soglia una nuova pressione
+// viene ignorata, così la molla fa sempre in tempo ad assestarsi tra uno step e
+// l'altro: al più uno step ogni KEY_DEBOUNCE_MS.
+const KEY_DEBOUNCE_MS = 300
+
 // Passo di riferimento: la transizione "sui mezzi" (45°) detta il feel di
 // tutto il grafo. Uno step da 90° (i 3/4 corner→corner) con la STESSA molla si
 // sente diverso in due modi indipendenti, e servono due correzioni distinte:
@@ -143,10 +152,16 @@ export function useComposerControls(
     dragSpeed: { value: 0.005, min: 0.001, max: 0.012, step: 0.0005, label: 'velocità drag' },
     followTime: { value: 0.2, min: 0.05, max: 0.6, step: 0.01, label: 'inerzia in drag' },
     commitFraction: { value: 0.5, min: 0.1, max: 0.9, step: 0.05, label: 'soglia step' },
-    springStiffness: { value: 50, min: 20, max: 300, step: 5, label: 'molla rigidità' },
-    springDamping: { value: 0.55, min: 0.2, max: 1.2, step: 0.05, label: 'molla smorzamento' },
+    springStiffness: { value: 100, min: 20, max: 300, step: 5, label: 'molla rigidità' },
+    springDamping: { value: 0.75, min: 0.2, max: 1.2, step: 0.05, label: 'molla smorzamento' },
     rubberFactor: { value: 0.25, min: 0, max: 0.6, step: 0.05, label: 'elastico oltre-step' },
-    rubberCapDeg: { value: 10, min: 0, max: 20, step: 1, label: 'elastico max (°)' },
+    rubberCapDeg: { value: 5, min: 0, max: 20, step: 1, label: 'elastico max (°)' },
+    // Moltiplicatore globale del tempo delle animazioni: scala il delta di
+    // OGNI integrazione in useFrame (follow del drag + molla di bounce), quindi
+    // rallenta/accelera tutto in modo uniforme senza toccare rigidità, gradi al
+    // secondo relativi o overshoot. 1 = velocità nominale; default 0.65 = 35%
+    // più lento (richiesta cliente). Tarabile live da ?debug.
+    timeScale: { value: 0.65, min: 0.3, max: 1.5, step: 0.05, label: 'velocità animazione' },
     fitMargin: { value: 1.4, min: 1, max: 2.5, step: 0.05, label: 'margine inquadratura' },
     zoomOutMobile: { value: 1.25, min: 1, max: 1.8, step: 0.05, label: 'zoom-out mobile' },
   })
@@ -345,6 +360,9 @@ export function useComposerControls(
     // solo (spinning) senza altre pressioni. Una pressione = uno step; per il
     // successivo bisogna rilasciare e ripremere.
     const heldKeys = new Set()
+    // Timestamp (ms) dell'ultimo step da tastiera realmente eseguito: base del
+    // debounce anti-raffica (vedi KEY_DEBOUNCE_MS).
+    let lastKeyStepAt = 0
     const onKeyDown = (e) => {
       if (!hovered && document.activeElement !== el) return
       const dir = ARROW_DIR[e.key]
@@ -354,6 +372,12 @@ export function useComposerControls(
       // il flag non arriva (eventi sintetici) e i keydown doppi.
       if (e.repeat || heldKeys.has(e.key)) return
       heldKeys.add(e.key)
+      // Debounce: pressioni distinte troppo ravvicinate (martellamento) vengono
+      // ignorate — niente accumulo di step/slancio, niente spinning. Il tasto
+      // resta comunque in heldKeys così il suo keyup lo ripulisce normalmente.
+      const now = performance.now()
+      if (now - lastKeyStepAt < KEY_DEBOUNCE_MS) return
+      lastKeyStepAt = now
       commitStep(dir)
     }
     // keyup/blur su window, non su el: se il focus si sposta mentre il tasto è
@@ -549,9 +573,14 @@ export function useComposerControls(
       p.initialized = true
     }
     const f = feelRef.current
+    // Tempo scalato dal pannello: rallenta/accelera in modo uniforme sia il
+    // follow del drag sia la molla di bounce. Tutte le integrazioni sotto usano
+    // scaledDelta/dt, quindi rigidità, gradi al secondo relativi e overshoot
+    // restano invariati — cambia solo la durata percepita.
+    const scaledDelta = delta * f.timeScale
     // dt clampato: stabilità della molla anche dopo un frame lungo (tab
     // in background, hiccup) e con rigidità alta dal pannello.
-    const dt = Math.min(delta, 1 / 30)
+    const dt = Math.min(scaledDelta, 1 / 30)
     if (dt <= 0) return
 
     if (drag.current.pointerId != null) {
@@ -559,8 +588,8 @@ export function useComposerControls(
       // risultante viene misurata per seminare la molla al rilascio.
       const px = group.rotation.x
       const py = group.rotation.y
-      easing.damp(group.rotation, 'x', p.targetX, f.followTime, delta)
-      easing.damp(group.rotation, 'y', p.targetY, f.followTime, delta)
+      easing.damp(group.rotation, 'x', p.targetX, f.followTime, scaledDelta)
+      easing.damp(group.rotation, 'y', p.targetY, f.followTime, scaledDelta)
       s.vx = (group.rotation.x - px) / dt
       s.vy = (group.rotation.y - py) / dt
       return
