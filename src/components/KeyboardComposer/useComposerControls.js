@@ -149,20 +149,21 @@ export function useComposerControls(
     // (ζ≈0.55 → ~13% di overshoot) restando comunque più lento/pesante di
     // prima (il tempo di assestamento a riposo, senza extra-velocità, è
     // ~1.3s contro ~1s del preset precedente).
-    dragSpeed: { value: 0.005, min: 0.001, max: 0.012, step: 0.0005, label: 'velocità drag' },
+    dragSpeed: { value: 0.01, min: 0.001, max: 0.012, step: 0.0005, label: 'velocità drag' },
     followTime: { value: 0.2, min: 0.05, max: 0.6, step: 0.01, label: 'inerzia in drag' },
-    commitFraction: { value: 0.5, min: 0.1, max: 0.9, step: 0.05, label: 'soglia step' },
-    springStiffness: { value: 100, min: 20, max: 300, step: 5, label: 'molla rigidità' },
-    springDamping: { value: 0.75, min: 0.2, max: 1.2, step: 0.05, label: 'molla smorzamento' },
-    rubberFactor: { value: 0.25, min: 0, max: 0.6, step: 0.05, label: 'elastico oltre-step' },
-    rubberCapDeg: { value: 5, min: 0, max: 20, step: 1, label: 'elastico max (°)' },
+    commitFraction: { value: 0.2, min: 0.1, max: 0.9, step: 0.05, label: 'soglia step' },
+    springStiffness: { value: 150, min: 20, max: 300, step: 5, label: 'molla rigidità' },
+    springDamping: { value: 0.85, min: 0.2, max: 1.2, step: 0.05, label: 'molla smorzamento' },
+    rubberFactor: { value: 0, min: 0, max: 0.6, step: 0.05, label: 'elastico oltre-step' },
+    rubberCapDeg: { value: 0, min: 0, max: 20, step: 1, label: 'elastico max (°)' },
     // Moltiplicatore globale del tempo delle animazioni: scala il delta di
     // OGNI integrazione in useFrame (follow del drag + molla di bounce), quindi
     // rallenta/accelera tutto in modo uniforme senza toccare rigidità, gradi al
-    // secondo relativi o overshoot. 1 = velocità nominale; default 0.65 = 35%
-    // più lento (richiesta cliente). Tarabile live da ?debug.
-    timeScale: { value: 0.65, min: 0.3, max: 1.5, step: 0.05, label: 'velocità animazione' },
-    fitMargin: { value: 1.4, min: 1, max: 2.5, step: 0.05, label: 'margine inquadratura' },
+    // secondo relativi o overshoot. 1 = velocità nominale; default 0.3 = 70%
+    // più lento (richiesta cliente: movimenti più rallentati e "solidi").
+    // Tarabile live da ?debug.
+    timeScale: { value: 0.3, min: 0.3, max: 1.5, step: 0.05, label: 'velocità animazione' },
+    fitMargin: { value: 1.6, min: 1, max: 2.5, step: 0.05, label: 'margine inquadratura' },
     zoomOutMobile: { value: 1.25, min: 1, max: 1.8, step: 0.05, label: 'zoom-out mobile' },
   })
   const feelRef = useRef(feel)
