@@ -25,7 +25,12 @@ const clamp = (v, min, max) => Math.max(min, Math.min(max, v))
  * Il pannello è ancorato in alto a destra: trascinando l'handle verso sinistra
  * cresce. La larghezza è controllata via `theme.sizes.rootWidth` (Leva 0.10),
  * l'handle è un grip fisso allineato al bordo sinistro (offset = width + 10px
- * di margine del pannello). Solo in `?debug`.
+ * di margine del pannello).
+ *
+ * `<Leva>` va SEMPRE montato (anche fuori da `?debug`): Leva crea comunque un
+ * pannello di default appena una `useControls` è in uso (LightRig, i controlli,
+ * ecc.), e `hidden={!DEBUG}` è l'unico modo per nasconderlo in produzione. Solo
+ * l'handle di resize è condizionato a DEBUG.
  */
 function DebugPanel() {
   const [width, setWidth] = useState(PANEL_WIDTH_DEFAULT)
@@ -52,18 +57,20 @@ function DebugPanel() {
 
   return (
     <>
-      <Leva collapsed theme={{ sizes: { rootWidth: `${width}px` } }} />
-      <div
-        className={styles.debugResize}
-        style={{ right: `${width + 10}px` }}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Ridimensiona pannello debug"
-      />
+      <Leva hidden={!DEBUG} collapsed theme={{ sizes: { rootWidth: `${width}px` } }} />
+      {DEBUG && (
+        <div
+          className={styles.debugResize}
+          style={{ right: `${width + 10}px` }}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Ridimensiona pannello debug"
+        />
+      )}
     </>
   )
 }
@@ -99,7 +106,7 @@ export default function KeyboardComposer({
 
   return (
     <section className={styles.section}>
-      {DEBUG && <DebugPanel />}
+      <DebugPanel />
       <div
         className={`${styles.canvasWrap} ${loaded ? styles.canvasWrapLoaded : ''}`}
       >
