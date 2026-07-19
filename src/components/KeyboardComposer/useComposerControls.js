@@ -232,6 +232,19 @@ export function useComposerControls(
         p.targetX = c.pitch
         p.targetY = yaw
       },
+      // Posa COMMITTATA corrente (chiave del grafo) o null se il modello è
+      // fra due pose (mai, a regime: pitch/yaw sono sempre su una posa dopo il
+      // commit) o non riconosciuta. È il "trigger event" delle luci per-vista:
+      // il LightRig la legge ogni frame per sapere verso quale set sfumare. Si
+      // ricalcola al volo dai ref, così vale anche per frecce e drag, non solo
+      // per goTo.
+      currentPoseKey() {
+        return findPoseKey(
+          pose.current.pitch,
+          pose.current.yaw,
+          frame.current.yawOffset,
+        )
+      },
     }
     return () => {
       apiRef.current = null

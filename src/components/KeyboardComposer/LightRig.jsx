@@ -1,5 +1,7 @@
-import { useLayoutEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
+import * as THREE from 'three'
 import { useFrame, useThree } from '@react-three/fiber'
+import { easing } from 'maath'
 import { useControls } from 'leva'
 
 /**
@@ -34,9 +36,33 @@ import { useControls } from 'leva'
  * Il "filo di luce" continuo che avvolge i bordi vive nell'Environment
  * (Scene.jsx): sono riflessi speculari, non luci dirette.
  *
+ * ── LUCI PER-VISTA (round 12) ──────────────────────────────────────────────
+ * Richiesta cliente: illuminazioni diverse per singola posa invece di un unico
+ * set che deve andar bene per tutte. Il "trigger event" è il commit posa: il
+ * LightRig legge `apiRef.currentPoseKey()` ogni frame e, in PRODUZIONE, sfuma
+ * (crossfade morbido) i valori delle quattro sorgenti verso il set associato a
+ * quella posa in `LIGHTING_PER_POSE`. Le pose senza voce nella tabella usano il
+ * preset base (`BASE_LIGHTS`, che è anche il default degli slider).
+ *
+ * Workflow di autoring ("cattura da ?debug", scelto dal cliente):
+ *  1. apri con ?debug, naviga alla posa da illuminare;
+ *  2. regola gli slider Leva finché la vista è perfetta (in ?debug gli slider
+ *     pilotano le luci DIRETTAMENTE, live — l'animazione per-vista è sospesa);
+ *  3. dal pannello "Cattura luci" (in basso a destra, solo ?debug) premi
+ *     "Cattura vista" — nessuna console: il pannello legge i valori live via
+ *     `lightsApi.readLights()`, li accumula per posa e li esporta come blocco
+ *     pronto da incollare in `LIGHTING_PER_POSE` (vedi LightCapturePanel.jsx).
+ * In produzione (senza ?debug) la tabella viene riprodotta con il crossfade.
+ *
+ * Ambito v1: le quattro sorgenti dirette del rig (key/fill/rake/rim). Le strip
+ * dell'Environment e l'esposizione (Scene.jsx) restano globali — si potranno
+ * portare per-vista con lo stesso schema se servirà.
+ *
  * Tutti i valori sono regolabili dal vivo con `?debug`: i default qui sotto
  * SONO i valori di produzione (vedi GUIDA-TUNING.md).
  */
+
+const DEBUG = new URLSearchParams(window.location.search).has('debug')
 
 const RIG_POSITION = [0, 0.1, 0] // pivot del modello
 
@@ -47,7 +73,88 @@ const RIG_POSITION = [0, 0.1, 0] // pivot del modello
 // illuminano solo se condividono un layer.)
 export const RAKE_LAYER = 1
 
-export default function LightRig() {
+// Tempo di assestamento (secondi) del crossfade luci quando si cambia posa:
+// abbastanza lento da leggersi come "l'illuminazione si accomoda sulla vista",
+// non uno stacco. Coerente con il ritmo rallentato del movimento (round 12).
+const LIGHT_FADE = 0.45
+
+// ── Preset base delle quattro sorgenti ─────────────────────────────────────
+// Unica fonte di verità: da qui derivano SIA i default degli slider Leva SIA il
+// fallback per le pose senza override. Modificare qui = spostare il default di
+// produzione.
+const BASE_LIGHTS = {
+  keyMain: { intensity: 16, position: [-3.2, 3.2, 2.2], angle: 0.6, penumbra: 0.9 },
+  keyFill: { intensity: 6, position: [3, -2.2, 2.2], angle: 0.7, penumbra: 1 },
+  rake: { intensity: 12, position: [-5, 0.7, 2.2], color: '#d8e2ff', angle: 0.85, penumbra: 1 },
+  rim: { intensity: 14, position: [2.4, 3.2, -3.4], color: '#e6eeff', angle: 0.6, penumbra: 1 },
+}
+
+/**
+ * Override delle luci per singola posa (chiavi del grafo, vedi poseGraph.js).
+ * Ogni voce è un merge PARZIALE sul preset base: si scrivono solo i parametri
+ * che cambiano per quella vista (es. `TOP: { keyMain: { intensity: 20 } }`),
+ * il resto resta il base. Le pose non elencate usano interamente il base.
+ *
+ * Da popolare con `window.__captureLights()` in ?debug (vedi sopra). Vuoto =
+ * comportamento identico a prima (un solo set per tutte).
+ */
+const LIGHTING_PER_POSE = {
+  // Esempio (commentato): illuminazione dedicata alla vista dall'alto.
+  // TOP: {
+  //   keyMain: { intensity: 20, position: [-2.6, 3.6, 1.8] },
+  //   rim: { intensity: 8 },
+  // },
+}
+
+// Risolve il set target per una posa: base con l'override parziale della posa
+// fuso sopra (per-sorgente, shallow: ogni sorgente ha solo scalari + un array
+// posizione, che si sostituisce in blocco).
+const resolveTarget = (poseKey) => {
+  const over = (poseKey && LIGHTING_PER_POSE[poseKey]) || null
+  if (!over) return BASE_LIGHTS
+  const out = {}
+  for (const slot in BASE_LIGHTS) {
+    out[slot] = over[slot] ? { ...BASE_LIGHTS[slot], ...over[slot] } : BASE_LIGHTS[slot]
+  }
+  return out
+}
+
+// Arrotonda a 3 decimali: numeri puliti nello snippet esportato.
+const round3 = (n) => Math.round(n * 1000) / 1000
+
+// Snapshot dei valori live delle quattro sorgenti (dagli slider Leva),
+// arrotondato e con position come array semplice — il formato di
+// LIGHTING_PER_POSE. È ciò che il pannello di cattura accumula ed esporta.
+const snapshotLights = (live) => ({
+  keyMain: {
+    intensity: round3(live.keyMain.intensity),
+    position: live.keyMain.position.map(round3),
+    angle: round3(live.keyMain.angle),
+    penumbra: round3(live.keyMain.penumbra),
+  },
+  keyFill: {
+    intensity: round3(live.keyFill.intensity),
+    position: live.keyFill.position.map(round3),
+    angle: round3(live.keyFill.angle),
+    penumbra: round3(live.keyFill.penumbra),
+  },
+  rake: {
+    intensity: round3(live.rake.intensity),
+    position: live.rake.position.map(round3),
+    color: live.rake.color,
+    angle: round3(live.rake.angle),
+    penumbra: round3(live.rake.penumbra),
+  },
+  rim: {
+    intensity: round3(live.rim.intensity),
+    position: live.rim.position.map(round3),
+    color: live.rim.color,
+    angle: round3(live.rim.angle),
+    penumbra: round3(live.rim.penumbra),
+  },
+})
+
+export default function LightRig({ apiRef, lightsApi } = {}) {
   const camera = useThree((s) => s.camera)
   const rigRef = useRef()
   const keyMainRef = useRef()
@@ -58,36 +165,41 @@ export default function LightRig() {
   const rimTargetRef = useRef()
 
   const keyMain = useControls('Luci · key principale (alto-sx)', {
-    intensity: { value: 16, min: 0, max: 200, step: 1 },
-    position: { value: [-3.2, 3.2, 2.2] },
-    angle: { value: 0.6, min: 0.1, max: 1.2 },
-    penumbra: { value: 0.9, min: 0, max: 1 },
+    intensity: { value: BASE_LIGHTS.keyMain.intensity, min: 0, max: 200, step: 1 },
+    position: { value: BASE_LIGHTS.keyMain.position },
+    angle: { value: BASE_LIGHTS.keyMain.angle, min: 0.1, max: 1.2 },
+    penumbra: { value: BASE_LIGHTS.keyMain.penumbra, min: 0, max: 1 },
   })
   const keyFill = useControls('Luci · fill (basso-dx)', {
-    intensity: { value: 6, min: 0, max: 200, step: 1 },
-    position: { value: [3, -2.2, 2.2] },
-    angle: { value: 0.7, min: 0.1, max: 1.2 },
-    penumbra: { value: 1, min: 0, max: 1 },
+    intensity: { value: BASE_LIGHTS.keyFill.intensity, min: 0, max: 200, step: 1 },
+    position: { value: BASE_LIGHTS.keyFill.position },
+    angle: { value: BASE_LIGHTS.keyFill.angle, min: 0.1, max: 1.2 },
+    penumbra: { value: BASE_LIGHTS.keyFill.penumbra, min: 0, max: 1 },
   })
   // Rake radente: basso e molto laterale, appena avanzato verso camera così
   // sfiora di taglio le facce frontali (rivela il rilievo). Freddo per un
   // tocco premium; intensità contenuta per non bruciare i bordi.
   const rake = useControls('Luci · rake laterale', {
-    intensity: { value: 12, min: 0, max: 60, step: 0.5 },
-    position: { value: [-5, 0.7, 2.2] },
-    color: '#d8e2ff',
-    angle: { value: 0.85, min: 0.1, max: 1.4 },
-    penumbra: { value: 1, min: 0, max: 1 },
+    intensity: { value: BASE_LIGHTS.rake.intensity, min: 0, max: 60, step: 0.5 },
+    position: { value: BASE_LIGHTS.rake.position },
+    color: BASE_LIGHTS.rake.color,
+    angle: { value: BASE_LIGHTS.rake.angle, min: 0.1, max: 1.4 },
+    penumbra: { value: BASE_LIGHTS.rake.penumbra, min: 0, max: 1 },
   })
   // Rim di separazione: dietro-alto, mira leggermente alta così accende il
   // bordo superiore lontano e stacca la sagoma dal nero.
   const rim = useControls('Luci · rim (profondità)', {
-    intensity: { value: 14, min: 0, max: 200, step: 1 },
-    position: { value: [2.4, 3.2, -3.4] },
-    color: '#e6eeff',
-    angle: { value: 0.6, min: 0.1, max: 1.2 },
-    penumbra: { value: 1, min: 0, max: 1 },
+    intensity: { value: BASE_LIGHTS.rim.intensity, min: 0, max: 200, step: 1 },
+    position: { value: BASE_LIGHTS.rim.position },
+    color: BASE_LIGHTS.rim.color,
+    angle: { value: BASE_LIGHTS.rim.angle, min: 0.1, max: 1.2 },
+    penumbra: { value: BASE_LIGHTS.rim.penumbra, min: 0, max: 1 },
   })
+
+  // Valori live degli slider (aggiornati a ogni render): in ?debug pilotano le
+  // luci direttamente e sono la sorgente della cattura (__captureLights).
+  const liveRef = useRef({})
+  liveRef.current = { keyMain, keyFill, rake, rim }
 
   // I target sono figli del rig (matrixWorld aggiornata dal grafo scena) e
   // vanno assegnati imperativamente.
@@ -100,10 +212,60 @@ export default function LightRig() {
     rakeRef.current.layers.set(RAKE_LAYER)
   }, [])
 
+  // API imperativa per il pannello di cattura (LightCapturePanel), che vive nel
+  // DOM fuori dal Canvas e non può leggere gli slider Leva altrimenti. Espone
+  // solo la lettura dei valori live correnti; posa, accumulo ed export li
+  // gestisce il pannello (che ha già poseApi per la posa corrente). Solo ?debug.
+  useEffect(() => {
+    if (!lightsApi) return
+    lightsApi.current = {
+      readLights: () => snapshotLights(liveRef.current),
+    }
+    return () => {
+      lightsApi.current = null
+    }
+  }, [lightsApi])
+
+  // Colore temporaneo riusato per il crossfade (evita allocazioni per frame).
+  const tmpColor = useRef(new THREE.Color())
+  // Prima applicazione: snap secco al set della posa d'ingresso (niente
+  // fade-in visibile al load).
+  const snappedRef = useRef(false)
+
   // Le luci seguono la camera: oggi la camera non ruota (solo dolly), ma se
   // in futuro orbiterà il rig la seguirà da solo.
-  useFrame(() => {
-    rigRef.current.quaternion.copy(camera.quaternion)
+  //
+  // In PRODUZIONE anima anche i parametri delle quattro sorgenti verso il set
+  // della posa attiva (crossfade). In ?debug NON tocca nulla: gli slider Leva
+  // pilotano le luci via le prop JSX (tuning manuale, cattura live).
+  useFrame((_, delta) => {
+    if (rigRef.current) rigRef.current.quaternion.copy(camera.quaternion)
+    if (DEBUG) return
+
+    const key = apiRef?.current?.currentPoseKey?.() || null
+    const t = resolveTarget(key)
+    const lights = {
+      keyMain: keyMainRef.current,
+      keyFill: keyFillRef.current,
+      rake: rakeRef.current,
+      rim: rimRef.current,
+    }
+    // Primo frame: posiziona secco sul target (nessun fade dal base al load).
+    const st = snappedRef.current ? LIGHT_FADE : 0
+    for (const slot in lights) {
+      const light = lights[slot]
+      if (!light) continue
+      const target = t[slot]
+      easing.damp(light, 'intensity', target.intensity, st, delta)
+      easing.damp(light, 'angle', target.angle, st, delta)
+      easing.damp(light, 'penumbra', target.penumbra, st, delta)
+      easing.damp3(light.position, target.position, st, delta)
+      if (target.color != null) {
+        tmpColor.current.set(target.color)
+        easing.dampC(light.color, tmpColor.current, st, delta)
+      }
+    }
+    snappedRef.current = true
   })
 
   return (
