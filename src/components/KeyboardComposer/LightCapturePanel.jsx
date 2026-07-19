@@ -47,19 +47,31 @@ const formatEntry = (key, set) =>
   `    keyFill: ${fmt(set.keyFill)},\n` +
   `    rake: ${fmt(set.rake)},\n` +
   `    rim: ${fmt(set.rim)},\n` +
+  `    accent: ${fmt(set.accent)},\n` +
   `  },`
 const formatBlock = (store) =>
   Object.keys(store)
     .map((k) => formatEntry(k, store[k]))
     .join('\n')
 
-export default function LightCapturePanel({ poseApi, lightsApi }) {
+export default function LightCapturePanel({ poseApi, lightsApi, previewRef }) {
   const [store, setStore] = useState(loadStore)
   const [current, setCurrent] = useState(null)
   const [exportText, setExportText] = useState(null)
   const [toast, setToast] = useState('')
+  const [preview, setPreview] = useState(false)
   const toastTimer = useRef(null)
   const exportRef = useRef(null)
+
+  // Sincronizza lo stato dell'anteprima verso il LightRig (letto ogni frame):
+  // on = riproduci i set catturati con crossfade; off = tuning live. Lo store
+  // passa per ref così il crossfade insegue sempre l'ultima cattura.
+  useEffect(() => {
+    if (previewRef) previewRef.current = { on: preview, store }
+    return () => {
+      if (previewRef) previewRef.current = null
+    }
+  }, [preview, store, previewRef])
 
   const flash = useCallback((msg) => {
     setToast(msg)
@@ -109,14 +121,21 @@ export default function LightCapturePanel({ poseApi, lightsApi }) {
 
   const doExport = useCallback(() => {
     const block = formatBlock(store)
-    setExportText(block || '// nessuna vista catturata')
-    if (block) {
-      navigator.clipboard?.writeText(block).then(
-        () => flash('Copiato negli appunti ✓'),
-        () => flash('Copia manuale (Ctrl+C)'),
-      )
+    if (!block) {
+      setExportText('// nessuna vista catturata')
+      return
     }
-  }, [store, flash])
+    // Durata di transizione scelta (globale): la si riporta come commento in
+    // testa, così Christian sa a quanto impostare LIGHT_FADE / lo slider.
+    const d = lightsApi.current?.getTransition?.()
+    const head = d != null ? `  // durata transizione A→B: ${d}s\n` : ''
+    const text = head + block
+    setExportText(text)
+    navigator.clipboard?.writeText(text).then(
+      () => flash('Copiato negli appunti ✓'),
+      () => flash('Copia manuale (Ctrl+C)'),
+    )
+  }, [store, lightsApi, flash])
 
   // Scorciatoia `C` = cattura vista corrente. Ignorata mentre si digita in un
   // campo (slider Leva in edit, textarea di export).
@@ -143,6 +162,22 @@ export default function LightCapturePanel({ poseApi, lightsApi }) {
         <span className={styles.captureTitle}>Cattura luci</span>
         <span className={styles.capturePose}>{current ? current : '— fra due viste —'}</span>
       </div>
+
+      <label className={styles.captureToggle}>
+        <input
+          type="checkbox"
+          checked={preview}
+          onChange={(e) => setPreview(e.target.checked)}
+        />
+        <span>
+          Anteprima transizioni
+          <small>
+            {preview
+              ? ' — riproduce i set salvati (regola “durata” in Luci · transizione)'
+              : ' — off: gli slider pilotano le luci'}
+          </small>
+        </span>
+      </label>
 
       <div className={styles.captureRow}>
         <button

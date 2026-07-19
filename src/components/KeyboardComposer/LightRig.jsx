@@ -78,15 +78,23 @@ export const RAKE_LAYER = 1
 // non uno stacco. Coerente con il ritmo rallentato del movimento (round 12).
 const LIGHT_FADE = 0.45
 
-// ── Preset base delle quattro sorgenti ─────────────────────────────────────
+// ── Preset base delle sorgenti ─────────────────────────────────────────────
 // Unica fonte di verità: da qui derivano SIA i default degli slider Leva SIA il
 // fallback per le pose senza override. Modificare qui = spostare il default di
 // produzione.
+//
+// `accent` (round 12c) è la luce-accento PER-VISTA: un point light aggiuntivo,
+// SPENTO di default (intensity 0), che si accende solo sulle pose che lo
+// definiscono in LIGHTING_PER_POSE e sfuma dentro/fuori entrando e uscendo dalla
+// vista (stessa dissolvenza `durata A→B`). Lo studio a 4 sorgenti resta invariato
+// su tutte le viste: l'accento si AGGIUNGE, non lo sostituisce. Chiavi diverse
+// dagli spot: niente angle/penumbra, ha distance/decay (point light).
 const BASE_LIGHTS = {
   keyMain: { intensity: 16, position: [-3.2, 3.2, 2.2], angle: 0.6, penumbra: 0.9 },
   keyFill: { intensity: 6, position: [3, -2.2, 2.2], angle: 0.7, penumbra: 1 },
   rake: { intensity: 12, position: [-5, 0.7, 2.2], color: '#d8e2ff', angle: 0.85, penumbra: 1 },
   rim: { intensity: 14, position: [2.4, 3.2, -3.4], color: '#e6eeff', angle: 0.6, penumbra: 1 },
+  accent: { intensity: 0, position: [0, 0.6, 3], color: '#ffffff', distance: 0, decay: 2 },
 }
 
 /**
@@ -106,11 +114,13 @@ const LIGHTING_PER_POSE = {
   // },
 }
 
-// Risolve il set target per una posa: base con l'override parziale della posa
-// fuso sopra (per-sorgente, shallow: ogni sorgente ha solo scalari + un array
-// posizione, che si sostituisce in blocco).
-const resolveTarget = (poseKey) => {
-  const over = (poseKey && LIGHTING_PER_POSE[poseKey]) || null
+// Risolve il set target per una posa da una TABELLA di override (per-vista):
+// base con l'override parziale della posa fuso sopra (per-sorgente, shallow:
+// ogni sorgente ha solo scalari + un array posizione, che si sostituisce in
+// blocco). Serve sia a LIGHTING_PER_POSE (produzione) sia allo store di cattura
+// (anteprima in ?debug).
+const mergeTarget = (table, poseKey) => {
+  const over = (poseKey && table && table[poseKey]) || null
   if (!over) return BASE_LIGHTS
   const out = {}
   for (const slot in BASE_LIGHTS) {
@@ -118,6 +128,45 @@ const resolveTarget = (poseKey) => {
   }
   return out
 }
+const resolveTarget = (poseKey) => mergeTarget(LIGHTING_PER_POSE, poseKey)
+
+// Set target = valori LIVE degli slider Leva (modo tuning in ?debug): le luci
+// inseguono direttamente ciò che l'utente muove, senza passare dalla tabella.
+const liveTarget = (live) => ({
+  keyMain: {
+    intensity: live.keyMain.intensity,
+    position: live.keyMain.position,
+    angle: live.keyMain.angle,
+    penumbra: live.keyMain.penumbra,
+  },
+  keyFill: {
+    intensity: live.keyFill.intensity,
+    position: live.keyFill.position,
+    angle: live.keyFill.angle,
+    penumbra: live.keyFill.penumbra,
+  },
+  rake: {
+    intensity: live.rake.intensity,
+    position: live.rake.position,
+    color: live.rake.color,
+    angle: live.rake.angle,
+    penumbra: live.rake.penumbra,
+  },
+  rim: {
+    intensity: live.rim.intensity,
+    position: live.rim.position,
+    color: live.rim.color,
+    angle: live.rim.angle,
+    penumbra: live.rim.penumbra,
+  },
+  accent: {
+    intensity: live.accent.intensity,
+    position: live.accent.position,
+    color: live.accent.color,
+    distance: live.accent.distance,
+    decay: live.accent.decay,
+  },
+})
 
 // Arrotonda a 3 decimali: numeri puliti nello snippet esportato.
 const round3 = (n) => Math.round(n * 1000) / 1000
@@ -152,15 +201,23 @@ const snapshotLights = (live) => ({
     angle: round3(live.rim.angle),
     penumbra: round3(live.rim.penumbra),
   },
+  accent: {
+    intensity: round3(live.accent.intensity),
+    position: live.accent.position.map(round3),
+    color: live.accent.color,
+    distance: round3(live.accent.distance),
+    decay: round3(live.accent.decay),
+  },
 })
 
-export default function LightRig({ apiRef, lightsApi } = {}) {
+export default function LightRig({ apiRef, lightsApi, previewRef } = {}) {
   const camera = useThree((s) => s.camera)
   const rigRef = useRef()
   const keyMainRef = useRef()
   const keyFillRef = useRef()
   const rakeRef = useRef()
   const rimRef = useRef()
+  const accentRef = useRef()
   const targetRef = useRef()
   const rimTargetRef = useRef()
 
@@ -195,11 +252,32 @@ export default function LightRig({ apiRef, lightsApi } = {}) {
     angle: { value: BASE_LIGHTS.rim.angle, min: 0.1, max: 1.2 },
     penumbra: { value: BASE_LIGHTS.rim.penumbra, min: 0, max: 1 },
   })
+  // Luce-accento PER-VISTA (point light): default SPENTA (intensity 0), la si
+  // accende/posiziona per singola vista e si cattura come le altre. Si accende
+  // solo sulle pose che la definiscono, con dissolvenza. `distance` 0 = raggio
+  // infinito; `decay` 2 = attenuazione fisica.
+  const accent = useControls('Luci · accento (per-vista)', {
+    intensity: { value: BASE_LIGHTS.accent.intensity, min: 0, max: 200, step: 1 },
+    position: { value: BASE_LIGHTS.accent.position },
+    color: BASE_LIGHTS.accent.color,
+    distance: { value: BASE_LIGHTS.accent.distance, min: 0, max: 30, step: 0.5 },
+    decay: { value: BASE_LIGHTS.accent.decay, min: 0, max: 3, step: 0.1 },
+  })
 
-  // Valori live degli slider (aggiornati a ogni render): in ?debug pilotano le
-  // luci direttamente e sono la sorgente della cattura (__captureLights).
+  // Durata (secondi) del crossfade quando si cambia vista: quanto è "soffusa"
+  // la dissolvenza A→B delle luci. Regolabile dal vivo; il default è il valore
+  // di produzione (LIGHT_FADE). 0 = stacco secco.
+  const trans = useControls('Luci · transizione', {
+    durata: { value: LIGHT_FADE, min: 0, max: 2, step: 0.05, label: 'durata A→B (s)' },
+  })
+
+  // Valori live degli slider (aggiornati a ogni render): in ?debug (tuning)
+  // pilotano le luci direttamente e sono la sorgente della cattura.
   const liveRef = useRef({})
-  liveRef.current = { keyMain, keyFill, rake, rim }
+  liveRef.current = { keyMain, keyFill, rake, rim, accent }
+  // Durata di transizione live (letta nel useFrame e dal pannello per l'export).
+  const transitionRef = useRef(LIGHT_FADE)
+  transitionRef.current = trans.durata
 
   // I target sono figli del rig (matrixWorld aggiornata dal grafo scena) e
   // vanno assegnati imperativamente.
@@ -220,6 +298,7 @@ export default function LightRig({ apiRef, lightsApi } = {}) {
     if (!lightsApi) return
     lightsApi.current = {
       readLights: () => snapshotLights(liveRef.current),
+      getTransition: () => transitionRef.current,
     }
     return () => {
       lightsApi.current = null
@@ -232,37 +311,63 @@ export default function LightRig({ apiRef, lightsApi } = {}) {
   // fade-in visibile al load).
   const snappedRef = useRef(false)
 
-  // Le luci seguono la camera: oggi la camera non ruota (solo dolly), ma se
-  // in futuro orbiterà il rig la seguirà da solo.
-  //
-  // In PRODUZIONE anima anche i parametri delle quattro sorgenti verso il set
-  // della posa attiva (crossfade). In ?debug NON tocca nulla: gli slider Leva
-  // pilotano le luci via le prop JSX (tuning manuale, cattura live).
+  // Le luci seguono la camera (rig solidale) e, ogni frame, i loro parametri
+  // vengono guidati IMPERATIVAMENTE verso un set-target — sempre, non solo in
+  // produzione: così lo stesso crossfade è osservabile anche in anteprima
+  // ?debug (lo slider "durata" si sente mentre lo si regola) e le prop JSX
+  // restano valori iniziali statici (nessun reset da re-render Leva). Tre modi:
+  //  - PRODUZIONE: target = LIGHTING_PER_POSE[posa], crossfade a `durata`.
+  //  - ?debug + anteprima ON: target = set CATTURATO della posa (store del
+  //    pannello), crossfade a `durata` → si prova la dissolvenza A→B dal vivo.
+  //  - ?debug + anteprima OFF (tuning): target = valori LIVE degli slider,
+  //    istantaneo → le luci seguono ciò che si muove, feedback immediato.
   useFrame((_, delta) => {
     if (rigRef.current) rigRef.current.quaternion.copy(camera.quaternion)
-    if (DEBUG) return
 
-    const key = apiRef?.current?.currentPoseKey?.() || null
-    const t = resolveTarget(key)
+    // dt clampato: dopo un frame lungo (tab in background poi ripresa, hiccup)
+    // il crossfade deve restare una dissolvenza, non uno scatto secco verso il
+    // target — stesso accorgimento della molla in useComposerControls.
+    const dt = Math.min(delta, 1 / 30)
+    const preview = DEBUG ? previewRef?.current : null
+    let t
+    let st
+    if (DEBUG && !(preview && preview.on)) {
+      // Tuning: insegui gli slider, immediato.
+      t = liveTarget(liveRef.current)
+      st = 0
+    } else {
+      // Produzione o anteprima: crossfade verso il set della posa.
+      const key = apiRef?.current?.currentPoseKey?.() || null
+      const table = preview && preview.on ? preview.store : LIGHTING_PER_POSE
+      t = mergeTarget(table, key)
+      // Primo frame: snap secco (nessun fade dal base al load).
+      st = snappedRef.current ? transitionRef.current : 0
+    }
+
     const lights = {
       keyMain: keyMainRef.current,
       keyFill: keyFillRef.current,
       rake: rakeRef.current,
       rim: rimRef.current,
+      accent: accentRef.current,
     }
-    // Primo frame: posiziona secco sul target (nessun fade dal base al load).
-    const st = snappedRef.current ? LIGHT_FADE : 0
     for (const slot in lights) {
       const light = lights[slot]
       if (!light) continue
       const target = t[slot]
-      easing.damp(light, 'intensity', target.intensity, st, delta)
-      easing.damp(light, 'angle', target.angle, st, delta)
-      easing.damp(light, 'penumbra', target.penumbra, st, delta)
-      easing.damp3(light.position, target.position, st, delta)
-      if (target.color != null) {
-        tmpColor.current.set(target.color)
-        easing.dampC(light.color, tmpColor.current, st, delta)
+      // Crossfade KEY-DRIVEN: si animano solo le chiavi presenti nel target di
+      // quella sorgente. Gli spot hanno angle/penumbra; l'accento (point light)
+      // ha distance/decay. Iterando le chiavi il loop copre entrambi i tipi
+      // senza scrivere NaN su proprietà inesistenti.
+      for (const key in target) {
+        if (key === 'position') {
+          easing.damp3(light.position, target.position, st, dt)
+        } else if (key === 'color') {
+          tmpColor.current.set(target.color)
+          easing.dampC(light.color, tmpColor.current, st, dt)
+        } else {
+          easing.damp(light, key, target[key], st, dt)
+        }
       }
     }
     snappedRef.current = true
@@ -270,42 +375,57 @@ export default function LightRig({ apiRef, lightsApi } = {}) {
 
   return (
     <group ref={rigRef} position={RIG_POSITION}>
+      {/* Le prop dinamiche (intensity/position/angle/penumbra/color) sono solo
+          VALORI INIZIALI statici (BASE_LIGHTS): da qui in poi le luci sono
+          guidate dal useFrame sopra, che insegue slider live / tabella / store.
+          Tenerle statiche evita che un re-render Leva le resetti a metà
+          crossfade. */}
       <spotLight
         ref={keyMainRef}
         castShadow
-        position={keyMain.position}
-        intensity={keyMain.intensity}
-        angle={keyMain.angle}
-        penumbra={keyMain.penumbra}
+        position={BASE_LIGHTS.keyMain.position}
+        intensity={BASE_LIGHTS.keyMain.intensity}
+        angle={BASE_LIGHTS.keyMain.angle}
+        penumbra={BASE_LIGHTS.keyMain.penumbra}
         decay={1.4}
         shadow-mapSize={[1024, 1024]}
         shadow-bias={-0.0001}
       />
       <spotLight
         ref={keyFillRef}
-        position={keyFill.position}
-        intensity={keyFill.intensity}
-        angle={keyFill.angle}
-        penumbra={keyFill.penumbra}
+        position={BASE_LIGHTS.keyFill.position}
+        intensity={BASE_LIGHTS.keyFill.intensity}
+        angle={BASE_LIGHTS.keyFill.angle}
+        penumbra={BASE_LIGHTS.keyFill.penumbra}
         decay={1.4}
       />
       <spotLight
         ref={rakeRef}
-        position={rake.position}
-        intensity={rake.intensity}
-        angle={rake.angle}
-        penumbra={rake.penumbra}
-        color={rake.color}
+        position={BASE_LIGHTS.rake.position}
+        intensity={BASE_LIGHTS.rake.intensity}
+        angle={BASE_LIGHTS.rake.angle}
+        penumbra={BASE_LIGHTS.rake.penumbra}
+        color={BASE_LIGHTS.rake.color}
         decay={1.3}
       />
       <spotLight
         ref={rimRef}
-        position={rim.position}
-        intensity={rim.intensity}
-        angle={rim.angle}
-        penumbra={rim.penumbra}
-        color={rim.color}
+        position={BASE_LIGHTS.rim.position}
+        intensity={BASE_LIGHTS.rim.intensity}
+        angle={BASE_LIGHTS.rim.angle}
+        penumbra={BASE_LIGHTS.rim.penumbra}
+        color={BASE_LIGHTS.rim.color}
         decay={1.2}
+      />
+      {/* Luce-accento per-vista: point light, spenta di default (intensity 0),
+          guidata dal useFrame come le altre. Solidale al rig (camera). */}
+      <pointLight
+        ref={accentRef}
+        position={BASE_LIGHTS.accent.position}
+        intensity={BASE_LIGHTS.accent.intensity}
+        color={BASE_LIGHTS.accent.color}
+        distance={BASE_LIGHTS.accent.distance}
+        decay={BASE_LIGHTS.accent.decay}
       />
       <object3D ref={targetRef} position={[0, 0, 0]} />
       <object3D ref={rimTargetRef} position={[0, 0.4, 0]} />

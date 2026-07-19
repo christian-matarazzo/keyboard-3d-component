@@ -71,7 +71,7 @@ function MaterialTuner({ finish }) {
   return null
 }
 
-export default function Scene({ modelUrl, finish, apiRef, lightsApi }) {
+export default function Scene({ modelUrl, finish, apiRef, lightsApi, previewRef }) {
   const env = useControls('Luci · ambiente', {
     topIntensity: { value: 6, min: 0, max: 15, step: 0.25, label: 'strip top' },
     rightIntensity: { value: 5, min: 0, max: 20, step: 0.25, label: 'strip destra' },
@@ -172,7 +172,7 @@ export default function Scene({ modelUrl, finish, apiRef, lightsApi }) {
         {/* Studio fotografico: key diagonale (alto-sx) + fill (basso-dx),
             solidali alla camera. `apiRef` porta la posa committata corrente
             (currentPoseKey) così le luci sfumano verso il set per-vista. */}
-        <LightRig apiRef={apiRef} lightsApi={lightsApi} />
+        <LightRig apiRef={apiRef} lightsApi={lightsApi} previewRef={previewRef} />
       </Suspense>
     </Canvas>
   )

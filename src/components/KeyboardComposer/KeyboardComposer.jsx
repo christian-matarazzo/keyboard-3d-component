@@ -105,8 +105,11 @@ export default function KeyboardComposer({
   // viene popolato da useComposerControls con `{ goTo(poseKey), currentPoseKey() }`.
   const poseApi = useRef(null)
   // Ponte fra il pannello di cattura luci (DOM) e il LightRig (dentro il
-  // Canvas): popolato con `{ readLights() }`, usato solo in ?debug.
+  // Canvas): popolato con `{ readLights(), getTransition() }`, usato solo in ?debug.
   const lightsApi = useRef(null)
+  // Stato dell'anteprima transizioni scritto DAL pannello e letto dal LightRig
+  // ogni frame: `{ on, store }` (store = set catturati per posa). Solo ?debug.
+  const previewRef = useRef(null)
 
   return (
     <section className={styles.section}>
@@ -114,9 +117,21 @@ export default function KeyboardComposer({
       <div
         className={`${styles.canvasWrap} ${loaded ? styles.canvasWrapLoaded : ''}`}
       >
-        <Scene modelUrl={modelUrl} finish={finish} apiRef={poseApi} lightsApi={lightsApi} />
+        <Scene
+          modelUrl={modelUrl}
+          finish={finish}
+          apiRef={poseApi}
+          lightsApi={lightsApi}
+          previewRef={previewRef}
+        />
         <ViewPad apiRef={poseApi} />
-        {DEBUG && <LightCapturePanel poseApi={poseApi} lightsApi={lightsApi} />}
+        {DEBUG && (
+          <LightCapturePanel
+            poseApi={poseApi}
+            lightsApi={lightsApi}
+            previewRef={previewRef}
+          />
+        )}
       </div>
     </section>
   )
