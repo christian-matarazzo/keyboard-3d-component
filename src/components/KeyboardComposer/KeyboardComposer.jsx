@@ -11,6 +11,63 @@ import { finishes as defaultFinishes, getFinish } from './materials/registry'
 // nell'URL: in produzione il canvas resta pulito, a tutto schermo.
 const DEBUG = new URLSearchParams(window.location.search).has('debug')
 
+// Larghezza del pannello Leva: default della libreria e limiti del resize a
+// trascinamento (vedi DebugPanel). Il tool di debug ha pose con label lunghe,
+// allargarlo aiuta a leggerle senza troncamenti.
+const PANEL_WIDTH_DEFAULT = 280
+const PANEL_WIDTH_MIN = 240
+const PANEL_WIDTH_MAX = 640
+
+const clamp = (v, min, max) => Math.max(min, Math.min(max, v))
+
+/**
+ * Pannello Leva con bordo sinistro trascinabile per allargarlo/stringerlo.
+ * Il pannello è ancorato in alto a destra: trascinando l'handle verso sinistra
+ * cresce. La larghezza è controllata via `theme.sizes.rootWidth` (Leva 0.10),
+ * l'handle è un grip fisso allineato al bordo sinistro (offset = width + 10px
+ * di margine del pannello). Solo in `?debug`.
+ */
+function DebugPanel() {
+  const [width, setWidth] = useState(PANEL_WIDTH_DEFAULT)
+  const dragRef = useRef({ pointerId: null, startX: 0, startW: 0 })
+
+  const onPointerDown = (e) => {
+    dragRef.current = { pointerId: e.pointerId, startX: e.clientX, startW: width }
+    e.currentTarget.setPointerCapture?.(e.pointerId)
+    e.preventDefault()
+  }
+  const onPointerMove = (e) => {
+    const d = dragRef.current
+    if (d.pointerId !== e.pointerId) return
+    // Trascinare a sinistra (clientX cala) allarga: startX - clientX > 0.
+    setWidth(clamp(d.startW + (d.startX - e.clientX), PANEL_WIDTH_MIN, PANEL_WIDTH_MAX))
+  }
+  const onPointerUp = (e) => {
+    const d = dragRef.current
+    if (d.pointerId !== e.pointerId) return
+    if (e.currentTarget.hasPointerCapture?.(e.pointerId))
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    dragRef.current = { pointerId: null, startX: 0, startW: 0 }
+  }
+
+  return (
+    <>
+      <Leva collapsed theme={{ sizes: { rootWidth: `${width}px` } }} />
+      <div
+        className={styles.debugResize}
+        style={{ right: `${width + 10}px` }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Ridimensiona pannello debug"
+      />
+    </>
+  )
+}
+
 /**
  * Vetrina 3D della tastiera a piena vista: nessun pannello di configurazione,
  * solo il modello. Trascina in verticale per il flusso front/retro a step di
@@ -42,7 +99,7 @@ export default function KeyboardComposer({
 
   return (
     <section className={styles.section}>
-      <Leva hidden={!DEBUG} collapsed />
+      {DEBUG && <DebugPanel />}
       <div
         className={`${styles.canvasWrap} ${loaded ? styles.canvasWrapLoaded : ''}`}
       >

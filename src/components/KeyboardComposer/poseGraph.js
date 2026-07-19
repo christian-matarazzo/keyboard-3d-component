@@ -28,7 +28,10 @@
  *    il Top (TBACK, pitch 135°) e OLTRE il bottom (BBACK, pitch -135°, il
  *    sottoscocca): la colonna è simmetrica. Non sono flip: sono rotazioni
  *    semplici di pitch, il modello non ruota mai su se stesso.
- *  - Banda bassa: solo i corner frontali (niente corner del retro in basso).
+ *  - Banda bassa: anello completo, specchio esatto del centrale (round 11 —
+ *    aggiunti i due corner del retro in basso BBL/BBR e l'edge back-basso BBE).
+ *    Il back-basso però resta raggiungibile SOLO in orizzontale, mai da BACK con
+ *    Giù: la regola "il back non si raggiunge/lascia in verticale" vale ancora.
  */
 
 export const DEG = Math.PI / 180
@@ -68,6 +71,12 @@ export const POSE_COORD = {
   BACK: { pitch: 0, yaw: 180 * DEG }, // back
   BFL: { pitch: -CORNER_PITCH, yaw: 45 * DEG }, // 3-4 front left bottom
   BFR: { pitch: -CORNER_PITCH, yaw: -45 * DEG }, // 3-4 front right bottom
+  // Retro-basso: le tre viste dell'underside da dietro, aggiunte dal cliente
+  // (round 11, screenshot Maya in NewPoses/). Completano la banda bassa perché
+  // sia lo specchio esatto dell'anello centrale (BBE = mirror di CFB dietro).
+  BBL: { pitch: -CORNER_PITCH, yaw: 135 * DEG }, // 3-4 back left bottom
+  BBR: { pitch: -CORNER_PITCH, yaw: -135 * DEG }, // 3-4 back right bottom
+  BBE: { pitch: -45 * DEG, yaw: 180 * DEG }, // back bottom (edge, specchio di CFB)
 }
 
 /**
@@ -80,13 +89,18 @@ export const POSE_COORD = {
  *    ↔ FRONT — BACK sta a 45° dai due corner del retro esattamente come FRONT
  *    dai due corner frontali: l'anello è simmetrico fronte/retro. I 90° dei
  *    3/4 restano dove non c'è una posa intermedia (i salti sui fianchi puri).
- *  - basso:  arco BFR(-45) ↔ CFB(0) ↔ BFL(45) (niente corner retro in basso)
+ *  - basso:   CFB(0) ↔ BFL(45) ↔ BBL(135) ↔ BBE(180) ↔ BBR(-135) ↔ BFR(-45)
+ *    ↔ CFB — anello pieno, specchio esatto del centrale (BBE sta al back-basso
+ *    come FRONT/BACK al centro). I 90° sui fianchi puri restano (BFL↔BBL,
+ *    BFR↔BBR) come CFL↔CBL / CFR↔CBR sopra.
  * Colonne verticali (up = +pitch), a yaw costante:
  *  - yaw 0:  TBACK ↔ TOP ↔ CFT ↔ FRONT ↔ CFB ↔ BOTTOM ↔ BBACK — simmetrica:
  *    agli estremi prosegue di un ultimo 45° oltre lo zenit (TBACK) e oltre il
  *    nadir (BBACK, il sottoscocca), mai un flip
  *  - yaw ±45 fronte: T? ↔ C?L/R ↔ B?L/R (i corner alti/bassi frontali)
- *  - yaw ±135 retro: T?  ↔ C?  (solo alto↔centro; niente back in basso)
+ *  - yaw ±135 retro: T? ↔ C? ↔ B? (alto↔centro↔basso; i corner del retro basso
+ *    BBL/BBR si raggiungono scendendo da CBL/CBR — ma BACK/BBE non sono
+ *    collegati in verticale: il back-basso è solo un anello orizzontale)
  */
 export const NEIGHBORS = {
   TBACK: { up: null, down: 'TOP', left: null, right: null },
@@ -102,13 +116,19 @@ export const NEIGHBORS = {
   TBR: { up: null, down: 'CBR', left: 'TR', right: 'TBL' },
   CFL: { up: 'TL', down: 'BFL', left: 'CBL', right: 'FRONT' },
   CFR: { up: 'TR', down: 'BFR', left: 'FRONT', right: 'CBR' },
-  CBL: { up: 'TBL', down: null, left: 'BACK', right: 'CFL' },
-  CBR: { up: 'TBR', down: null, left: 'CFR', right: 'BACK' },
+  CBL: { up: 'TBL', down: 'BBL', left: 'BACK', right: 'CFL' },
+  CBR: { up: 'TBR', down: 'BBR', left: 'CFR', right: 'BACK' },
   // Su/giù bloccati: il back non si raggiunge né si lascia in verticale
-  // (regola cliente) — solo l'anello orizzontale lo attraversa.
+  // (regola cliente) — solo l'anello orizzontale lo attraversa. Vale anche per
+  // BBE (back-basso): ci si arriva solo in orizzontale, mai da BACK con Giù.
   BACK: { up: null, down: null, left: 'CBR', right: 'CBL' },
-  BFL: { up: 'CFL', down: null, left: null, right: 'CFB' },
-  BFR: { up: 'CFR', down: null, left: 'CFB', right: null },
+  BFL: { up: 'CFL', down: null, left: 'BBL', right: 'CFB' },
+  BFR: { up: 'CFR', down: null, left: 'CFB', right: 'BBR' },
+  // Anello basso completo (specchio del centrale): BBL/BBR scendono dai corner
+  // del retro (CBL/CBR), BBE è raggiungibile solo lateralmente.
+  BBL: { up: 'CBL', down: null, left: 'BBE', right: 'BFL' },
+  BBR: { up: 'CBR', down: null, left: 'BFR', right: 'BBE' },
+  BBE: { up: null, down: null, left: 'BBR', right: 'BBL' },
 }
 
 /**

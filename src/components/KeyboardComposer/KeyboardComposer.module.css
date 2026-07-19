@@ -18,6 +18,26 @@
   opacity: 1;
 }
 
+/* Handle di resize del pannello debug (Leva): grip verticale sottile ancorato
+   al bordo sinistro del pannello, in alto a destra. `right` è impostato inline
+   in base alla larghezza corrente. z-index sopra Leva. Solo in ?debug. */
+.debugResize {
+  position: fixed;
+  top: 10px;
+  height: 48px;
+  width: 8px;
+  border-radius: 4px;
+  background: rgb(255 255 255 / 12%);
+  cursor: ew-resize;
+  z-index: 1001;
+  touch-action: none;
+  transition: background 0.15s ease;
+}
+
+.debugResize:hover {
+  background: rgb(255 255 255 / 30%);
+}
+
 /* Pulsantiera delle viste: croce di 4 freccette in alto a sinistra, sopra il
    canvas (fuori dall'ingombro del modello, che resta centrato). Griglia 3x3
    con solo le caselle a croce occupate. */
