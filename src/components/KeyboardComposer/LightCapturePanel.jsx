@@ -48,6 +48,8 @@ const formatEntry = (key, set) =>
   `    rake: ${fmt(set.rake)},\n` +
   `    rim: ${fmt(set.rim)},\n` +
   `    accent: ${fmt(set.accent)},\n` +
+  `    accent2: ${fmt(set.accent2)},\n` +
+  `    accent3: ${fmt(set.accent3)},\n` +
   `  },`
 const formatBlock = (store) =>
   Object.keys(store)

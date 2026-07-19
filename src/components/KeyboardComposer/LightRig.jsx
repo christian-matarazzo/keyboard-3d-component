@@ -83,18 +83,24 @@ const LIGHT_FADE = 0.45
 // fallback per le pose senza override. Modificare qui = spostare il default di
 // produzione.
 //
-// `accent` (round 12c) è la luce-accento PER-VISTA: un point light aggiuntivo,
-// SPENTO di default (intensity 0), che si accende solo sulle pose che lo
-// definiscono in LIGHTING_PER_POSE e sfuma dentro/fuori entrando e uscendo dalla
-// vista (stessa dissolvenza `durata A→B`). Lo studio a 4 sorgenti resta invariato
-// su tutte le viste: l'accento si AGGIUNGE, non lo sostituisce. Chiavi diverse
-// dagli spot: niente angle/penumbra, ha distance/decay (point light).
+// `accent`/`accent2`/`accent3` (round 12c/12d) sono il SET DI TRE luci-accento
+// PER-VISTA: point light aggiuntivi, tutti SPENTI di default (intensity 0), che
+// si accendono solo sulle pose che li definiscono in LIGHTING_PER_POSE e sfumano
+// dentro/fuori entrando e uscendo dalla vista (stessa dissolvenza `durata A→B`).
+// La prima è sempre disponibile, la seconda e la terza sono FACOLTATIVE: chi
+// vuole un set a tre luci le accende, altrimenti restano a zero e non pesano.
+// Lo studio a 4 sorgenti resta invariato su tutte le viste: gli accenti si
+// AGGIUNGONO, non lo sostituiscono. Chiavi diverse dagli spot: niente
+// angle/penumbra, hanno distance/decay (point light). Posizioni di default
+// distinte (fronte / sinistra-alta / destra-alta) per partire da un triangolo.
 const BASE_LIGHTS = {
   keyMain: { intensity: 16, position: [-3.2, 3.2, 2.2], angle: 0.6, penumbra: 0.9 },
   keyFill: { intensity: 6, position: [3, -2.2, 2.2], angle: 0.7, penumbra: 1 },
   rake: { intensity: 12, position: [-5, 0.7, 2.2], color: '#d8e2ff', angle: 0.85, penumbra: 1 },
   rim: { intensity: 14, position: [2.4, 3.2, -3.4], color: '#e6eeff', angle: 0.6, penumbra: 1 },
   accent: { intensity: 0, position: [0, 0.6, 3], color: '#ffffff', distance: 0, decay: 2 },
+  accent2: { intensity: 0, position: [-3.5, 1, 1.5], color: '#ffffff', distance: 0, decay: 2 },
+  accent3: { intensity: 0, position: [3.5, 1, 1.5], color: '#ffffff', distance: 0, decay: 2 },
 }
 
 /**
@@ -166,6 +172,20 @@ const liveTarget = (live) => ({
     distance: live.accent.distance,
     decay: live.accent.decay,
   },
+  accent2: {
+    intensity: live.accent2.intensity,
+    position: live.accent2.position,
+    color: live.accent2.color,
+    distance: live.accent2.distance,
+    decay: live.accent2.decay,
+  },
+  accent3: {
+    intensity: live.accent3.intensity,
+    position: live.accent3.position,
+    color: live.accent3.color,
+    distance: live.accent3.distance,
+    decay: live.accent3.decay,
+  },
 })
 
 // Arrotonda a 3 decimali: numeri puliti nello snippet esportato.
@@ -208,6 +228,20 @@ const snapshotLights = (live) => ({
     distance: round3(live.accent.distance),
     decay: round3(live.accent.decay),
   },
+  accent2: {
+    intensity: round3(live.accent2.intensity),
+    position: live.accent2.position.map(round3),
+    color: live.accent2.color,
+    distance: round3(live.accent2.distance),
+    decay: round3(live.accent2.decay),
+  },
+  accent3: {
+    intensity: round3(live.accent3.intensity),
+    position: live.accent3.position.map(round3),
+    color: live.accent3.color,
+    distance: round3(live.accent3.distance),
+    decay: round3(live.accent3.decay),
+  },
 })
 
 export default function LightRig({ apiRef, lightsApi, previewRef } = {}) {
@@ -218,6 +252,8 @@ export default function LightRig({ apiRef, lightsApi, previewRef } = {}) {
   const rakeRef = useRef()
   const rimRef = useRef()
   const accentRef = useRef()
+  const accent2Ref = useRef()
+  const accent3Ref = useRef()
   const targetRef = useRef()
   const rimTargetRef = useRef()
 
@@ -252,16 +288,31 @@ export default function LightRig({ apiRef, lightsApi, previewRef } = {}) {
     angle: { value: BASE_LIGHTS.rim.angle, min: 0.1, max: 1.2 },
     penumbra: { value: BASE_LIGHTS.rim.penumbra, min: 0, max: 1 },
   })
-  // Luce-accento PER-VISTA (point light): default SPENTA (intensity 0), la si
-  // accende/posiziona per singola vista e si cattura come le altre. Si accende
-  // solo sulle pose che la definiscono, con dissolvenza. `distance` 0 = raggio
-  // infinito; `decay` 2 = attenuazione fisica.
-  const accent = useControls('Luci · accento (per-vista)', {
+  // SET DI TRE luci-accento PER-VISTA (point light): default SPENTE (intensity
+  // 0), le si accende/posiziona per singola vista e si catturano come le altre.
+  // Si accendono solo sulle pose che le definiscono, con dissolvenza. `distance`
+  // 0 = raggio infinito; `decay` 2 = attenuazione fisica. La 1 è quella base, la
+  // 2 e la 3 sono FACOLTATIVE per comporre un set a tre luci.
+  const accent = useControls('Luci · accento 1 (per-vista)', {
     intensity: { value: BASE_LIGHTS.accent.intensity, min: 0, max: 200, step: 1 },
     position: { value: BASE_LIGHTS.accent.position },
     color: BASE_LIGHTS.accent.color,
     distance: { value: BASE_LIGHTS.accent.distance, min: 0, max: 30, step: 0.5 },
     decay: { value: BASE_LIGHTS.accent.decay, min: 0, max: 3, step: 0.1 },
+  })
+  const accent2 = useControls('Luci · accento 2 (facolt.)', {
+    intensity: { value: BASE_LIGHTS.accent2.intensity, min: 0, max: 200, step: 1 },
+    position: { value: BASE_LIGHTS.accent2.position },
+    color: BASE_LIGHTS.accent2.color,
+    distance: { value: BASE_LIGHTS.accent2.distance, min: 0, max: 30, step: 0.5 },
+    decay: { value: BASE_LIGHTS.accent2.decay, min: 0, max: 3, step: 0.1 },
+  })
+  const accent3 = useControls('Luci · accento 3 (facolt.)', {
+    intensity: { value: BASE_LIGHTS.accent3.intensity, min: 0, max: 200, step: 1 },
+    position: { value: BASE_LIGHTS.accent3.position },
+    color: BASE_LIGHTS.accent3.color,
+    distance: { value: BASE_LIGHTS.accent3.distance, min: 0, max: 30, step: 0.5 },
+    decay: { value: BASE_LIGHTS.accent3.decay, min: 0, max: 3, step: 0.1 },
   })
 
   // Durata (secondi) del crossfade quando si cambia vista: quanto è "soffusa"
@@ -274,7 +325,7 @@ export default function LightRig({ apiRef, lightsApi, previewRef } = {}) {
   // Valori live degli slider (aggiornati a ogni render): in ?debug (tuning)
   // pilotano le luci direttamente e sono la sorgente della cattura.
   const liveRef = useRef({})
-  liveRef.current = { keyMain, keyFill, rake, rim, accent }
+  liveRef.current = { keyMain, keyFill, rake, rim, accent, accent2, accent3 }
   // Durata di transizione live (letta nel useFrame e dal pannello per l'export).
   const transitionRef = useRef(LIGHT_FADE)
   transitionRef.current = trans.durata
@@ -350,6 +401,8 @@ export default function LightRig({ apiRef, lightsApi, previewRef } = {}) {
       rake: rakeRef.current,
       rim: rimRef.current,
       accent: accentRef.current,
+      accent2: accent2Ref.current,
+      accent3: accent3Ref.current,
     }
     for (const slot in lights) {
       const light = lights[slot]
@@ -417,8 +470,9 @@ export default function LightRig({ apiRef, lightsApi, previewRef } = {}) {
         color={BASE_LIGHTS.rim.color}
         decay={1.2}
       />
-      {/* Luce-accento per-vista: point light, spenta di default (intensity 0),
-          guidata dal useFrame come le altre. Solidale al rig (camera). */}
+      {/* Set di tre luci-accento per-vista: point light, spente di default
+          (intensity 0), guidate dal useFrame come le altre. Solidali al rig
+          (camera). La 2 e la 3 sono facoltative. */}
       <pointLight
         ref={accentRef}
         position={BASE_LIGHTS.accent.position}
@@ -426,6 +480,22 @@ export default function LightRig({ apiRef, lightsApi, previewRef } = {}) {
         color={BASE_LIGHTS.accent.color}
         distance={BASE_LIGHTS.accent.distance}
         decay={BASE_LIGHTS.accent.decay}
+      />
+      <pointLight
+        ref={accent2Ref}
+        position={BASE_LIGHTS.accent2.position}
+        intensity={BASE_LIGHTS.accent2.intensity}
+        color={BASE_LIGHTS.accent2.color}
+        distance={BASE_LIGHTS.accent2.distance}
+        decay={BASE_LIGHTS.accent2.decay}
+      />
+      <pointLight
+        ref={accent3Ref}
+        position={BASE_LIGHTS.accent3.position}
+        intensity={BASE_LIGHTS.accent3.intensity}
+        color={BASE_LIGHTS.accent3.color}
+        distance={BASE_LIGHTS.accent3.distance}
+        decay={BASE_LIGHTS.accent3.decay}
       />
       <object3D ref={targetRef} position={[0, 0, 0]} />
       <object3D ref={rimTargetRef} position={[0, 0.4, 0]} />
