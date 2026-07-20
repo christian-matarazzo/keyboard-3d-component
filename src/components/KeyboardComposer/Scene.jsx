@@ -97,7 +97,7 @@ export default function Scene({ modelUrl, finish, apiRef }) {
         <MaterialTuner finish={finish} />
 
         {/* Matrice volumetrica */}
-        <LightRig modelSize={modelSize} />
+        <LightRig modelSize={modelSize} apiRef={apiRef} /> {/* AGGIUNGI apiRef */}
       </Suspense>
     </Canvas>
   )
