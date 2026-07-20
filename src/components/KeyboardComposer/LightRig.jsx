@@ -4,21 +4,23 @@ import { useControls, button } from 'leva'
 import { easing } from 'maath'
 import * as THREE from 'three'
 import { Html } from '@react-three/drei'
+// Inizializzazione GLOBALE: deve avvenire prima che i materiali PBR 
+// vengano compilati, altrimenti le RectAreaLight vengono ignorate.
+import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js'
+RectAreaLightUniformsLib.init()
+
 import { POSE_COORD, wrapYaw } from './poseGraph'
 
 const RIG_POSITION = [0, 0.1, 0]
 
-// Rileva se siamo in modalità debug
 const DEBUG = new URLSearchParams(window.location.search).has('debug')
 
 const generateDefaultConfig = () => {
   const def = { margin: 1.0, showHelpers: true, showSurfaces: true } 
-  // Point Lights
   for (let i = 0; i < 9; i++) { def[`top_${i}_intensity`] = 0; def[`top_${i}_color`] = '#ffffff'; def[`top_${i}_decay`] = 2; }
   for (let i = 0; i < 8; i++) { def[`mid_${i}_intensity`] = 0; def[`mid_${i}_color`] = '#ffffff'; def[`mid_${i}_decay`] = 2; }
   for (let i = 0; i < 9; i++) { def[`bot_${i}_intensity`] = 0; def[`bot_${i}_color`] = '#ffffff'; def[`bot_${i}_decay`] = 2; }
   
-  // Surface Lights (Area Lights)
   const surfaces = ['top', 'bot', 'left', 'right', 'front', 'back']
   surfaces.forEach(s => {
     def[`surf_${s}_intensity`] = 0
@@ -37,22 +39,18 @@ export default function LightRig({ modelSize, apiRef } = {}) {
   const [selectedLight, setSelectedLight] = useState(null) 
   const [lightEditor, setLightEditor] = useState({ intensity: 0, color: '#ffffff', decay: 2 })
 
-  // Point Lights Refs
   const topLights = useRef([]); const topHelpers = useRef([])
   const midLights = useRef([]); const midHelpers = useRef([])
   const botLights = useRef([]); const botHelpers = useRef([])
   
-  // Surface Lights Refs
   const surfLights = useRef({})
   const surfHelpers = useRef({})
   
   const labelRef = useRef(null)
 
-  // Ref per transizione organica
   const prevCamRef = useRef({ pitch: 0, yaw: 0, initialized: false })
   const transitionRef = useRef({ totalDist: 0, progress: 1 })
 
-  // --- 1. COSTRUZIONE DELLO SCHEMA DI LEVA ---
   const schema = useMemo(() => {
     return {
       showHelpers: { value: false, label: 'Mostra Punti' },
@@ -65,7 +63,6 @@ export default function LightRig({ modelSize, apiRef } = {}) {
           configsRef.current[activePoseRef.current].showHelpers = currentControlsRef.current.showHelpers
           configsRef.current[activePoseRef.current].showSurfaces = currentControlsRef.current.showSurfaces
         }
-        
         const json = JSON.stringify(configsRef.current, null, 2)
         const blob = new Blob([json], { type: 'application/json' })
         const url = URL.createObjectURL(blob)
@@ -90,10 +87,8 @@ export default function LightRig({ modelSize, apiRef } = {}) {
             try {
               const parsed = JSON.parse(ev.target.result)
               configsRef.current = parsed
-              
               let alertMsg = "Configurazione caricata con successo!"
               const currentPose = activePoseRef.current
-              
               if (currentPose) {
                 if (parsed[currentPose]) {
                   const newConfig = { ...generateDefaultConfig(), ...parsed[currentPose] }
@@ -103,7 +98,7 @@ export default function LightRig({ modelSize, apiRef } = {}) {
                     showSurfaces: newConfig.showSurfaces !== undefined ? newConfig.showSurfaces : newConfig.showHelpers 
                   })
                 } else {
-                  alertMsg += `\n\nAttenzione: Nessuna impostazione per la vista attuale (${currentPose}). Rimarrà ai valori di default.`
+                  alertMsg += `\n\nAttenzione: Nessuna impostazione per la vista attuale (${currentPose}). Rimarrà ai default.`
                   const def = generateDefaultConfig()
                   setControls({ margin: def.margin, showHelpers: def.showHelpers, showSurfaces: def.showSurfaces })
                 }
@@ -144,14 +139,11 @@ export default function LightRig({ modelSize, apiRef } = {}) {
     }
   }, [controls.margin, controls.showHelpers, controls.showSurfaces])
 
-  // --- 2. GESTIONE CAMBIO VISTA (AUTO-SAVE / LOAD) ---
   useEffect(() => {
     if (!activePose) return
-
     if (!configsRef.current[activePose]) {
       configsRef.current[activePose] = generateDefaultConfig()
     }
-
     const newConfig = configsRef.current[activePose]
     setControls({ 
       margin: newConfig.margin, 
@@ -181,9 +173,6 @@ export default function LightRig({ modelSize, apiRef } = {}) {
     }
   }
 
-  // --- 3. COSTRUZIONE MATRICI E SUPERFICI 3D ---
-  
-  // A. Punti (PointLights)
   const layers = useMemo(() => {
     if (!modelSize) return { top: [], mid: [], bot: [] }
     const m = controls.margin || 1.0
@@ -207,7 +196,6 @@ export default function LightRig({ modelSize, apiRef } = {}) {
     return { top, mid, bot }
   }, [modelSize, controls.margin])
 
-  // B. Facce della Scatola (RectAreaLights)
   const faces = useMemo(() => {
     if (!modelSize) return []
     const m = controls.margin || 1.0
@@ -215,24 +203,24 @@ export default function LightRig({ modelSize, apiRef } = {}) {
     const h = modelSize.y + m * 2
     const d = modelSize.z + m * 2
 
+    // CORREZIONE: Le RectAreaLight sparano verso l'asse Z negativo locale.
+    // Ora ruotate in modo che l'asse -Z punti dritto verso il modello al centro [0,0,0].
     return [
       { id: 'surf_top', layer: 'surf', index: 'top', pos: [0, h/2, 0], rot: [-Math.PI/2, 0, 0], args: [w, d] },
       { id: 'surf_bot', layer: 'surf', index: 'bot', pos: [0, -h/2, 0], rot: [Math.PI/2, 0, 0], args: [w, d] },
-      { id: 'surf_left', layer: 'surf', index: 'left', pos: [-w/2, 0, 0], rot: [0, Math.PI/2, 0], args: [d, h] },
-      { id: 'surf_right', layer: 'surf', index: 'right', pos: [w/2, 0, 0], rot: [0, -Math.PI/2, 0], args: [d, h] },
-      { id: 'surf_front', layer: 'surf', index: 'front', pos: [0, 0, d/2], rot: [0, Math.PI, 0], args: [w, h] },
-      { id: 'surf_back', layer: 'surf', index: 'back', pos: [0, 0, -d/2], rot: [0, 0, 0], args: [w, h] },
+      { id: 'surf_left', layer: 'surf', index: 'left', pos: [-w/2, 0, 0], rot: [0, -Math.PI/2, 0], args: [d, h] },
+      { id: 'surf_right', layer: 'surf', index: 'right', pos: [w/2, 0, 0], rot: [0, Math.PI/2, 0], args: [d, h] },
+      { id: 'surf_front', layer: 'surf', index: 'front', pos: [0, 0, d/2], rot: [0, 0, 0], args: [w, h] },
+      { id: 'surf_back', layer: 'surf', index: 'back', pos: [0, 0, -d/2], rot: [0, Math.PI, 0], args: [w, h] },
     ]
   }, [modelSize, controls.margin])
 
-  // --- 4. RENDER LOOP ---
   useFrame((state, delta) => {
     const poseKey = apiRef?.current?.currentPoseKey?.()
     
     if (poseKey && poseKey !== activePoseRef.current) {
       const targetCoord = POSE_COORD[poseKey]
       const prevCoord = POSE_COORD[activePoseRef.current] || targetCoord
-      
       if (targetCoord && prevCoord) {
         const totalDist = Math.hypot(
           wrapYaw(targetCoord.yaw - prevCoord.yaw),
@@ -241,7 +229,6 @@ export default function LightRig({ modelSize, apiRef } = {}) {
         transitionRef.current.totalDist = totalDist
         transitionRef.current.progress = totalDist > 0.001 ? 0 : 1
       }
-      
       prevPoseRef.current = activePoseRef.current
       activePoseRef.current = poseKey
       setActivePose(poseKey)
@@ -290,11 +277,9 @@ export default function LightRig({ modelSize, apiRef } = {}) {
     const isVisiblePoints = DEBUG && controls.showHelpers
     const isVisibleSurfaces = DEBUG && controls.showSurfaces
 
-    // Aggiornamento Points
     const updateLightGroup = (lightsArray, helpersArray, prefix) => {
       lightsArray.current.forEach((light, i) => {
         if (!light) return
-        
         const targetIntensity = lerpVal(`${prefix}_${i}_intensity`, 0)
         const targetDecay = lerpVal(`${prefix}_${i}_decay`, 2)
         const targetColor = targetC[`${prefix}_${i}_color`] || '#ffffff'
@@ -308,7 +293,6 @@ export default function LightRig({ modelSize, apiRef } = {}) {
           helper.visible = isVisiblePoints
           if (isVisiblePoints) {
             const isSelected = selectedLight?.layer === prefix && selectedLight?.index === i
-            
             if (isSelected) {
               easing.damp(helper.scale, 'x', 1.2, currentDamp, delta)
               easing.damp(helper.scale, 'y', 1.2, currentDamp, delta)
@@ -328,7 +312,6 @@ export default function LightRig({ modelSize, apiRef } = {}) {
       })
     }
 
-    // Aggiornamento Superfici
     const updateSurfGroup = () => {
       faces.forEach(({ index: s }) => {
         const light = surfLights.current[s]
@@ -345,13 +328,12 @@ export default function LightRig({ modelSize, apiRef } = {}) {
           helper.visible = isVisibleSurfaces
           if (isVisibleSurfaces) {
             const isSelected = selectedLight?.layer === 'surf' && selectedLight?.index === s
-            
             if (isSelected) {
               easing.dampC(helper.material.color, '#00ff44', currentDamp, delta) 
-              helper.material.opacity = 0.8
+              helper.material.opacity = 0.6
             } else {
               easing.dampC(helper.material.color, targetColor, currentDamp, delta)
-              helper.material.opacity = Math.max(0.1, targetIntensity / 50)
+              helper.material.opacity = Math.max(0.05, targetIntensity / 1500) 
             }
           }
         }
@@ -380,11 +362,11 @@ export default function LightRig({ modelSize, apiRef } = {}) {
   }
 
   const fixedDistance = 6
+  const isSurfSelected = selectedLight?.layer === 'surf'
 
   return (
     <group position={RIG_POSITION}>
       
-      {/* HTML FULLSCREEN CONTROLLER EDITOR */}
       {DEBUG && (controls.showHelpers || controls.showSurfaces) && (
         <Html fullscreen style={{ pointerEvents: 'none', zIndex: 9999 }}>
           
@@ -408,7 +390,6 @@ export default function LightRig({ modelSize, apiRef } = {}) {
             }}
           />
 
-          {/* MENU A TENDINA PER SELEZIONE LUCI OCCLUSE */}
           <div style={{
             position: 'absolute',
             bottom: '85px',
@@ -491,7 +472,10 @@ export default function LightRig({ modelSize, apiRef } = {}) {
                   Intensità: {lightEditor.intensity.toFixed(1)}
                 </label>
                 <input 
-                  type="range" min="0" max="50" step="0.1" 
+                  type="range" 
+                  min="0" 
+                  max={isSurfSelected ? 200 : 50} 
+                  step={isSurfSelected ? 1 : 0.1} 
                   value={lightEditor.intensity} 
                   onChange={(e) => updateLightValue('intensity', parseFloat(e.target.value))}
                   style={{ accentColor: '#4dabf7', cursor: 'ew-resize' }}
@@ -508,7 +492,7 @@ export default function LightRig({ modelSize, apiRef } = {}) {
                 />
               </div>
 
-              {selectedLight.layer !== 'surf' && (
+              {!isSurfSelected && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
                   <label style={{ fontSize: '12px', fontWeight: '600' }}>
                     Decadimento: {lightEditor.decay.toFixed(1)}
@@ -526,7 +510,6 @@ export default function LightRig({ modelSize, apiRef } = {}) {
         </Html>
       )}
 
-      {/* RENDER FISICO DELLE FACCE DELLA SCATOLA (Surface Lighting) */}
       {faces.map((face) => (
         <group key={face.id} position={face.pos} rotation={face.rot}>
           <rectAreaLight 
@@ -548,7 +531,6 @@ export default function LightRig({ modelSize, apiRef } = {}) {
         </group>
       ))}
 
-      {/* RENDER FISICO DEI PUNTI LUCE (Point Lights) */}
       {layers.top.map((pos, i) => (
         <group key={`top-${i}`} position={pos}>
           <pointLight intensity={0} ref={el => { if (el) topLights.current[i] = el }} distance={fixedDistance} />
