@@ -510,18 +510,14 @@ export function useComposerControls(
     }
 
     const onUp = (e) => {
-      if (feelRef.current.enableOrbit) return; // NUOVO
       if (e.pointerId !== d.pointerId) return
       d.pointerId = null
       el.style.cursor = 'grab'
       if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
       if (!d.moved) return
       d.moved = false
-
       const threshold = feelRef.current.commitFraction // 0.5 = nearest
-
       if (!d.step) {
-        // Nessun vicino: torna alla posa di partenza (l'elastico si riassorbe).
         spring.current.amp = 1
         p.pitch = d.pitch0
         p.yaw = d.yaw0
@@ -529,10 +525,6 @@ export function useComposerControls(
         p.targetY = p.yaw
         return
       }
-
-      // Progresso lungo l'asse dominante del gesto verso il vicino: oltre la
-      // soglia committa (anche in coda elastica, progresso > 1), altrimenti
-      // torna alla posa di partenza.
       const target = d.step
       const dPitch = target.pitch - d.pitch0
       const dYaw = target.yaw - d.yaw0
@@ -541,16 +533,22 @@ export function useComposerControls(
       const span = d.stepAxis === 'pitch' ? dPitch : dYaw
       const progress = Math.abs(span) < EPS ? 0 : Math.abs((soft - start) / span)
       const commit = progress >= threshold
-      // Solo se lo step viene davvero committato: il rientro alla posa di
-      // partenza è una corsa corta, va alla velocità piena.
-      spring.current.amp = commit ? stepAmp(dPitch, dYaw) : 1
 
+      spring.current.amp = commit ? stepAmp(dPitch, dYaw) : 1
       p.pitch = commit ? target.pitch : d.pitch0
       p.yaw = commit ? target.yaw : d.yaw0
       p.targetX = p.pitch
       p.targetY = p.yaw
-      // Da qui lavora la molla in useFrame: parte da posizione e velocità
-      // correnti del modello → overshoot e bounce se il gesto era più forte.
+    }
+
+    // LOGICA DI ZOOM
+    const onWheel = (e) => {
+      e.preventDefault()
+      cameraRadius.current = clamp(
+        cameraRadius.current * (1 + e.deltaY * 0.0012),
+        2.5,
+        40
+      )
     }
 
     el.addEventListener('pointerdown', onDown)
@@ -560,8 +558,11 @@ export function useComposerControls(
     el.addEventListener('pointerenter', onPointerEnter)
     el.addEventListener('pointerleave', onPointerLeave)
     el.addEventListener('keydown', onKeyDown)
+    el.addEventListener('wheel', onWheel, { passive: false }) // ASCOLTO ZOOM
+
     window.addEventListener('keyup', onKeyUp)
     window.addEventListener('blur', onWindowBlur)
+
     return () => {
       el.removeEventListener('pointerdown', onDown)
       el.removeEventListener('pointermove', onMove)
@@ -570,10 +571,12 @@ export function useComposerControls(
       el.removeEventListener('pointerenter', onPointerEnter)
       el.removeEventListener('pointerleave', onPointerLeave)
       el.removeEventListener('keydown', onKeyDown)
+      el.removeEventListener('wheel', onWheel) // RIMOZIONE ZOOM
+      
       window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', onWindowBlur)
     }
-  }, [gl, groupRef, initialRotation.x, initialRotation.y])
+  }, [gl, initialRotation.x, initialRotation.y]) // Dipendenze pulite
 
   useFrame((_, delta) => {
     const p = pose.current
@@ -594,7 +597,6 @@ export function useComposerControls(
     if (dt <= 0) return
 
     if (drag.current.pointerId != null) {
-      // In drag: easing pastoso sugli angoli virtuali
       const px = cur.pitch
       const py = cur.yaw
       easing.damp(cur, 'pitch', p.targetX, f.followTime, scaledDelta)
@@ -602,7 +604,6 @@ export function useComposerControls(
       s.vx = (cur.pitch - px) / dt
       s.vy = (cur.yaw - py) / dt
     } else {
-      // Molla smorzata: applicata agli angoli virtuali
       const k = f.springStiffness
       let c = 2 * f.springDamping * Math.sqrt(k)
       if (s.amp > 1 && f.springDamping < 1) {
@@ -610,7 +611,6 @@ export function useComposerControls(
         const u = (Math.PI * z) / Math.sqrt(1 - z * z) + Math.log(s.amp)
         c = 2 * (u / Math.sqrt(Math.PI * Math.PI + u * u)) * Math.sqrt(k)
       }
-      
       const stepDt = dt / s.amp
       const integrate = (axis, vKey, target) => {
         const x = cur[axis]
@@ -622,15 +622,16 @@ export function useComposerControls(
         s[vKey] += (k * (target - x) - c * s[vKey]) * stepDt
         cur[axis] = x + s[vKey] * stepDt
       }
-      
       integrate('pitch', 'vx', p.targetX)
       integrate('yaw', 'vy', p.targetY)
     }
 
-    // Orbita della telecamera al posto del gruppo
+    // Orbita della telecamera: rotazione inversa perfetta tramite quaternioni
+    camera.quaternion.setFromEuler(new THREE.Euler(-cur.pitch, -cur.yaw, 0, 'YXZ'))
+    
+    // Posizioniamo la telecamera al raggio corrente e applichiamo la rotazione
     camera.position.set(0, 0, cameraRadius.current)
-    camera.position.applyEuler(new THREE.Euler(-cur.pitch, -cur.yaw, 0, 'YXZ'))
+    camera.position.applyQuaternion(camera.quaternion)
     camera.position.y += PIVOT_Y
-    camera.lookAt(0, PIVOT_Y, 0)
   })
 }
