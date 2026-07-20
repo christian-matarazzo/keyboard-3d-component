@@ -547,7 +547,7 @@ export function useComposerControls(
       cameraRadius.current = clamp(
         cameraRadius.current * (1 + e.deltaY * 0.0012),
         2.5,
-        40
+        200
       )
     }
 
