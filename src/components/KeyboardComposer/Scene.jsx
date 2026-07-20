@@ -4,6 +4,7 @@ import { Canvas, useThree } from '@react-three/fiber'
 import {
   Html,
   useProgress,
+  OrbitControls
 } from '@react-three/drei'
 import { useControls } from 'leva'
 import { KeyboardModel } from './KeyboardModel'
@@ -61,6 +62,11 @@ function MaterialTuner({ finish }) {
 export default function Scene({ modelUrl, finish, apiRef }) {
   const [modelSize, setModelSize] = useState(null)
 
+  // NUOVO: Leggiamo lo stesso flag definito in useComposerControls
+  const { enableOrbit } = useControls('Rotazione', {
+    enableOrbit: { value: false, label: 'Abilita Orbit Controls' }
+  })
+
   return (
     <Canvas
       shadows
@@ -79,6 +85,10 @@ export default function Scene({ modelUrl, finish, apiRef }) {
           window.__r3f_state = state
       }}
     >
+
+      {/* NUOVO COMPONENTE: Gestirà la telecamera solo se abilitato dal pannello */}
+      <OrbitControls enabled={enableOrbit} makeDefault />
+
       <Suspense fallback={<Loader />}>
         {/* Modello centrato: ruotando su X i bordi non escono dal frame. */}
         <group position={[0, 0.1, 0]}>
