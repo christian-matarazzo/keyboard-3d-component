@@ -12,7 +12,8 @@ Senza `?debug` il pannello non esiste e l'utente vede solo il modello.
 
 ## Luci (il "set fotografico")
 
-**File: `src/components/KeyboardComposer/LightRig.jsx`**
+**File: `src/components/KeyboardComposer/LightRig.jsx`** 
+
 
 Impianto DIAGONALE (round 8, sketch cliente): una sorgente dominante da
 alto-sinistra + un fill dall'angolo opposto basso-destra. La diagonale
