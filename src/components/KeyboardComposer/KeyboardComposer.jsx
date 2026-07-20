@@ -4,7 +4,6 @@ import { Leva } from 'leva'
 import styles from './KeyboardComposer.module.css'
 import Scene from './Scene'
 import ViewPad from './ViewPad'
-import LightCapturePanel from './LightCapturePanel'
 import { DEFAULT_MODEL_URL } from './KeyboardModel'
 import { finishes as defaultFinishes, getFinish } from './materials/registry'
 
@@ -104,12 +103,6 @@ export default function KeyboardComposer({
   // Ponte fra la pulsantiera (DOM) e i controlli (dentro il Canvas): il ref
   // viene popolato da useComposerControls con `{ goTo(poseKey), currentPoseKey() }`.
   const poseApi = useRef(null)
-  // Ponte fra il pannello di cattura luci (DOM) e il LightRig (dentro il
-  // Canvas): popolato con `{ readLights(), getTransition() }`, usato solo in ?debug.
-  const lightsApi = useRef(null)
-  // Stato dell'anteprima transizioni scritto DAL pannello e letto dal LightRig
-  // ogni frame: `{ on, store }` (store = set catturati per posa). Solo ?debug.
-  const previewRef = useRef(null)
 
   return (
     <section className={styles.section}>
@@ -121,17 +114,8 @@ export default function KeyboardComposer({
           modelUrl={modelUrl}
           finish={finish}
           apiRef={poseApi}
-          lightsApi={lightsApi}
-          previewRef={previewRef}
         />
         <ViewPad apiRef={poseApi} />
-        {DEBUG && (
-          <LightCapturePanel
-            poseApi={poseApi}
-            lightsApi={lightsApi}
-            previewRef={previewRef}
-          />
-        )}
       </div>
     </section>
   )

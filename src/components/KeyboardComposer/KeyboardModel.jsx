@@ -6,7 +6,6 @@ import { useControls } from 'leva'
 import { collectSlotMeshes, applyFinish } from './materials/applyFinish'
 import { useComposerControls } from './useComposerControls'
 import { ENTRY_LANDSCAPE, ENTRY_PORTRAIT } from './poseGraph'
-import { RAKE_LAYER } from './LightRig'
 
 const DRACO_PATH = '/draco/'
 export const DEFAULT_MODEL_URL = '/models/keyboard.glb'
@@ -15,31 +14,31 @@ export const DEFAULT_MODEL_URL = '/models/keyboard.glb'
 // del file sorgente (l'OBJ è in centimetri).
 const TARGET_WIDTH = 3.2
 
-export function KeyboardModel({ url = DEFAULT_MODEL_URL, finish, apiRef }) {
+export function KeyboardModel({ url = DEFAULT_MODEL_URL, finish, apiRef, onSizeComputed }) {
   const groupRef = useRef()
   const { scene } = useGLTF(url, DRACO_PATH)
 
   // Auto-fit: centra il modello e lo scala a TARGET_WIDTH, così camera e
   // ombre funzionano qualunque siano le unità dell'asset.
-  const { scale, offset } = useMemo(() => {
+  const { scale, offset, finalSize } = useMemo(() => {
     const box = new THREE.Box3().setFromObject(scene)
     const size = box.getSize(new THREE.Vector3())
     const center = box.getCenter(new THREE.Vector3())
     const s = TARGET_WIDTH / Math.max(size.x, size.z, 1e-6)
-    return { scale: s, offset: center.multiplyScalar(-1) }
+    return { scale: s, offset: center.multiplyScalar(-1), finalSize: size.clone().multiplyScalar(s) }
   }, [scene])
+
+  useEffect(() => {
+    if (onSizeComputed && finalSize) {
+      onSizeComputed(finalSize)
+    }
+  }, [finalSize, onSizeComputed])
 
   const slotMeshes = useMemo(() => collectSlotMeshes(scene), [scene])
 
   useEffect(() => {
     if (finish) applyFinish(slotMeshes, finish)
   }, [slotMeshes, finish])
-
-  // Solo i keycaps stanno anche sul layer del rake: la luce radente rivela il
-  // loro rilievo senza toccare le piastre in alluminio (che brucerebbero).
-  useEffect(() => {
-    for (const mesh of slotMeshes.keycaps) mesh.layers.enable(RAKE_LAYER)
-  }, [slotMeshes])
 
   const portrait = useThree((s) => s.size.width < s.size.height)
 
@@ -57,25 +56,10 @@ export function KeyboardModel({ url = DEFAULT_MODEL_URL, finish, apiRef }) {
     apiRef, // esposto alla pulsantiera delle viste, che sta fuori dal Canvas
   })
 
-  // Luce "orbitale": agganciata al group che ruota (non al rig camera-relative
-  // di LightRig), quindi resta sempre nella stessa posizione LOCALE — sotto
-  // il modello — qualunque sia la posa corrente. Il rig segue la camera e non
-  // "vede" mai il lato che il modello ha ruotato verso il basso; questa luce
-  // orbita insieme all'oggetto e lo tiene sempre riempito da sotto.
-  const orbital = useControls('Luci · orbitale (sotto)', {
-    intensity: { value: 3.5, min: 0, max: 6, step: 0.1 },
-    color: '#dce4ff',
-  })
 
   return (
     <group>
       <group ref={groupRef}>
-        <pointLight
-          position={[-10, 1, 0.6]}
-          intensity={orbital.intensity}
-          decay={1.2}
-          color={orbital.color}
-        />
         <group scale={scale}>
           <primitive object={scene} position={offset} />
         </group>
