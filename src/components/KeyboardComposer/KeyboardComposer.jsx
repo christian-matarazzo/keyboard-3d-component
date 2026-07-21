@@ -7,6 +7,51 @@ import ViewPad from './ViewPad'
 import { DEFAULT_MODEL_URL } from './KeyboardModel'
 import { finishes as defaultFinishes, getFinish } from './materials/registry'
 
+// --- NUOVO COMPONENTE: HUD Sci-Fi ---
+function SciFiHud({ apiRef }) {
+  const [data, setData] = useState({ pose: 'N/A', fps: 0, ram: 0 });
+  const frameCount = useRef(0);
+  const lastTime = useRef(performance.now());
+
+  useEffect(() => {
+    let animationFrameId;
+    
+    const loop = (time) => {
+      frameCount.current++;
+      // Aggiorna i dati ogni 500ms (mezzo secondo) per evitare sfarfallii illeggibili
+      if (time - lastTime.current >= 500) {
+        const currentFps = Math.round((frameCount.current * 1000) / (time - lastTime.current));
+        frameCount.current = 0;
+        lastTime.current = time;
+
+        // performance.memory funziona su Chrome/Edge. Su Firefox/Safari restituirà 0
+        const memory = performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : 0;
+        const currentPose = apiRef.current?.currentPoseKey?.() || 'MOVING...';
+
+        setData({ pose: currentPose, fps: currentFps, ram: memory });
+      }
+      animationFrameId = requestAnimationFrame(loop);
+    };
+    
+    animationFrameId = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [apiRef]);
+
+  // Se siamo in debug non mostriamo l'HUD
+  if (DEBUG) return null;
+
+  return (
+    <div className={styles.sciFiHud}>
+      <span>TARGET: [{data.pose}]</span>
+      <span className={styles.hudSeparator}>|</span>
+      <span>SYS_FPS: {data.fps}</span>
+      <span className={styles.hudSeparator}>|</span>
+      <span>MEM_ALLOC: {data.ram > 0 ? `${data.ram}MB` : 'N/A'}</span>
+    </div>
+  );
+}
+// --- FINE NUOVO COMPONENTE ---
+
 // Pannello di tuning (luci, materiali, resa) visibile solo con `?debug`
 // nell'URL: in produzione il canvas resta pulito, a tutto schermo.
 const DEBUG = new URLSearchParams(window.location.search).has('debug')
@@ -107,6 +152,9 @@ export default function KeyboardComposer({
   return (
     <section className={styles.section}>
       <DebugPanel />
+
+      <SciFiHud apiRef={poseApi} />
+
       <div
         className={`${styles.canvasWrap} ${loaded ? styles.canvasWrapLoaded : ''}`}
       >

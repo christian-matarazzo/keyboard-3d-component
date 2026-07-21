@@ -38,80 +38,6 @@
   background: rgb(255 255 255 / 30%);
 }
 
-/* Pulsantiera delle viste: croce di 4 freccette in alto a sinistra, sopra il
-   canvas (fuori dall'ingombro del modello, che resta centrato). Griglia 3x3
-   con solo le caselle a croce occupate. */
-.viewPad {
-  position: absolute;
-  top: clamp(12px, 5vh, 44px);
-  left: clamp(12px, 3vw, 44px);
-  display: grid;
-  grid-template-columns: repeat(3, auto);
-  grid-template-rows: repeat(3, auto);
-  gap: 5px;
-  z-index: 2;
-}
-
-.viewBtn {
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  display: grid;
-  place-items: center;
-  border: 1px solid rgb(255 255 255 / 14%);
-  border-radius: 6px;
-  background: rgb(255 255 255 / 4%);
-  color: rgb(255 255 255 / 65%);
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  transition:
-    background 0.18s ease,
-    border-color 0.18s ease,
-    color 0.18s ease,
-    transform 0.12s ease;
-}
-
-.viewBtn svg {
-  width: 16px;
-  height: 16px;
-  display: block;
-}
-
-.viewBtn:hover {
-  background: rgb(255 255 255 / 10%);
-  border-color: rgb(255 255 255 / 32%);
-  color: #fff;
-}
-
-.viewBtn:active {
-  transform: scale(0.92);
-}
-
-.viewBtn:focus-visible {
-  outline: 2px solid rgb(255 255 255 / 60%);
-  outline-offset: 2px;
-}
-
-/* Solo la croce: gli angoli della griglia restano vuoti. */
-.up {
-  grid-area: 1 / 2;
-}
-.left {
-  grid-area: 2 / 1;
-}
-.right {
-  grid-area: 2 / 3;
-}
-.down {
-  grid-area: 3 / 2;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .viewBtn {
-    transition: none;
-  }
-}
-
 /* ── Pannello di cattura luci per-vista (solo ?debug) ───────────────────────
    In basso a sinistra, sopra il canvas. Stile sobrio coerente col resto del
    configuratore (nero/bianco translucido). È uno strumento di autoring, non
@@ -293,4 +219,87 @@
   border: 1px solid rgb(120 190 255 / 40%);
   color: #fff;
   text-align: center;
+}
+
+/* ── NUOVO MENU SCI-FI A SINISTRA ─────────────────────── */
+.sciFiSidebar {
+  position: absolute;
+  top: 50%;
+  left: 40px;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  z-index: 10;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.sciFiSidebarTitle {
+  color: rgb(140 200 255 / 60%);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  margin-bottom: 8px;
+}
+
+.sciFiBtn {
+  background: transparent;
+  border: none;
+  border-left: 2px solid rgb(140 200 255 / 20%);
+  padding: 6px 16px;
+  color: rgb(255 255 255 / 60%);
+  font-family: inherit;
+  font-size: 13px;
+  letter-spacing: 0.2em;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.sciFiPrefix {
+  opacity: 0;
+  margin-right: 4px;
+  color: #00ffcc;
+  transition: opacity 0.2s ease;
+}
+
+.sciFiBtn:hover {
+  color: #fff;
+  border-left-color: #00ffcc;
+  text-shadow: 0 0 8px rgb(0 255 204 / 50%);
+  padding-left: 20px;
+}
+
+.sciFiBtn:hover .sciFiPrefix {
+  opacity: 1;
+}
+
+.sciFiBtn:active {
+  transform: scale(0.95);
+}
+
+/* ── HUD IN ALTO AL CENTRO (No-Debug) ─────────────────────── */
+.sciFiHud {
+  position: absolute;
+  top: 30px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: #00ffcc;
+  background: rgba(0, 20, 15, 0.6);
+  border: 1px solid rgba(0, 255, 204, 0.3);
+  padding: 8px 24px;
+  border-radius: 4px;
+  box-shadow: 0 0 10px rgba(0, 255, 204, 0.1);
+  letter-spacing: 0.1em;
+  z-index: 10;
+  backdrop-filter: blur(4px);
+}
+
+.hudSeparator {
+  color: rgb(255 255 255 / 30%);
 }

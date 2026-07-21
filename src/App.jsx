@@ -20,7 +20,6 @@ export default function App() {
           flex: 'none',
         }}
       >
-        Guarda il tuo gaba prendere vita.
       </h1>
       {/* Full view: il canvas occupa tutta la viewport rimanente. */}
       <div style={{ flex: 1, minHeight: 0 }}>
