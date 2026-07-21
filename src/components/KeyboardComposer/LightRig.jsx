@@ -12,7 +12,6 @@ RectAreaLightUniformsLib.init()
 import { POSE_COORD, wrapYaw } from './poseGraph'
 
 const RIG_POSITION = [0, 0.1, 0]
-
 const DEBUG = new URLSearchParams(window.location.search).has('debug')
 
 const generateDefaultConfig = () => {
@@ -39,10 +38,14 @@ export default function LightRig({ modelSize, apiRef } = {}) {
   const [selectedLight, setSelectedLight] = useState(null) 
   const [lightEditor, setLightEditor] = useState({ intensity: 0, color: '#ffffff', decay: 2 })
 
-  const topLights = useRef([]); const topHelpers = useRef([])
-  const midLights = useRef([]); const midHelpers = useRef([])
-  const botLights = useRef([]); const botHelpers = useRef([])
+  // Ref aggiuntivi per i Gruppi (utilizzati per animare dinamicamente il volume)
+  const animatedMargin = useRef(1.0)
   
+  const topGroups = useRef([]); const topLights = useRef([]); const topHelpers = useRef([])
+  const midGroups = useRef([]); const midLights = useRef([]); const midHelpers = useRef([])
+  const botGroups = useRef([]); const botLights = useRef([]); const botHelpers = useRef([])
+  
+  const surfGroups = useRef({})
   const surfLights = useRef({})
   const surfHelpers = useRef({})
   
@@ -57,6 +60,12 @@ export default function LightRig({ modelSize, apiRef } = {}) {
       showSurfaces: { value: false, label: 'Mostra Superfici' },
       margin: { value: 1.0, min: 0, max: 3, step: 0.1, label: 'Margine Scatola' },
       
+      // Controlli per i Damping esposti per il Tuning
+      animMarginDamp: { value: 0.25, min: 0.01, max: 1, step: 0.01, label: 'Velocità Margine' },
+      animLightOnDamp: { value: 0.08, min: 0.01, max: 1, step: 0.01, label: 'Velocità Accensione' },
+      animLightOffDamp: { value: 0.25, min: 0.01, max: 1, step: 0.01, label: 'Velocità Spegnimento' },
+      animColorDamp: { value: 0.35, min: 0.01, max: 1, step: 0.01, label: 'Velocità Colore' },
+
       'Scarica JSON': button(() => {
         if (activePoseRef.current && currentControlsRef.current) {
           configsRef.current[activePoseRef.current].margin = currentControlsRef.current.margin
@@ -173,49 +182,40 @@ export default function LightRig({ modelSize, apiRef } = {}) {
     }
   }
 
+  // La topologia di base viene memorizzata ignorando il margine variabile, così
+  // l'array React non causa re-render indesiderati e distruttivi al cambio del margine.
   const layers = useMemo(() => {
     if (!modelSize) return { top: [], mid: [], bot: [] }
-    const m = controls.margin || 1.0
-    const xs = [-modelSize.x / 2 - m, 0, modelSize.x / 2 + m]
-    const ys = [modelSize.y / 2 + m, 0, -modelSize.y / 2 - m]
-    const zs = [-modelSize.z / 2 - m, 0, modelSize.z / 2 + m]
-    
     const top = [], mid = [], bot = []
     
-    for (let y of ys) {
-      for (let z of zs) {
-        for (let x of xs) {
-          if (Math.abs(y) < 0.001 && Math.abs(x) < 0.001 && Math.abs(z) < 0.001) continue
-          const pos = [x, y, z]
-          if (y > 0.001) top.push(pos)
-          else if (y < -0.001) bot.push(pos)
-          else mid.push(pos)
+    for (let y of [1, 0, -1]) {
+      for (let z of [-1, 0, 1]) {
+        for (let x of [-1, 0, 1]) {
+          if (y === 0 && x === 0 && z === 0) continue
+          if (y === 1) top.push({ x, y, z })
+          else if (y === -1) bot.push({ x, y, z })
+          else mid.push({ x, y, z })
         }
       }
     }
     return { top, mid, bot }
-  }, [modelSize, controls.margin])
+  }, [modelSize])
 
   const faces = useMemo(() => {
     if (!modelSize) return []
-    const m = controls.margin || 1.0
-    const w = modelSize.x + m * 2
-    const h = modelSize.y + m * 2
-    const d = modelSize.z + m * 2
-
-    // CORREZIONE: Le RectAreaLight sparano verso l'asse Z negativo locale.
-    // Ora ruotate in modo che l'asse -Z punti dritto verso il modello al centro [0,0,0].
     return [
-      { id: 'surf_top', layer: 'surf', index: 'top', pos: [0, h/2, 0], rot: [-Math.PI/2, 0, 0], args: [w, d] },
-      { id: 'surf_bot', layer: 'surf', index: 'bot', pos: [0, -h/2, 0], rot: [Math.PI/2, 0, 0], args: [w, d] },
-      { id: 'surf_left', layer: 'surf', index: 'left', pos: [-w/2, 0, 0], rot: [0, -Math.PI/2, 0], args: [d, h] },
-      { id: 'surf_right', layer: 'surf', index: 'right', pos: [w/2, 0, 0], rot: [0, Math.PI/2, 0], args: [d, h] },
-      { id: 'surf_front', layer: 'surf', index: 'front', pos: [0, 0, d/2], rot: [0, 0, 0], args: [w, h] },
-      { id: 'surf_back', layer: 'surf', index: 'back', pos: [0, 0, -d/2], rot: [0, Math.PI, 0], args: [w, h] },
+      { id: 'surf_top', layer: 'surf', index: 'top', rot: [-Math.PI/2, 0, 0] },
+      { id: 'surf_bot', layer: 'surf', index: 'bot', rot: [Math.PI/2, 0, 0] },
+      { id: 'surf_left', layer: 'surf', index: 'left', rot: [0, -Math.PI/2, 0] },
+      { id: 'surf_right', layer: 'surf', index: 'right', rot: [0, Math.PI/2, 0] },
+      { id: 'surf_front', layer: 'surf', index: 'front', rot: [0, 0, 0] },
+      { id: 'surf_back', layer: 'surf', index: 'back', rot: [0, Math.PI, 0] },
     ]
-  }, [modelSize, controls.margin])
+  }, [modelSize])
 
   useFrame((state, delta) => {
+    if (!modelSize) return
+
     const poseKey = apiRef?.current?.currentPoseKey?.()
     
     if (poseKey && poseKey !== activePoseRef.current) {
@@ -273,38 +273,64 @@ export default function LightRig({ modelSize, apiRef } = {}) {
       return v1 + (v2 - v1) * p
     }
 
-    const currentDamp = p < 1 ? 0.05 : 0.25 
-    const isVisiblePoints = DEBUG && controls.showHelpers
-    const isVisibleSurfaces = DEBUG && controls.showSurfaces
+    const currentCtrl = currentControlsRef.current
+    
+    // 1. ANIMA IL MARGINE
+    easing.damp(animatedMargin, 'current', currentCtrl.margin, currentCtrl.animMarginDamp, delta)
+    const m = animatedMargin.current
 
-    const updateLightGroup = (lightsArray, helpersArray, prefix) => {
-      lightsArray.current.forEach((light, i) => {
+    const isVisiblePoints = DEBUG && currentCtrl.showHelpers
+    const isVisibleSurfaces = DEBUG && currentCtrl.showSurfaces
+
+    const updateLightGroup = (lightsArray, helpersArray, groupsArray, prefix, gridItems) => {
+      gridItems.forEach((gridItem, i) => {
+        const light = lightsArray.current[i]
+        const helper = helpersArray.current[i]
+        const group = groupsArray.current[i]
         if (!light) return
+
+        // 2. MUOVI IL GRUPPO FLUIDAMENTE IN BASE AL MARGINE
+        if (group) {
+            const px = gridItem.x === 0 ? 0 : (modelSize.x / 2 + m) * gridItem.x
+            const py = gridItem.y === 0 ? 0 : (modelSize.y / 2 + m) * gridItem.y
+            const pz = gridItem.z === 0 ? 0 : (modelSize.z / 2 + m) * gridItem.z
+            group.position.set(px, py, pz)
+        }
+
         const targetIntensity = lerpVal(`${prefix}_${i}_intensity`, 0)
         const targetDecay = lerpVal(`${prefix}_${i}_decay`, 2)
         const targetColor = targetC[`${prefix}_${i}_color`] || '#ffffff'
         
-        easing.damp(light, 'intensity', targetIntensity, currentDamp, delta)
-        easing.damp(light, 'decay', targetDecay, currentDamp, delta)
-        easing.dampC(light.color, targetColor, 0.35, delta)
+        // 3. DAMPING ASIMMETRICO (Più reattivo in salita o discesa a seconda delle tue impostazioni Leva)
+        const isTurningOn = targetIntensity > light.intensity
+        const dynamicDamp = isTurningOn ? currentCtrl.animLightOnDamp : currentCtrl.animLightOffDamp
+        
+        easing.damp(light, 'intensity', targetIntensity, dynamicDamp, delta)
+        easing.damp(light, 'decay', targetDecay, dynamicDamp, delta)
+        
+        // 4. EVITA TRANSIZIONE AL BIANCO
+        if (targetIntensity > 0.05) {
+            easing.dampC(light.color, targetColor, currentCtrl.animColorDamp, delta)
+        }
 
-        const helper = helpersArray.current[i]
         if (helper) {
           helper.visible = isVisiblePoints
           if (isVisiblePoints) {
             const isSelected = selectedLight?.layer === prefix && selectedLight?.index === i
             if (isSelected) {
-              easing.damp(helper.scale, 'x', 1.2, currentDamp, delta)
-              easing.damp(helper.scale, 'y', 1.2, currentDamp, delta)
-              easing.damp(helper.scale, 'z', 1.2, currentDamp, delta)
-              easing.dampC(helper.material.color, '#00ff44', currentDamp, delta) 
+              easing.damp(helper.scale, 'x', 1.2, dynamicDamp, delta)
+              easing.damp(helper.scale, 'y', 1.2, dynamicDamp, delta)
+              easing.damp(helper.scale, 'z', 1.2, dynamicDamp, delta)
+              easing.dampC(helper.material.color, '#00ff44', dynamicDamp, delta) 
               helper.material.opacity = 1.0
             } else {
               const targetScale = 0.5 + (targetIntensity / 50) * 1.5 
-              easing.damp(helper.scale, 'x', targetScale, currentDamp, delta)
-              easing.damp(helper.scale, 'y', targetScale, currentDamp, delta)
-              easing.damp(helper.scale, 'z', targetScale, currentDamp, delta)
-              easing.dampC(helper.material.color, targetColor, currentDamp, delta)
+              easing.damp(helper.scale, 'x', targetScale, dynamicDamp, delta)
+              easing.damp(helper.scale, 'y', targetScale, dynamicDamp, delta)
+              easing.damp(helper.scale, 'z', targetScale, dynamicDamp, delta)
+              if (targetIntensity > 0.05) {
+                  easing.dampC(helper.material.color, targetColor, currentCtrl.animColorDamp, delta)
+              }
               helper.material.opacity = Math.max(0.1, targetIntensity / 50)
             }
           }
@@ -313,26 +339,60 @@ export default function LightRig({ modelSize, apiRef } = {}) {
     }
 
     const updateSurfGroup = () => {
-      faces.forEach(({ index: s }) => {
+      const w = modelSize.x + m * 2
+      const h = modelSize.y + m * 2
+      const d = modelSize.z + m * 2
+  
+      const dynamicFaces = {
+        top: { pos: [0, h/2, 0], args: [w, d] },
+        bot: { pos: [0, -h/2, 0], args: [w, d] },
+        left: { pos: [-w/2, 0, 0], args: [d, h] },
+        right: { pos: [w/2, 0, 0], args: [d, h] },
+        front: { pos: [0, 0, d/2], args: [w, h] },
+        back: { pos: [0, 0, -d/2], args: [w, h] }
+      }
+
+      faces.forEach((face) => {
+        const s = face.index
         const light = surfLights.current[s]
         const helper = surfHelpers.current[s]
+        const group = surfGroups.current[s]
         if (!light) return
         
+        const { pos, args } = dynamicFaces[s]
+        if (group) group.position.set(...pos)
+        
+        // Adattamento dimensioni RectAreaLight
+        easing.damp(light, 'width', args[0], currentCtrl.animMarginDamp, delta)
+        easing.damp(light, 'height', args[1], currentCtrl.animMarginDamp, delta)
+
         const targetIntensity = lerpVal(`surf_${s}_intensity`, 0)
         const targetColor = targetC[`surf_${s}_color`] || '#ffffff'
         
-        easing.damp(light, 'intensity', targetIntensity, currentDamp, delta)
-        easing.dampC(light.color, targetColor, 0.35, delta)
+        const isTurningOn = targetIntensity > light.intensity
+        const dynamicDamp = isTurningOn ? currentCtrl.animLightOnDamp : currentCtrl.animLightOffDamp
+
+        easing.damp(light, 'intensity', targetIntensity, dynamicDamp, delta)
+        
+        if (targetIntensity > 0.05) {
+            easing.dampC(light.color, targetColor, currentCtrl.animColorDamp, delta)
+        }
 
         if (helper) {
           helper.visible = isVisibleSurfaces
           if (isVisibleSurfaces) {
+            // Adattamento scala mesh Helper in base all'animazione
+            easing.damp(helper.scale, 'x', args[0], currentCtrl.animMarginDamp, delta)
+            easing.damp(helper.scale, 'y', args[1], currentCtrl.animMarginDamp, delta)
+
             const isSelected = selectedLight?.layer === 'surf' && selectedLight?.index === s
             if (isSelected) {
-              easing.dampC(helper.material.color, '#00ff44', currentDamp, delta) 
+              easing.dampC(helper.material.color, '#00ff44', dynamicDamp, delta) 
               helper.material.opacity = 0.6
             } else {
-              easing.dampC(helper.material.color, targetColor, currentDamp, delta)
+              if (targetIntensity > 0.05) {
+                  easing.dampC(helper.material.color, targetColor, currentCtrl.animColorDamp, delta)
+              }
               helper.material.opacity = Math.max(0.05, targetIntensity / 1500) 
             }
           }
@@ -340,9 +400,9 @@ export default function LightRig({ modelSize, apiRef } = {}) {
       })
     }
 
-    updateLightGroup(topLights, topHelpers, 'top')
-    updateLightGroup(midLights, midHelpers, 'mid')
-    updateLightGroup(botLights, botHelpers, 'bot')
+    updateLightGroup(topLights, topHelpers, topGroups, 'top', layers.top)
+    updateLightGroup(midLights, midHelpers, midGroups, 'mid', layers.mid)
+    updateLightGroup(botLights, botHelpers, botGroups, 'bot', layers.bot)
     updateSurfGroup()
   })
 
@@ -474,8 +534,8 @@ export default function LightRig({ modelSize, apiRef } = {}) {
                 <input 
                   type="range" 
                   min="0" 
-                  max={isSurfSelected ? 200 : 50} 
-                  step={isSurfSelected ? 1 : 0.1} 
+                  max={isSurfSelected ? 100 : 50} 
+                  step={isSurfSelected ? 0.2 : 0.1} 
                   value={lightEditor.intensity} 
                   onChange={(e) => updateLightValue('intensity', parseFloat(e.target.value))}
                   style={{ accentColor: '#4dabf7', cursor: 'ew-resize' }}
@@ -511,11 +571,11 @@ export default function LightRig({ modelSize, apiRef } = {}) {
       )}
 
       {faces.map((face) => (
-        <group key={face.id} position={face.pos} rotation={face.rot}>
+        <group key={face.id} ref={el => { if (el) surfGroups.current[face.index] = el }} rotation={face.rot}>
           <rectAreaLight 
             intensity={0}
-            width={face.args[0]} 
-            height={face.args[1]}
+            width={1} // Base dimension pre-animation 
+            height={1}
             ref={el => { if (el) surfLights.current[face.index] = el }} 
           />
           <mesh 
@@ -525,14 +585,15 @@ export default function LightRig({ modelSize, apiRef } = {}) {
             onPointerOut={handlePointerOut}
             renderOrder={998}
           >
-            <planeGeometry args={[face.args[0], face.args[1]]} />
+            {/* args statici a 1x1, si scala il nodo nel loop piuttosto che ricreare la geometria costantemente */}
+            <planeGeometry args={[1, 1]} />
             <meshBasicMaterial transparent opacity={0.1} wireframe depthTest={false} depthWrite={false} color="#ffffff" side={THREE.DoubleSide} />
           </mesh>
         </group>
       ))}
 
-      {layers.top.map((pos, i) => (
-        <group key={`top-${i}`} position={pos}>
+      {layers.top.map((gridItem, i) => (
+        <group key={`top-${i}`} ref={el => { if (el) topGroups.current[i] = el }}>
           <pointLight intensity={0} ref={el => { if (el) topLights.current[i] = el }} distance={fixedDistance} />
           <mesh 
             ref={el => { if (el) topHelpers.current[i] = el }}
@@ -547,8 +608,8 @@ export default function LightRig({ modelSize, apiRef } = {}) {
         </group>
       ))}
 
-      {layers.mid.map((pos, i) => (
-        <group key={`mid-${i}`} position={pos}>
+      {layers.mid.map((gridItem, i) => (
+        <group key={`mid-${i}`} ref={el => { if (el) midGroups.current[i] = el }}>
           <pointLight intensity={0} ref={el => { if (el) midLights.current[i] = el }} distance={fixedDistance} />
           <mesh 
             ref={el => { if (el) midHelpers.current[i] = el }}
@@ -563,8 +624,8 @@ export default function LightRig({ modelSize, apiRef } = {}) {
         </group>
       ))}
 
-      {layers.bot.map((pos, i) => (
-        <group key={`bot-${i}`} position={pos}>
+      {layers.bot.map((gridItem, i) => (
+        <group key={`bot-${i}`} ref={el => { if (el) botGroups.current[i] = el }}>
           <pointLight intensity={0} ref={el => { if (el) botLights.current[i] = el }} distance={fixedDistance} />
           <mesh 
             ref={el => { if (el) botHelpers.current[i] = el }}
