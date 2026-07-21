@@ -136,9 +136,38 @@ export default function LightRig({ modelSize, apiRef } = {}) {
     }
   }, [])
 
-  const [controls, setControls] = useControls('Impostazioni Globali Vista', () => schema)
+  const [controls, setControls] = useControls('Impostazioni Globali Vista', () => schema, { collapsed: true })
   const currentControlsRef = useRef(controls)
   currentControlsRef.current = controls
+
+  useEffect(() => {
+    // Eseguiamo il fetch solo fuori dal debug
+    if (!DEBUG) {
+      // Assicurati che il nome del file generato combaci con quello esportato
+      fetch('/lightconfig/light-rig-config.json')
+        .then((res) => {
+          if (!res.ok) throw new Error('File di configurazione non trovato');
+          return res.json();
+        })
+        .then((data) => {
+          // Aggiorna le configurazioni con i dati scaricati
+          configsRef.current = data;
+          
+          // Se c'è già una vista attiva caricata, forza l'aggiornamento dei valori
+          if (activePoseRef.current && data[activePoseRef.current]) {
+            const newConfig = { ...generateDefaultConfig(), ...data[activePoseRef.current] };
+            setControls({ 
+              margin: newConfig.margin, 
+              showHelpers: newConfig.showHelpers,
+              showSurfaces: newConfig.showSurfaces !== undefined ? newConfig.showSurfaces : newConfig.showHelpers 
+            });
+          }
+        })
+        .catch((err) => {
+          console.warn('Impossibile caricare il JSON delle luci, applico i default:', err.message);
+        });
+    }
+  }, [setControls]);
 
   useEffect(() => {
     if (activePoseRef.current && configsRef.current[activePoseRef.current]) {

@@ -148,7 +148,6 @@ export function useComposerControls(
   // Parametri "feel" regolabili dal pannello (?debug): i default sono i
   // valori di produzione.
   const feel = useControls('Rotazione', {
-    enableOrbit: { value: false, label: 'Abilita Orbit Controls' }, // NUOVO
     dragSpeed: { value: 0.01, min: 0.001, max: 0.012, step: 0.0005, label: 'velocità drag' },
     followTime: { value: 0.2, min: 0.05, max: 0.6, step: 0.01, label: 'inerzia in drag' },
     // Drag più lento (era 0.008) e più attrito in assestamento: gesto più
@@ -173,7 +172,7 @@ export function useComposerControls(
     timeScale: { value: 0.3, min: 0.3, max: 1.5, step: 0.05, label: 'velocità animazione' },
     fitMargin: { value: 1.6, min: 1, max: 2.5, step: 0.05, label: 'margine inquadratura' },
     zoomOutMobile: { value: 1.25, min: 1, max: 1.8, step: 0.05, label: 'zoom-out mobile' },
-  })
+  }, { collapsed: true })
   const feelRef = useRef(feel)
   feelRef.current = feel
 
@@ -409,7 +408,6 @@ export function useComposerControls(
     }
 
     const onDown = (e) => {
-      if (feelRef.current.enableOrbit) return; // NUOVO: Cede il controllo a OrbitControls
       if (d.pointerId != null) return // gesto già in corso: dita extra ignorate
       d.pointerId = e.pointerId
       d.moved = false
@@ -430,7 +428,6 @@ export function useComposerControls(
     }
 
     const onMove = (e) => {
-      if (feelRef.current.enableOrbit) return; // NUOVO
       if (e.pointerId !== d.pointerId) return
       const dx = e.clientX - d.startX
       const dy = e.clientY - d.startY

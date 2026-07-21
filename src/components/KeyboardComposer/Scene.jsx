@@ -3,8 +3,7 @@ import * as THREE from 'three'
 import { Canvas, useThree } from '@react-three/fiber'
 import {
   Html,
-  useProgress,
-  OrbitControls
+  useProgress
 } from '@react-three/drei'
 import { useControls } from 'leva'
 import { KeyboardModel } from './KeyboardModel'
@@ -41,7 +40,7 @@ function MaterialTuner({ finish }) {
     envMapIntensity: { value: finish.slots.body.envMapIntensity ?? 1, min: 0, max: 2 },
     clearcoat: { value: finish.slots.body.clearcoat ?? 0, min: 0, max: 1 },
     clearcoatRoughness: { value: finish.slots.body.clearcoatRoughness ?? 0, min: 0, max: 1 },
-  })
+  }, { collapsed: true })
   const keycaps = useControls('Materiale · keycaps', {
     color: finish.slots.keycaps.color,
     roughness: { value: finish.slots.keycaps.roughness, min: 0, max: 1 },
@@ -49,7 +48,7 @@ function MaterialTuner({ finish }) {
     envMapIntensity: { value: finish.slots.keycaps.envMapIntensity ?? 1, min: 0, max: 2 },
     clearcoat: { value: finish.slots.keycaps.clearcoat ?? 0, min: 0, max: 1 },
     clearcoatRoughness: { value: finish.slots.keycaps.clearcoatRoughness ?? 0, min: 0, max: 1 },
-  })
+  }, { collapsed: true })
   useEffect(() => {
     tuneSlotMaterial(finish.id, 'body', body)
   }, [finish.id, body])
@@ -61,11 +60,6 @@ function MaterialTuner({ finish }) {
 
 export default function Scene({ modelUrl, finish, apiRef }) {
   const [modelSize, setModelSize] = useState(null)
-
-  // NUOVO: Leggiamo lo stesso flag definito in useComposerControls
-  const { enableOrbit } = useControls('Rotazione', {
-    enableOrbit: { value: false, label: 'Abilita Orbit Controls' }
-  })
 
   return (
     <Canvas
@@ -85,9 +79,6 @@ export default function Scene({ modelUrl, finish, apiRef }) {
           window.__r3f_state = state
       }}
     >
-
-      {/* NUOVO COMPONENTE: Gestirà la telecamera solo se abilitato dal pannello */}
-      <OrbitControls enabled={enableOrbit} makeDefault />
 
       <Suspense fallback={<Loader />}>
         {/* Modello centrato: ruotando su X i bordi non escono dal frame. */}
