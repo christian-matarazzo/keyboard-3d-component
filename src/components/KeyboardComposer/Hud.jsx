@@ -133,9 +133,13 @@ export default function Hud({ poseApi }) {
 
       {/* ── Riga inferiore ──────────────────────────────────────────────── */}
       <footer className={styles.bottom}>
-        <span>IT - EU ©</span>
+        <span>
+          IT - EU <span className={styles.copyright}>©</span>
+        </span>
         <span>For internal use only, do not share</span>
-        <span>Instruments of Becoming 2026©</span>
+        <span>
+          Instruments of Becoming 2026<span className={styles.copyright}>©</span>
+        </span>
       </footer>
     </div>
   )

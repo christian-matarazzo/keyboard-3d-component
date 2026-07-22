@@ -2,17 +2,24 @@
    Sempre sopra il canvas, non intercetta i gesti (solo la paginazione riattiva
    i click). Font/spaziatura/caps dallo style guide: Suisse Mono, −2%, CAPS. */
 .hud {
+  /* Geometria condivisa: l'altezza del logo e il font base guidano anche
+     l'allineamento verticale di telemetria/versione sulla riga "Array
+     Keyboard Series" del lockup (vedi .telemetry/.version). */
+  --logo-h: clamp(44px, 4.84vw, 68px);
+  --hud-fs: clamp(11.5px, 0.99vw, 15px);
+  --hud-pad: clamp(18px, 2.64vw, 37px);
+
   position: absolute;
   inset: 0;
   z-index: 3;
   pointer-events: none;
-  padding: clamp(18px, 2.64vw, 37px);
+  padding: var(--hud-pad);
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   font-family: inherit;
   font-weight: 400;
-  font-size: clamp(11.5px, 0.99vw, 15px);
+  font-size: var(--hud-fs);
   line-height: 1.2;
   letter-spacing: -0.02em; /* LETTER SPACING −2% */
   text-transform: uppercase; /* ALWAYS CAPS-LOCK */
@@ -37,7 +44,7 @@
 /* Il logo È il lockup completo (Dither + barcode + Array Keyboard Series /
    Model L): lo si mostra grande, senza testo affiancato. */
 .logo {
-  height: clamp(44px, 4.84vw, 68px);
+  height: var(--logo-h);
   width: auto;
   display: block;
 }
@@ -50,6 +57,14 @@
   color: rgb(255 255 255 / 92%);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  /* Allineata (centro riga) alla scritta "Array Keyboard Series" del logo:
+     misurando i pixel dell'SVG (rasterizzato, bande di inchiostro) il testo
+     occupa la banda 57.63–80.63 su viewBox 106 → centro reale 65.22%, non
+     62.6% come stimato a occhio in precedenza (da qui lo scarto visibile
+     confermato dal cliente con la riga di riferimento). Offset dal top del
+     riquadro = 0.6522·altezzaLogo − metà riga (0.6·font, line-height 1.2).
+     translateY non altera il layout della griglia (resta alta come il logo). */
+  transform: translateY(calc(0.6522 * var(--logo-h) - 0.6 * var(--hud-fs)));
 }
 
 .sep {
@@ -62,12 +77,18 @@
   justify-self: end;
   text-align: right;
   color: rgb(255 255 255 / 78%);
+  /* Stessa riga di telemetria e "Array Keyboard Series" (vedi .telemetry). */
+  transform: translateY(calc(0.6522 * var(--logo-h) - 0.6 * var(--hud-fs)));
 }
 
 /* ── Paginazione / selettore vista (rimpiazza le frecce ViewPad) ────────── */
 .pager {
   position: absolute;
-  top: clamp(58px, 8vh, 92px);
+  /* Ancorati SOTTO il logo (non a un valore assoluto): la telemetria/versione
+     ora vivono sulla riga "Array Keyboard Series" dentro l'ingombro del logo,
+     quindi i bottoni devono partire dopo il fondo del logo per non toccarli.
+     top = padding + altezza logo + gap. */
+  top: calc(var(--hud-pad) + var(--logo-h) + clamp(14px, 1.4vw, 22px));
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -132,6 +153,15 @@
   text-align: right;
 }
 
+/* Il glifo © nasce con l'anello più piccolo delle maiuscole (≈7 vs 9 unità di
+   cap-height) e leggermente rialzato dalla baseline. Lo si porta alla stessa
+   grandezza di "IT - EU": scala 9/7 ≈ 1.286 e si riappoggia sulla baseline. */
+.copyright {
+  font-size: 1.286em;
+  line-height: 0;
+  vertical-align: -0.17em;
+}
+
 /* ── Mobile / portrait stretto ─────────────────────────────────────────────
    Lo screen del cliente è pensato per landscape: su schermi stretti la riga
    in alto (logo · telemetria · versione) e il footer a 3 colonne sforano e
@@ -139,12 +169,11 @@
    accanto al logo, footer impilato e centrato in basso. */
 @media (max-width: 600px) {
   .hud {
-    padding: clamp(13px, 4.4vw, 20px);
-    font-size: 11.5px;
-  }
-
-  .logo {
-    height: 29px;
+    /* Logo più corto e font fisso: le due variabili guidano sia il logo sia
+       l'allineamento di telemetria/versione (translateY calcolato dai var). */
+    --logo-h: 29px;
+    --hud-fs: 11.5px;
+    --hud-pad: clamp(13px, 4.4vw, 20px);
   }
 
   /* Due colonne: logo a sinistra, telemetria a destra. La versione (stringa
@@ -164,9 +193,9 @@
     display: none;
   }
 
-  /* La paginazione scende un filo per non toccare il logo più corto. */
+  /* Il top del pager è calcolato dalla formula base (padding + logo + gap):
+     con --logo-h/--hud-pad ridotti scende sotto il logo corto in automatico. */
   .pager {
-    top: clamp(46px, 7vh, 68px);
     gap: 8px;
   }
 
