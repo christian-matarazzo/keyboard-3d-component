@@ -145,6 +145,44 @@ export const VIEW_SHORTCUTS = {
   down: 'BOTTOM', // sottoscocca piatto
 }
 
+/**
+ * Selettore vista dell'HUD di prodotto: la paginazione `01–05` sopra la
+ * tastiera (rimpiazza le frecce ViewPad). Ordine = ordine dei numeri. La `04`
+ * = `TL` (initial position, 3/4 front) è la posa d'ingresso landscape, quindi
+ * al caricamento è la voce attiva — riproduce lo screen del cliente 1:1.
+ * Restano pose del grafo: da qui la navigazione a drag/tastiera riprende
+ * senza casi speciali. Facilmente riordinabile su richiesta del cliente.
+ */
+export const HUD_VIEWS = ['TOP', 'CFT', 'FRONT', 'TL', 'BOTTOM']
+
+/**
+ * Etichette brevi per l'HUD (readout alto-centro "3/4 FT"): chiave posa →
+ * label maiuscola. Fallback = la chiave stessa se non elencata.
+ */
+export const POSE_HUD_LABEL = {
+  TBACK: '3/4 BK',
+  TOP: 'TOP',
+  CFT: '3/4 TP',
+  FRONT: 'FRONT',
+  CFB: '3/4 FT',
+  BOTTOM: 'BOTTOM',
+  BBACK: '3/4 BK',
+  TL: '3/4 FT',
+  TR: '3/4 FT',
+  TBL: '3/4 BK',
+  TBR: '3/4 BK',
+  CFL: '3/4 L',
+  CFR: '3/4 R',
+  CBL: '3/4 BL',
+  CBR: '3/4 BR',
+  BACK: 'BACK',
+  BFL: '3/4 FL',
+  BFR: '3/4 FR',
+  BBL: '3/4 BL',
+  BBR: '3/4 BR',
+  BBE: 'BACK',
+}
+
 // Pose d'ingresso: landscape = corner "initial position" (TL); portrait =
 // vista top con l'asse lungo verticale a schermo (pitch 90 + yaw 90). In
 // portrait TUTTO il grafo è ruotato di +90° in yaw per il fit su schermo

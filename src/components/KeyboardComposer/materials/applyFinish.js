@@ -1,9 +1,12 @@
 import * as THREE from 'three'
 
 // Mappatura primaria: nome del materiale ereditato dall'OBJ → slot logico.
+// standardSurface4SG è comparso col modello Array L (retopo): è il gruppo
+// `Rialzo_4_Gradi` (il rialzo di 4° della base) → alluminio, quindi slot body.
 const MATERIAL_TO_SLOT = {
   initialShadingGroup: 'keycaps',
   standardSurface3SG: 'body',
+  standardSurface4SG: 'body',
   standardSurface2SG: 'damping',
 }
 
@@ -14,6 +17,8 @@ const NODE_TO_SLOT = [
   ['Countersunk', 'keycaps'],
   ['Rotor', 'body'],
   ['Slate', 'body'],
+  ['Rialzo', 'body'],
+  ['Tasselli', 'damping'],
   ['Damping', 'damping'],
 ]
 

@@ -7,8 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "asset:convert": "node --max-old-space-size=8192 node_modules/obj2gltf/bin/obj2gltf.js -i assets-src/Dither_L_Array_WEB_01.obj -o assets-src/keyboard-raw.glb",
-    "asset:optimize": "gltf-transform weld assets-src/keyboard-raw.glb assets-src/kb-1.glb && gltf-transform prune assets-src/kb-1.glb assets-src/kb-2.glb --keep-attributes && gltf-transform simplify assets-src/kb-2.glb assets-src/kb-3.glb --ratio 0.25 --error 0.0005 && gltf-transform draco assets-src/kb-3.glb public/models/keyboard.glb",
+    "asset:convert": "node --max-old-space-size=8192 node_modules/obj2gltf/bin/obj2gltf.js -i assets-src/Array_L_WEB_Retopo.obj -o assets-src/keyboard-raw.glb",
+    "asset:optimize": "gltf-transform weld assets-src/keyboard-raw.glb assets-src/kb-1.glb && gltf-transform prune assets-src/kb-1.glb assets-src/kb-2.glb --keep-attributes && gltf-transform draco assets-src/kb-2.glb public/models/keyboard.glb --quantize-normal 12 --quantize-position 14",
     "asset:inspect": "gltf-transform inspect public/models/keyboard.glb"
   },
   "dependencies": {

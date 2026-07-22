@@ -3,8 +3,9 @@
  *
  * Ogni finitura definisce i parametri PBR per i tre slot logici del modello:
  *  - keycaps  → materiale OBJ `initialShadingGroup` (Keycaps_Set + viti)
- *  - body     → materiale OBJ `standardSurface3SG`  (rotori + piastre Slate)
- *  - damping  → materiale OBJ `standardSurface2SG`  (Damping_Module + Damping_Foots)
+ *  - body     → materiali OBJ `standardSurface3SG` (rotori + piastre) e
+ *               `standardSurface4SG` (rialzo 4° della base, modello Array L)
+ *  - damping  → materiale OBJ `standardSurface2SG`  (Damping_Foots + Tasselli)
  *
  * Quando il cliente fornirà i materiali definitivi basta aggiornare/aggiungere
  * voci qui: ogni slot accetta anche `map`, `normalMap`, `roughnessMap` come URL
