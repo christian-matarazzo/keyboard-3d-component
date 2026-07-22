@@ -5,6 +5,7 @@ const MATERIAL_TO_SLOT = {
   initialShadingGroup: 'keycaps',
   standardSurface3SG: 'body',
   standardSurface2SG: 'damping',
+  standardSurface4SG: 'landing',
 }
 
 // Fallback: substring del nome del nodo → slot (i nomi possono includere
@@ -15,6 +16,9 @@ const NODE_TO_SLOT = [
   ['Rotor', 'body'],
   ['Slate', 'body'],
   ['Damping', 'damping'],
+  ['Landing', 'landing'],
+  ['Foot', 'landing'],
+  ['Rialzo', 'landing'],
 ]
 
 /**
@@ -22,7 +26,7 @@ const NODE_TO_SLOT = [
  * Attiva anche cast/receive shadow su ogni mesh.
  */
 export function collectSlotMeshes(scene) {
-  const slots = { keycaps: [], body: [], damping: [] }
+  const slots = { keycaps: [], body: [], damping: [], landing: [] }
   scene.traverse((obj) => {
     if (!obj.isMesh) return
     obj.castShadow = true

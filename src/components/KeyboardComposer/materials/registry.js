@@ -5,6 +5,7 @@
  *  - keycaps  → materiale OBJ `initialShadingGroup` (Keycaps_Set + viti)
  *  - body     → materiale OBJ `standardSurface3SG`  (rotori + piastre Slate)
  *  - damping  → materiale OBJ `standardSurface2SG`  (Damping_Module + Damping_Foots)
+ *  - landing  → materiale OBJ `standardSurface4SG`  (Basetta angolata)
  *
  * Quando il cliente fornirà i materiali definitivi basta aggiornare/aggiungere
  * voci qui: ogni slot accetta anche `map`, `normalMap`, `roughnessMap` come URL
@@ -32,6 +33,7 @@ export const finishes = [
       // del case). I solchi delle piastre restano leggibili via diffuso.
       body: { color: '#46464c', roughness: 0.62, metalness: 0.0, envMapIntensity: 0.55, clearcoat: 0.0, clearcoatRoughness: 0.2 },
       damping: { color: '#1c1c1e', roughness: 0.9, metalness: 0, envMapIntensity: 0.5 },
+      landing: { color: '#46464c', roughness: 0.62, metalness: 0.0, envMapIntensity: 0.55, clearcoat: 0.0, clearcoatRoughness: 0.2 },
     },
   },
   {
@@ -42,6 +44,7 @@ export const finishes = [
       keycaps: { color: '#e8e8ed', roughness: 0.55, metalness: 0.30, envMapIntensity: 0.7 },
       body: { color: '#c9c9ce', roughness: 0.45, metalness: 0.7, envMapIntensity: 0.7 },
       damping: { color: '#8e8e93', roughness: 0.9, metalness: 0, envMapIntensity: 0.5 },
+      landing: { color: '#c9c9ce', roughness: 0.45, metalness: 0.7, envMapIntensity: 0.7 },
     },
   },
   {
@@ -52,6 +55,7 @@ export const finishes = [
       keycaps: { color: '#2b2b2e', roughness: 0.6, metalness: 0.05, envMapIntensity: 0.7 },
       body: { color: '#d15a1e', roughness: 0.48, metalness: 0.6, envMapIntensity: 0.7 },
       damping: { color: '#1c1c1e', roughness: 0.9, metalness: 0, envMapIntensity: 0.5 },
+      landing: { color: '#d15a1e', roughness: 0.48, metalness: 0.6, envMapIntensity: 0.7 },
     },
   },
   {
@@ -62,6 +66,7 @@ export const finishes = [
       keycaps: { color: '#d9d9de', roughness: 0.6, metalness: 0.05, envMapIntensity: 0.7 },
       body: { color: '#2d4a6b', roughness: 0.5, metalness: 0.65, envMapIntensity: 0.7 },
       damping: { color: '#16222f', roughness: 0.9, metalness: 0, envMapIntensity: 0.5 },
+      landing: { color: '#2d4a6b', roughness: 0.5, metalness: 0.65, envMapIntensity: 0.7 },
     },
   },
 ]

@@ -49,12 +49,23 @@ function MaterialTuner({ finish }) {
     clearcoat: { value: finish.slots.keycaps.clearcoat ?? 0, min: 0, max: 1 },
     clearcoatRoughness: { value: finish.slots.keycaps.clearcoatRoughness ?? 0, min: 0, max: 1 },
   }, { collapsed: true })
+  const landing = useControls('Materiale · rialzo', {
+    color: finish.slots.landing.color,
+    roughness: { value: finish.slots.landing.roughness, min: 0, max: 1 },
+    metalness: { value: finish.slots.landing.metalness, min: 0, max: 1 },
+    envMapIntensity: { value: finish.slots.landing.envMapIntensity ?? 1, min: 0, max: 2 },
+    clearcoat: { value: finish.slots.landing.clearcoat ?? 0, min: 0, max: 1 },
+    clearcoatRoughness: { value: finish.slots.landing.clearcoatRoughness ?? 0, min: 0, max: 1 },
+  }, { collapsed: true })
   useEffect(() => {
     tuneSlotMaterial(finish.id, 'body', body)
   }, [finish.id, body])
   useEffect(() => {
     tuneSlotMaterial(finish.id, 'keycaps', keycaps)
   }, [finish.id, keycaps])
+  useEffect(() => {
+    tuneSlotMaterial(finish.id, 'landing', landing)
+  }, [finish.id, landing])
   return null
 }
 
