@@ -273,6 +273,7 @@ export function useComposerControls(
     }
     return () => {
       delete window.__setPose
+      delete window.__abortComposerDrag
     }
   }, [])
 
@@ -405,6 +406,25 @@ export function useComposerControls(
     }
     const onWindowBlur = () => {
       heldKeys.clear()
+    }
+
+    // NUOVO: API globale per abortire il gesto della camera quando si tocca il Gizmo
+    window.__abortComposerDrag = () => {
+      if (d.pointerId != null) {
+        // Resetta lo stato di movimento e i target alla posa originale
+        d.moved = false
+        p.targetX = d.pitch0
+        p.targetY = d.yaw0
+        
+        // Rilascia la cattura del puntatore
+        if (el.hasPointerCapture(d.pointerId)) {
+          try { el.releasePointerCapture(d.pointerId) } catch (err) {}
+        }
+        
+        // Uccide il gesto
+        d.pointerId = null
+        el.style.cursor = 'grab'
+      }
     }
 
     const onDown = (e) => {

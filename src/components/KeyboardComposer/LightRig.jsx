@@ -3,7 +3,7 @@ import { useFrame } from '@react-three/fiber'
 import { useControls, button } from 'leva'
 import { easing } from 'maath'
 import * as THREE from 'three'
-import { Html } from '@react-three/drei'
+import { Html, useHelper, TransformControls } from '@react-three/drei'
 // Inizializzazione GLOBALE: deve avvenire prima che i materiali PBR 
 // vengano compilati, altrimenti le RectAreaLight vengono ignorate.
 import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js'
@@ -27,6 +27,130 @@ const generateDefaultConfig = () => {
   })
   
   return def
+}
+
+// --- SHADOW KEYLIGHT ---
+function ShadowKeyLight({ debug }) {
+  const lightRef = useRef()
+  
+  // 1. Aggiungiamo 'setControls' come secondo parametro estratto da useControls
+  const [{ enabled, showGizmo, intensity, posX, posY, posZ, bias, normalBias }, setControls] = useControls('Ombra: Directional (Keylight)', () => ({
+    enabled: { value: true, label: 'Accesa' },
+    showGizmo: { value: false, label: 'Mostra Gizmo 3D' },
+    intensity: { value: 0.5, min: 0, max: 2, step: 0.05 },
+    posX: { value: 0, min: -10, max: 10 },
+    posY: { value: 5, min: -10, max: 10 },
+    posZ: { value: 2, min: -10, max: 10 },
+    bias: { value: -0.0005, min: -0.005, max: 0.005, step: 0.0001 },
+    normalBias: { value: 0.02, min: -0.1, max: 0.1, step: 0.001 },
+  }), { collapsed: true })
+
+  useHelper(debug && showGizmo && lightRef, THREE.DirectionalLightHelper, 1, '#00ffcc')
+
+  if (!enabled) return null
+
+  return (
+    <>
+      <directionalLight 
+        ref={lightRef}
+        position={[posX, posY, posZ]} 
+        intensity={intensity} 
+        castShadow 
+        shadow-mapSize={[2048, 2048]} 
+        shadow-bias={bias} 
+        shadow-normalBias={normalBias} 
+      >
+        <orthographicCamera attach="shadow-camera" args={[-4, 4, 4, -4, 0.1, 20]} />
+      </directionalLight>
+      
+      {debug && showGizmo && (
+        <TransformControls 
+          object={lightRef} 
+          mode="translate" 
+          size={0.7} 
+          // 1. Appena il mouse preme il Gizmo, disabilitiamo il drag del modello!
+          onMouseDown={() => {
+            if (window.__abortComposerDrag) window.__abortComposerDrag()
+          }}
+          // 2. Sincronizziamo in tempo reale con i parametri Leva
+          // 3. Quando muoviamo il Gizmo, aggiorniamo in tempo reale gli slider di Leva
+          onChange={() => {
+            if (lightRef.current) {
+              setControls({
+                posX: lightRef.current.position.x,
+                posY: lightRef.current.position.y,
+                posZ: lightRef.current.position.z,
+              })
+            }
+          }}
+        />
+      )}
+    </>
+  )
+}
+
+// --- SHADOW SPOTLIGHT ---
+function ShadowSpotLight({ debug }) {
+  const lightRef = useRef()
+  
+  // 1. Estraiamo setControls anche qui
+  const [{ enabled, showGizmo, intensity, angle, penumbra, distance, posX, posY, posZ, bias, normalBias }, setControls] = useControls('Ombra: Spotlight', () => ({
+    enabled: { value: false, label: 'Accesa' }, 
+    showGizmo: { value: false, label: 'Mostra Gizmo 3D' },
+    intensity: { value: 1.0, min: 0, max: 10, step: 0.1 },
+    angle: { value: 0.6, min: 0.1, max: Math.PI / 2, step: 0.01 },
+    penumbra: { value: 0.5, min: 0, max: 1, step: 0.01 },
+    distance: { value: 15, min: 1, max: 50, step: 0.5 },
+    posX: { value: -3, min: -10, max: 10 },
+    posY: { value: 4, min: -10, max: 10 },
+    posZ: { value: 3, min: -10, max: 10 },
+    bias: { value: -0.0005, min: -0.005, max: 0.005, step: 0.0001 },
+    normalBias: { value: 0.02, min: -0.1, max: 0.1, step: 0.001 },
+  }), { collapsed: true })
+
+  useHelper(debug && showGizmo && lightRef, THREE.SpotLightHelper, '#ff00cc')
+
+  if (!enabled) return null
+
+  return (
+    <>
+      <spotLight 
+        ref={lightRef}
+        position={[posX, posY, posZ]} 
+        intensity={intensity}
+        angle={angle}
+        penumbra={penumbra}
+        distance={distance}
+        castShadow 
+        shadow-mapSize={[2048, 2048]} 
+        shadow-bias={bias} 
+        shadow-normalBias={normalBias} 
+      />
+      
+      {debug && showGizmo && (
+        <TransformControls 
+          object={lightRef} 
+          mode="translate" 
+          size={0.7} 
+          // 1. Appena il mouse preme il Gizmo, disabilitiamo il drag del modello!
+          onMouseDown={() => {
+            if (window.__abortComposerDrag) window.__abortComposerDrag()
+          }}
+          // 2. Sincronizziamo in tempo reale con i parametri Leva
+          // 3. Sincronizzazione con Leva
+          onChange={() => {
+            if (lightRef.current) {
+              setControls({
+                posX: lightRef.current.position.x,
+                posY: lightRef.current.position.y,
+                posZ: lightRef.current.position.z,
+              })
+            }
+          }}
+        />
+      )}
+    </>
+  )
 }
 
 export default function LightRig({ modelSize, apiRef } = {}) {
@@ -535,6 +659,10 @@ export default function LightRig({ modelSize, apiRef } = {}) {
   return (
     <group position={RIG_POSITION}>
       
+      {/* NUOVE LUCI CON GIZMO 3D */}
+      <ShadowKeyLight debug={DEBUG} />
+      <ShadowSpotLight debug={DEBUG} />
+
       {DEBUG && (controls.showHelpers || controls.showSurfaces) && (
         <Html fullscreen style={{ pointerEvents: 'none', zIndex: 9999 }}>
           
