@@ -30,7 +30,8 @@ const generateDefaultConfig = () => {
 }
 
 export default function LightRig({ modelSize, apiRef } = {}) {
-  const configsRef = useRef({}) 
+  const configsRef = useRef({})
+
   const prevPoseRef = useRef(null) 
   const activePoseRef = useRef(null) 
   
@@ -140,6 +141,59 @@ export default function LightRig({ modelSize, apiRef } = {}) {
   const currentControlsRef = useRef(controls)
   currentControlsRef.current = controls
 
+  // --- INIZIO IMPLEMENTAZIONE UNDO ---
+  const historyRef = useRef([])
+
+  // Salva una copia profonda (via JSON) prima di una modifica
+  const saveToHistory = () => {
+    const snapshot = JSON.stringify(configsRef.current)
+    const last = historyRef.current[historyRef.current.length - 1]
+    if (last !== snapshot) {
+      historyRef.current.push(snapshot)
+      // Limitiamo la history a 50 step per evitare memory leak
+      if (historyRef.current.length > 50) historyRef.current.shift()
+    }
+  }
+
+  useEffect(() => {
+    const handleUndo = (e) => {
+      // Intercetta Ctrl-Z (Windows/Linux) o Cmd-Z (Mac)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault()
+        
+        if (historyRef.current.length > 0) {
+          const prevState = historyRef.current.pop()
+          configsRef.current = JSON.parse(prevState)
+          
+          // Forza l'aggiornamento UI per la posa attiva
+          if (activePoseRef.current) {
+            const restoredConf = configsRef.current[activePoseRef.current]
+            if (restoredConf) {
+              setControls({
+                margin: restoredConf.margin,
+                showHelpers: restoredConf.showHelpers,
+                showSurfaces: restoredConf.showSurfaces !== undefined ? restoredConf.showSurfaces : restoredConf.showHelpers
+              })
+              
+              // Se stiamo ispezionando una luce, ripristina i suoi slider
+              if (selectedLight) {
+                setLightEditor({
+                  intensity: restoredConf[`${selectedLight.layer}_${selectedLight.index}_intensity`] || 0,
+                  color: restoredConf[`${selectedLight.layer}_${selectedLight.index}_color`] || '#ffffff',
+                  decay: restoredConf[`${selectedLight.layer}_${selectedLight.index}_decay`] || 2,
+                })
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    window.addEventListener('keydown', handleUndo)
+    return () => window.removeEventListener('keydown', handleUndo)
+  }, [selectedLight, setControls])
+  // --- FINE IMPLEMENTAZIONE UNDO ---
+
   useEffect(() => {
     // Eseguiamo il fetch solo fuori dal debug
     if (!DEBUG) {
@@ -241,6 +295,31 @@ export default function LightRig({ modelSize, apiRef } = {}) {
       { id: 'surf_back', layer: 'surf', index: 'back', rot: [0, Math.PI, 0] },
     ]
   }, [modelSize])
+
+  // --- INIZIO LISTA LUCI ATTIVE ---
+  const activeLightsList = useMemo(() => {
+    if (!activePose || !configsRef.current[activePose]) return []
+    const conf = configsRef.current[activePose]
+    const active = []
+    
+    const checkLight = (layer, idx, name) => {
+      const intensity = conf[`${layer}_${idx}_intensity`] || 0
+      if (intensity > 0) {
+        active.push({
+          value: `${layer}_${idx}`,
+          label: `${name} (Int: ${intensity.toFixed(1)})`
+        })
+      }
+    }
+
+    faces.forEach(f => checkLight('surf', f.index, `Superficie ${f.index.toUpperCase()}`))
+    if (layers.top) layers.top.forEach((_, i) => checkLight('top', i, `Top ${i}`))
+    if (layers.mid) layers.mid.forEach((_, i) => checkLight('mid', i, `Mid ${i}`))
+    if (layers.bot) layers.bot.forEach((_, i) => checkLight('bot', i, `Bot ${i}`))
+
+    return active
+  }, [activePose, lightEditor.intensity, faces, layers])
+  // --- FINE LISTA LUCI ATTIVE ---
 
   useFrame((state, delta) => {
     if (!modelSize) return
@@ -479,12 +558,18 @@ export default function LightRig({ modelSize, apiRef } = {}) {
             }}
           />
 
+          {/* --- INIZIO PUNTO 3A: CONTENITORE DEI DUE SELETTORI --- */}
           <div style={{
             position: 'absolute',
             bottom: '85px',
             left: '30px',
             pointerEvents: 'auto',
+            display: 'flex',        // Trasformato in flexbox per impilare i selettori
+            flexDirection: 'column', 
+            gap: '12px'             // Spazio tra il selettore globale e quello attivo
           }}>
+            
+            {/* 1. SELETTORE ORIGINALE (Globale) */}
             <select
               value={selectedLight ? `${selectedLight.layer}_${selectedLight.index}` : ''}
               onChange={(e) => {
@@ -508,7 +593,7 @@ export default function LightRig({ modelSize, apiRef } = {}) {
                 appearance: 'auto'
               }}
             >
-              <option value="">-- Seleziona Luce dalla lista --</option>
+              <option value="">-- Seleziona Luce GLOBALE --</option>
               <optgroup label="Facce (Superfici)">
                 {faces.map(f => <option key={`surf_${f.index}`} value={`surf_${f.index}`}>Superficie {f.index.toUpperCase()}</option>)}
               </optgroup>
@@ -522,7 +607,39 @@ export default function LightRig({ modelSize, apiRef } = {}) {
                 {layers.bot.map((_, i) => <option key={`bot_${i}`} value={`bot_${i}`}>Bot {i}</option>)}
               </optgroup>
             </select>
+
+            {/* 2. NUOVO SELETTORE (Solo Luci Attive in questa vista) */}
+            <select
+              value={selectedLight ? `${selectedLight.layer}_${selectedLight.index}` : ''}
+              onChange={(e) => {
+                if (!e.target.value) { setSelectedLight(null); return; }
+                const [layer, idx] = e.target.value.split('_');
+                setSelectedLight({ layer, index: layer === 'surf' ? idx : parseInt(idx, 10) });
+              }}
+              style={{
+                background: 'rgba(20, 50, 80, 0.85)', // Sfondo leggermente blu/diverso per distinguerlo
+                border: '1px solid rgba(100, 180, 255, 0.4)',
+                color: '#fff',
+                padding: '10px 14px',
+                borderRadius: '12px',
+                fontFamily: 'sans-serif',
+                fontSize: '13px',
+                fontWeight: '600',
+                cursor: 'pointer',
+                backdropFilter: 'blur(4px)',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+                outline: 'none',
+                appearance: 'auto'
+              }}
+            >
+              <option value="">-- Luci ATTIVE --</option>
+              {activeLightsList.length === 0 && <option value="" disabled>Nessuna luce attiva in questa vista</option>}
+              {activeLightsList.map(l => (
+                <option key={`active_${l.value}`} value={l.value}>{l.label}</option>
+              ))}
+            </select>
           </div>
+          {/* --- FINE PUNTO 3A --- */}
 
           {selectedLight && (
             <div
@@ -556,6 +673,7 @@ export default function LightRig({ modelSize, apiRef } = {}) {
                 >✕</button>
               </div>
 
+              {/* --- INIZIO PUNTO 3B: AGGIUNTA onPointerDown={saveToHistory} AGLI INPUT --- */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
                 <label style={{ fontSize: '12px', fontWeight: '600' }}>
                   Intensità: {lightEditor.intensity.toFixed(1)}
@@ -566,6 +684,7 @@ export default function LightRig({ modelSize, apiRef } = {}) {
                   max={isSurfSelected ? 100 : 50} 
                   step={isSurfSelected ? 0.2 : 0.1} 
                   value={lightEditor.intensity} 
+                  onPointerDown={saveToHistory} // SALVA STATO PRIMA DI TRASCINARE
                   onChange={(e) => updateLightValue('intensity', parseFloat(e.target.value))}
                   style={{ accentColor: '#4dabf7', cursor: 'ew-resize' }}
                 />
@@ -576,6 +695,7 @@ export default function LightRig({ modelSize, apiRef } = {}) {
                 <input 
                   type="color" 
                   value={lightEditor.color} 
+                  onPointerDown={saveToHistory} // SALVA STATO PRIMA DI CLICCARE IL COLORE
                   onChange={(e) => updateLightValue('color', e.target.value)}
                   style={{ width: '100%', height: '32px', border: 'none', borderRadius: '4px', cursor: 'pointer', background: 'transparent' }}
                 />
@@ -589,11 +709,13 @@ export default function LightRig({ modelSize, apiRef } = {}) {
                   <input 
                     type="range" min="0" max="5" step="0.1" 
                     value={lightEditor.decay} 
+                    onPointerDown={saveToHistory} // SALVA STATO PRIMA DI TRASCINARE
                     onChange={(e) => updateLightValue('decay', parseFloat(e.target.value))}
                     style={{ accentColor: '#4dabf7', cursor: 'ew-resize' }}
                   />
                 </div>
               )}
+              {/* --- FINE PUNTO 3B --- */}
             </div>
           )}
         </Html>
