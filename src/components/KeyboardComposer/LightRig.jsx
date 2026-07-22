@@ -37,7 +37,7 @@ function ShadowKeyLight({ debug }) {
   const [controls, setControls] = useControls('Ombra: Directional (Keylight)', () => ({
     enabled: { value: true, label: 'Accesa' },
     showGizmo: { value: false, label: 'Mostra Gizmo 3D' },
-    intensity: { value: 0.5, min: 0, max: 2, step: 0.05 },
+    intensity: { value: 0.5, min: 0, max: 100, step: 0.05 },
     posX: { value: 0, min: -10, max: 10 },
     posY: { value: 5, min: -10, max: 10 },
     posZ: { value: 2, min: -10, max: 10 },
@@ -110,7 +110,7 @@ function ShadowSpotLight({ debug }) {
   const [controls, setControls] = useControls('Ombra: Spotlight', () => ({
     enabled: { value: false, label: 'Accesa' }, 
     showGizmo: { value: false, label: 'Mostra Gizmo 3D' },
-    intensity: { value: 1.0, min: 0, max: 10, step: 0.1 },
+    intensity: { value: 1.0, min: 0, max: 100, step: 0.1 },
     angle: { value: 0.6, min: 0.1, max: Math.PI / 2, step: 0.01 },
     penumbra: { value: 0.5, min: 0, max: 1, step: 0.01 },
     distance: { value: 15, min: 1, max: 50, step: 0.5 },
