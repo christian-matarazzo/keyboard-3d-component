@@ -29,34 +29,54 @@ function Loader() {
 }
 
 
-
-// Ritocco live dei materiali dello slot body/keycaps (pannello ?debug):
-// i default rispecchiano la finitura attiva definita nel registry.
+// Cerca la funzione MaterialTuner nel file Scene.jsx
 function MaterialTuner({ finish }) {
-  const body = useControls('Materiale · body', {
+  // 1. Estrai il setter (setBody, setKeycaps, setLanding) e usa una callback () => ({...}) per i valori iniziali
+  const [body, setBody] = useControls('Materiale   body', () => ({
     color: finish.slots.body.color,
     roughness: { value: finish.slots.body.roughness, min: 0, max: 1 },
     metalness: { value: finish.slots.body.metalness, min: 0, max: 1 },
     envMapIntensity: { value: finish.slots.body.envMapIntensity ?? 1, min: 0, max: 2 },
     clearcoat: { value: finish.slots.body.clearcoat ?? 0, min: 0, max: 1 },
     clearcoatRoughness: { value: finish.slots.body.clearcoatRoughness ?? 0, min: 0, max: 1 },
-  }, { collapsed: true })
-  const keycaps = useControls('Materiale · keycaps', {
+  }), { collapsed: true })
+
+  const [keycaps, setKeycaps] = useControls('Materiale   keycaps', () => ({
     color: finish.slots.keycaps.color,
     roughness: { value: finish.slots.keycaps.roughness, min: 0, max: 1 },
     metalness: { value: finish.slots.keycaps.metalness, min: 0, max: 1 },
     envMapIntensity: { value: finish.slots.keycaps.envMapIntensity ?? 1, min: 0, max: 2 },
     clearcoat: { value: finish.slots.keycaps.clearcoat ?? 0, min: 0, max: 1 },
     clearcoatRoughness: { value: finish.slots.keycaps.clearcoatRoughness ?? 0, min: 0, max: 1 },
-  }, { collapsed: true })
-  const landing = useControls('Materiale · rialzo', {
+  }), { collapsed: true })
+
+  const [landing, setLanding] = useControls('Materiale   rialzo', () => ({
     color: finish.slots.landing.color,
     roughness: { value: finish.slots.landing.roughness, min: 0, max: 1 },
     metalness: { value: finish.slots.landing.metalness, min: 0, max: 1 },
     envMapIntensity: { value: finish.slots.landing.envMapIntensity ?? 1, min: 0, max: 2 },
     clearcoat: { value: finish.slots.landing.clearcoat ?? 0, min: 0, max: 1 },
     clearcoatRoughness: { value: finish.slots.landing.clearcoatRoughness ?? 0, min: 0, max: 1 },
-  }, { collapsed: true })
+  }), { collapsed: true })
+
+  // 2. Salva lo stato corrente in un oggetto globale
+  useEffect(() => {
+    window.__STATE_MATERIALS = { body, keycaps, landing }
+  }, [body, keycaps, landing])
+
+  // 3. Ascolta l'evento di caricamento del JSON
+  useEffect(() => {
+    const handler = (e) => {
+      const detail = e.detail;
+      if (detail?.body) setBody(detail.body)
+      if (detail?.keycaps) setKeycaps(detail.keycaps)
+      if (detail?.landing) setLanding(detail.landing)
+    }
+    window.addEventListener('app-load-materials', handler)
+    return () => window.removeEventListener('app-load-materials', handler)
+  }, [setBody, setKeycaps, setLanding])
+
+  // ... (i tuoi useEffect per tuneSlotMaterial rimangono invariati)
   useEffect(() => {
     tuneSlotMaterial(finish.id, 'body', body)
   }, [finish.id, body])

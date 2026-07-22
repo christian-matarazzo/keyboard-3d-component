@@ -33,8 +33,8 @@ const generateDefaultConfig = () => {
 function ShadowKeyLight({ debug }) {
   const lightRef = useRef()
   
-  // 1. Aggiungiamo 'setControls' come secondo parametro estratto da useControls
-  const [{ enabled, showGizmo, intensity, posX, posY, posZ, bias, normalBias }, setControls] = useControls('Ombra: Directional (Keylight)', () => ({
+  // 1. Salviamo l'oggetto intero in 'controls'
+  const [controls, setControls] = useControls('Ombra: Directional (Keylight)', () => ({
     enabled: { value: true, label: 'Accesa' },
     showGizmo: { value: false, label: 'Mostra Gizmo 3D' },
     intensity: { value: 0.5, min: 0, max: 2, step: 0.05 },
@@ -45,8 +45,21 @@ function ShadowKeyLight({ debug }) {
     normalBias: { value: 0.02, min: -0.1, max: 0.1, step: 0.001 },
   }), { collapsed: true })
 
+  // 2. Destrutturiamo i valori per usarli nel JSX
+  const { enabled, showGizmo, intensity, posX, posY, posZ, bias, normalBias } = controls
+
+  // 3. Ora 'controls' esiste e l'useEffect funziona perfettamente!
+  useEffect(() => { window.__STATE_KEYLIGHT = controls }, [controls])
+  
+  useEffect(() => {
+    const handler = (e) => { if (e.detail) setControls(e.detail) }
+    window.addEventListener('app-load-keylight', handler)
+    return () => window.removeEventListener('app-load-keylight', handler)
+  }, [setControls])
+
   useHelper(debug && showGizmo && lightRef, THREE.DirectionalLightHelper, 1, '#00ffcc')
 
+  // ... (il resto del return con la directionalLight e il Gizmo rimane identico)
   if (!enabled) return null
 
   return (
@@ -93,8 +106,8 @@ function ShadowKeyLight({ debug }) {
 function ShadowSpotLight({ debug }) {
   const lightRef = useRef()
   
-  // 1. Estraiamo setControls anche qui
-  const [{ enabled, showGizmo, intensity, angle, penumbra, distance, posX, posY, posZ, bias, normalBias }, setControls] = useControls('Ombra: Spotlight', () => ({
+  // 1. Salviamo l'oggetto intero in 'controls'
+  const [controls, setControls] = useControls('Ombra: Spotlight', () => ({
     enabled: { value: false, label: 'Accesa' }, 
     showGizmo: { value: false, label: 'Mostra Gizmo 3D' },
     intensity: { value: 1.0, min: 0, max: 10, step: 0.1 },
@@ -108,8 +121,21 @@ function ShadowSpotLight({ debug }) {
     normalBias: { value: 0.02, min: -0.1, max: 0.1, step: 0.001 },
   }), { collapsed: true })
 
+  // 2. Destrutturiamo i valori per usarli nel JSX
+  const { enabled, showGizmo, intensity, angle, penumbra, distance, posX, posY, posZ, bias, normalBias } = controls
+
+  // 3. Salviamo lo stato globale
+  useEffect(() => { window.__STATE_SPOTLIGHT = controls }, [controls])
+  
+  useEffect(() => {
+    const handler = (e) => { if (e.detail) setControls(e.detail) }
+    window.addEventListener('app-load-spotlight', handler)
+    return () => window.removeEventListener('app-load-spotlight', handler)
+  }, [setControls])
+
   useHelper(debug && showGizmo && lightRef, THREE.SpotLightHelper, '#ff00cc')
 
+  // ... (il resto del return con la spotLight e il Gizmo rimane identico)
   if (!enabled) return null
 
   return (
@@ -191,63 +217,6 @@ export default function LightRig({ modelSize, apiRef } = {}) {
       animLightOffDamp: { value: 0.25, min: 0.01, max: 1, step: 0.01, label: 'Velocità Spegnimento' },
       animColorDamp: { value: 0.35, min: 0.01, max: 1, step: 0.01, label: 'Velocità Colore' },
 
-      'Scarica JSON': button(() => {
-        if (activePoseRef.current && currentControlsRef.current) {
-          configsRef.current[activePoseRef.current].margin = currentControlsRef.current.margin
-          configsRef.current[activePoseRef.current].showHelpers = currentControlsRef.current.showHelpers
-          configsRef.current[activePoseRef.current].showSurfaces = currentControlsRef.current.showSurfaces
-        }
-        const json = JSON.stringify(configsRef.current, null, 2)
-        const blob = new Blob([json], { type: 'application/json' })
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = 'light-rig-config.json'
-        document.body.appendChild(a)
-        a.click()
-        document.body.removeChild(a)
-        URL.revokeObjectURL(url)
-      }),
-      
-      'Carica da JSON': button(() => {
-        const input = document.createElement('input')
-        input.type = 'file'
-        input.accept = 'application/json'
-        input.onchange = (e) => {
-          const file = e.target.files[0]
-          if (!file) return
-          const reader = new FileReader()
-          reader.onload = (ev) => {
-            try {
-              const parsed = JSON.parse(ev.target.result)
-              configsRef.current = parsed
-              let alertMsg = "Configurazione caricata con successo!"
-              const currentPose = activePoseRef.current
-              if (currentPose) {
-                if (parsed[currentPose]) {
-                  const newConfig = { ...generateDefaultConfig(), ...parsed[currentPose] }
-                  setControls({ 
-                    margin: newConfig.margin, 
-                    showHelpers: newConfig.showHelpers,
-                    showSurfaces: newConfig.showSurfaces !== undefined ? newConfig.showSurfaces : newConfig.showHelpers 
-                  })
-                } else {
-                  alertMsg += `\n\nAttenzione: Nessuna impostazione per la vista attuale (${currentPose}). Rimarrà ai default.`
-                  const def = generateDefaultConfig()
-                  setControls({ margin: def.margin, showHelpers: def.showHelpers, showSurfaces: def.showSurfaces })
-                }
-              }
-              setSelectedLight(null)
-              alert(alertMsg)
-            } catch (err) {
-              alert("Errore: Il JSON fornito non è valido.")
-            }
-          }
-          reader.readAsText(file)
-        }
-        input.click()
-      }),
-
       'Resetta Vista': button(() => {
         if (window.confirm(`Vuoi azzerare le luci per la vista ${activePoseRef.current}?`)) {
           const def = generateDefaultConfig()
@@ -318,34 +287,47 @@ export default function LightRig({ modelSize, apiRef } = {}) {
   }, [selectedLight, setControls])
   // --- FINE IMPLEMENTAZIONE UNDO ---
 
+  // Fetch automatico in produzione (fuori dal debug)
   useEffect(() => {
     // Eseguiamo il fetch solo fuori dal debug
     if (!DEBUG) {
-      // Assicurati che il nome del file generato combaci con quello esportato
-      fetch('/lightconfig/light-rig-config.json')
+      // Usa il nuovo nome del file che comprende tutto lo stato
+      fetch('/lightconfig/app-state-config.json')
         .then((res) => {
-          if (!res.ok) throw new Error('File di configurazione non trovato');
-          return res.json();
+          if (!res.ok) throw new Error('File di configurazione non trovato')
+          return res.json()
         })
-        .then((data) => {
-          // Aggiorna le configurazioni con i dati scaricati
-          configsRef.current = data;
+        .then((parsed) => {
+          // Verifica se è il vecchio JSON (solo luci) o il nuovo formato globale
+          const isNewFormat = !!parsed.lights
+          const lightsData = isNewFormat ? parsed.lights : parsed
           
-          // Se c'è già una vista attiva caricata, forza l'aggiornamento dei valori
-          if (activePoseRef.current && data[activePoseRef.current]) {
-            const newConfig = { ...generateDefaultConfig(), ...data[activePoseRef.current] };
+          // 1. Applica i dati alle luci volumetriche (il Rig originale)
+          configsRef.current = lightsData;
+          
+          // Aggiorna i controlli se c'è una posa già attiva
+          if (activePoseRef.current && lightsData[activePoseRef.current]) {
+            const newConfig = { ...generateDefaultConfig(), ...lightsData[activePoseRef.current] };
             setControls({ 
               margin: newConfig.margin, 
               showHelpers: newConfig.showHelpers,
               showSurfaces: newConfig.showSurfaces !== undefined ? newConfig.showSurfaces : newConfig.showHelpers 
             });
           }
+
+          // 2. Lancia gli eventi globali per aggiornare Materiali, Rotazioni e Ombre
+          if (isNewFormat) {
+            if (parsed.materials) window.dispatchEvent(new CustomEvent('app-load-materials', { detail: parsed.materials }))
+            if (parsed.rotation) window.dispatchEvent(new CustomEvent('app-load-rotation', { detail: parsed.rotation }))
+            if (parsed.keylight) window.dispatchEvent(new CustomEvent('app-load-keylight', { detail: parsed.keylight }))
+            if (parsed.spotlight) window.dispatchEvent(new CustomEvent('app-load-spotlight', { detail: parsed.spotlight }))
+          }
         })
         .catch((err) => {
-          console.warn('Impossibile caricare il JSON delle luci, applico i default:', err.message);
-        });
+          console.warn('Nessun JSON personalizzato trovato, applico i default di sistema:', err.message)
+        })
     }
-  }, [setControls]);
+  }, [setControls])
 
   useEffect(() => {
     if (activePoseRef.current && configsRef.current[activePoseRef.current]) {
@@ -656,12 +638,134 @@ export default function LightRig({ modelSize, apiRef } = {}) {
   const fixedDistance = 6
   const isSurfSelected = selectedLight?.layer === 'surf'
 
+  const handleSaveJSON = () => {
+    if (activePoseRef.current && currentControlsRef.current) {
+      configsRef.current[activePoseRef.current].margin = currentControlsRef.current.margin
+      configsRef.current[activePoseRef.current].showHelpers = currentControlsRef.current.showHelpers
+      configsRef.current[activePoseRef.current].showSurfaces = currentControlsRef.current.showSurfaces
+    }
+    
+    const fullData = {
+      lights: configsRef.current,
+      materials: window.__STATE_MATERIALS || {},
+      rotation: window.__STATE_ROTATION || {},
+      keylight: window.__STATE_KEYLIGHT || {},
+      spotlight: window.__STATE_SPOTLIGHT || {}
+    }
+
+    const json = JSON.stringify(fullData, null, 2)
+    const blob = new Blob([json], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'app-state-config.json'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  const handleLoadJSON = () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = 'application/json'
+    input.onchange = (e) => {
+      const file = e.target.files[0]
+      if (!file) return
+      const reader = new FileReader()
+      reader.onload = (ev) => {
+        try {
+          const parsed = JSON.parse(ev.target.result)
+          
+          const isNewFormat = !!parsed.lights
+          const lightsData = isNewFormat ? parsed.lights : parsed
+
+          configsRef.current = lightsData
+          let alertMsg = "Configurazione Globale caricata con successo!"
+          
+          const currentPose = activePoseRef.current
+          if (currentPose && lightsData[currentPose]) {
+            const newConfig = { ...generateDefaultConfig(), ...lightsData[currentPose] }
+            setControls({ 
+              margin: newConfig.margin, 
+              showHelpers: newConfig.showHelpers, 
+              showSurfaces: newConfig.showSurfaces !== undefined ? newConfig.showSurfaces : newConfig.showHelpers 
+            })
+          }
+          
+          if (isNewFormat) {
+            if (parsed.materials) window.dispatchEvent(new CustomEvent('app-load-materials', { detail: parsed.materials }))
+            if (parsed.rotation) window.dispatchEvent(new CustomEvent('app-load-rotation', { detail: parsed.rotation }))
+            if (parsed.keylight) window.dispatchEvent(new CustomEvent('app-load-keylight', { detail: parsed.keylight }))
+            if (parsed.spotlight) window.dispatchEvent(new CustomEvent('app-load-spotlight', { detail: parsed.spotlight }))
+          }
+
+          setSelectedLight(null)
+          alert(alertMsg)
+        } catch (err) {
+          alert("Errore: Il JSON fornito non è valido.")
+        }
+      }
+      reader.readAsText(file)
+    }
+    input.click()
+  }
+
   return (
     <group position={RIG_POSITION}>
       
       {/* NUOVE LUCI CON GIZMO 3D */}
       <ShadowKeyLight debug={DEBUG} />
       <ShadowSpotLight debug={DEBUG} />
+
+      {/* PANNELLO DI SALVATAGGIO/CARICAMENTO (In alto a sinistra) */}
+      {DEBUG && (
+        <Html fullscreen style={{ pointerEvents: 'none', zIndex: 10000 }}>
+          <div style={{
+            position: 'absolute',
+            top: '20px',
+            left: '20px',
+            pointerEvents: 'auto',
+            display: 'flex',
+            gap: '10px'
+          }}>
+            <button 
+              onClick={handleSaveJSON}
+              style={{
+                background: 'rgba(20, 100, 200, 0.8)',
+                color: 'white',
+                border: '1px solid rgba(100, 180, 255, 0.5)',
+                padding: '8px 16px',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontWeight: 'bold',
+                fontFamily: 'sans-serif',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                backdropFilter: 'blur(4px)'
+              }}
+            >
+              Salva Configurazione
+            </button>
+            <button 
+              onClick={handleLoadJSON}
+              style={{
+                background: 'rgba(20, 20, 20, 0.8)',
+                color: 'white',
+                border: '1px solid rgba(255, 255, 255, 0.2)',
+                padding: '8px 16px',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontWeight: 'bold',
+                fontFamily: 'sans-serif',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                backdropFilter: 'blur(4px)'
+              }}
+            >
+              Carica JSON
+            </button>
+          </div>
+        </Html>
+      )}
 
       {DEBUG && (controls.showHelpers || controls.showSurfaces) && (
         <Html fullscreen style={{ pointerEvents: 'none', zIndex: 9999 }}>
