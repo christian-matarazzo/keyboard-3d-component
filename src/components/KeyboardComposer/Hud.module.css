@@ -132,6 +132,64 @@
   text-align: right;
 }
 
+/* ── Mobile / portrait stretto ─────────────────────────────────────────────
+   Lo screen del cliente è pensato per landscape: su schermi stretti la riga
+   in alto (logo · telemetria · versione) e il footer a 3 colonne sforano e
+   si tagliano. Qui: logo più piccolo, versione nascosta, telemetria a destra
+   accanto al logo, footer impilato e centrato in basso. */
+@media (max-width: 600px) {
+  .hud {
+    padding: clamp(12px, 4vw, 18px);
+    font-size: 10px;
+  }
+
+  .logo {
+    height: 26px;
+  }
+
+  /* Due colonne: logo a sinistra, telemetria a destra. La versione (stringa
+     decorativa lunga "V 0.2 Configurator Playground") si nasconde. */
+  .top {
+    grid-template-columns: auto 1fr;
+    gap: 10px;
+  }
+
+  .telemetry {
+    justify-self: end;
+    gap: 8px;
+    text-align: right;
+  }
+
+  .version {
+    display: none;
+  }
+
+  /* La paginazione scende un filo per non toccare il logo più corto. */
+  .pager {
+    top: clamp(46px, 7vh, 68px);
+    gap: 8px;
+  }
+
+  .page {
+    width: 30px;
+    height: 30px;
+  }
+
+  /* Footer impilato e centrato: le tre stringhe non entrano affiancate. */
+  .bottom {
+    grid-template-columns: 1fr;
+    gap: 5px;
+    justify-items: center;
+  }
+
+  .bottom span:first-child,
+  .bottom span:nth-child(2),
+  .bottom span:last-child {
+    justify-self: center;
+    text-align: center;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .page {
     transition: none;
