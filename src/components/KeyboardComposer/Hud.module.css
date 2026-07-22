@@ -6,13 +6,13 @@
   inset: 0;
   z-index: 3;
   pointer-events: none;
-  padding: clamp(16px, 2.4vw, 34px);
+  padding: clamp(18px, 2.64vw, 37px);
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   font-family: inherit;
   font-weight: 400;
-  font-size: clamp(10px, 0.86vw, 13px);
+  font-size: clamp(11.5px, 0.99vw, 15px);
   line-height: 1.2;
   letter-spacing: -0.02em; /* LETTER SPACING −2% */
   text-transform: uppercase; /* ALWAYS CAPS-LOCK */
@@ -37,7 +37,7 @@
 /* Il logo È il lockup completo (Dither + barcode + Array Keyboard Series /
    Model L): lo si mostra grande, senza testo affiancato. */
 .logo {
-  height: clamp(40px, 4.4vw, 62px);
+  height: clamp(44px, 4.84vw, 68px);
   width: auto;
   display: block;
 }
@@ -76,13 +76,13 @@
 }
 
 .page {
-  width: clamp(26px, 2.4vw, 34px);
-  height: clamp(26px, 2.4vw, 34px);
+  width: clamp(29px, 2.64vw, 37px);
+  height: clamp(29px, 2.64vw, 37px);
   display: grid;
   place-items: center;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: 3px;
+  border-radius: 0;
   background: transparent;
   color: rgb(255 255 255 / 34%);
   font: inherit;
@@ -139,12 +139,12 @@
    accanto al logo, footer impilato e centrato in basso. */
 @media (max-width: 600px) {
   .hud {
-    padding: clamp(12px, 4vw, 18px);
-    font-size: 10px;
+    padding: clamp(13px, 4.4vw, 20px);
+    font-size: 11.5px;
   }
 
   .logo {
-    height: 26px;
+    height: 29px;
   }
 
   /* Due colonne: logo a sinistra, telemetria a destra. La versione (stringa
@@ -171,8 +171,8 @@
   }
 
   .page {
-    width: 30px;
-    height: 30px;
+    width: 33px;
+    height: 33px;
   }
 
   /* Footer impilato e centrato: le tre stringhe non entrano affiancate. */
