@@ -24,6 +24,7 @@ export default function Hud({ poseApi }) {
   const [poseKey, setPoseKey] = useState(null)
   const [fps, setFps] = useState(0)
   const [modelMB, setModelMB] = useState(null)
+  const [ramMB, setRamMB] = useState(null)
 
   // Posa attiva: poll leggero (currentPoseKey è imperativo, non reattivo).
   useEffect(() => {
@@ -80,9 +81,21 @@ export default function Hud({ poseApi }) {
     return () => clearInterval(id)
   }, [])
 
+  // RAM usata dalla tab per far girare il modello: `performance.memory`
+  // (heap JS, non VRAM) esiste solo su Chrome/Edge — su Firefox/Safari resta
+  // `null` e il contatore mostra "—".
+  useEffect(() => {
+    if (!performance.memory) return
+    const read = () => setRamMB(performance.memory.usedJSHeapSize / (1024 * 1024))
+    read()
+    const id = setInterval(read, 500)
+    return () => clearInterval(id)
+  }, [])
+
   const viewLabel = POSE_HUD_LABEL[poseKey] ?? '—'
   const memLabel = modelMB != null ? `${modelMB.toFixed(2)} MB` : '— MB'
   const fpsLabel = fps.toFixed(2)
+  const ramLabel = ramMB != null ? `RAM ${Math.round(ramMB)} MB` : 'RAM —'
 
   return (
     <div className={styles.hud} aria-hidden="false">
@@ -106,6 +119,8 @@ export default function Hud({ poseApi }) {
           <span>{viewLabel}</span>
           <i className={styles.sep} />
           <span>{memLabel}</span>
+          <i className={styles.sep} />
+          <span>{ramLabel}</span>
         </div>
 
         <div className={styles.version}>V 0.2 Configurator Playground</div>
