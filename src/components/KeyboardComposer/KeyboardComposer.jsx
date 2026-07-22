@@ -3,7 +3,7 @@ import { useProgress } from '@react-three/drei'
 import { Leva } from 'leva'
 import styles from './KeyboardComposer.module.css'
 import Scene from './Scene'
-import ViewPad from './ViewPad'
+import Hud from './Hud'
 import LightCapturePanel from './LightCapturePanel'
 import { DEFAULT_MODEL_URL } from './KeyboardModel'
 import { finishes as defaultFinishes, getFinish } from './materials/registry'
@@ -124,7 +124,7 @@ export default function KeyboardComposer({
           lightsApi={lightsApi}
           previewRef={previewRef}
         />
-        <ViewPad apiRef={poseApi} />
+        <Hud poseApi={poseApi} />
         {DEBUG && (
           <LightCapturePanel
             poseApi={poseApi}
