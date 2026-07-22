@@ -1,3 +1,4 @@
+import * as THREE from 'three'
 import { useEffect, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { useControls } from 'leva'
@@ -140,32 +141,38 @@ export function useComposerControls(
   const camera = useThree((s) => s.camera)
   const size = useThree((s) => s.size)
 
+  // NUOVO: Svincoliamo l'interpolazione dal group 3D
+  const curAngles = useRef({ pitch: initialRotation.x, yaw: initialRotation.y })
+  const cameraRadius = useRef(5.2)
+
   // Parametri "feel" regolabili dal pannello (?debug): i default sono i
   // valori di produzione.
-  const feel = useControls('Rotazione', {
-    // Drag più lento (era 0.008) e più attrito in assestamento: gesto più
-    // pesante. Damping 0.8→0.55 e stiffness 40→50: il bounce (quasi
-    // impercettibile a 0.8, ζ≈0.8 → ~1.5% di overshoot) torna visibile
-    // (ζ≈0.55 → ~13% di overshoot) restando comunque più lento/pesante di
-    // prima (il tempo di assestamento a riposo, senza extra-velocità, è
-    // ~1.3s contro ~1s del preset precedente).
+  // Cerca la definizione di 'feel' (intorno alla riga 100)
+  const [feel, setFeel] = useControls('Rotazione', () => ({
     dragSpeed: { value: 0.01, min: 0.001, max: 0.012, step: 0.0005, label: 'velocità drag' },
     followTime: { value: 0.2, min: 0.05, max: 0.6, step: 0.01, label: 'inerzia in drag' },
     commitFraction: { value: 0.2, min: 0.1, max: 0.9, step: 0.05, label: 'soglia step' },
     springStiffness: { value: 150, min: 20, max: 300, step: 5, label: 'molla rigidità' },
     springDamping: { value: 0.85, min: 0.2, max: 1.2, step: 0.05, label: 'molla smorzamento' },
     rubberFactor: { value: 0, min: 0, max: 0.6, step: 0.05, label: 'elastico oltre-step' },
-    rubberCapDeg: { value: 0, min: 0, max: 20, step: 1, label: 'elastico max (°)' },
-    // Moltiplicatore globale del tempo delle animazioni: scala il delta di
-    // OGNI integrazione in useFrame (follow del drag + molla di bounce), quindi
-    // rallenta/accelera tutto in modo uniforme senza toccare rigidità, gradi al
-    // secondo relativi o overshoot. 1 = velocità nominale; default 0.3 = 70%
-    // più lento (richiesta cliente: movimenti più rallentati e "solidi").
-    // Tarabile live da ?debug.
+    rubberCapDeg: { value: 0, min: 0, max: 20, step: 1, label: 'elastico max ( )' },
     timeScale: { value: 0.3, min: 0.3, max: 1.5, step: 0.05, label: 'velocità animazione' },
     fitMargin: { value: 1.6, min: 1, max: 2.5, step: 0.05, label: 'margine inquadratura' },
     zoomOutMobile: { value: 1.25, min: 1, max: 1.8, step: 0.05, label: 'zoom-out mobile' },
-  })
+  }), { collapsed: true })
+
+  // 1. Salva lo stato corrente
+  useEffect(() => {
+    window.__STATE_ROTATION = feel
+  }, [feel])
+
+  // 2. Ascolta l'evento di caricamento
+  useEffect(() => {
+    const handler = (e) => { if (e.detail) setFeel(e.detail) }
+    window.addEventListener('app-load-rotation', handler)
+    return () => window.removeEventListener('app-load-rotation', handler)
+  }, [setFeel])
+
   const feelRef = useRef(feel)
   feelRef.current = feel
 
@@ -260,17 +267,15 @@ export function useComposerControls(
       p.pitch = p.targetX = (pitchDeg * Math.PI) / 180
       p.yaw = p.targetY = (yawDeg * Math.PI) / 180
       spring.current.vx = spring.current.vy = 0
-      const g = groupRef.current
-      if (g) {
-        g.rotation.x = p.targetX
-        g.rotation.y = p.targetY
-      }
+      curAngles.current.pitch = p.targetX
+      curAngles.current.yaw = p.targetY
       return { pitch: pitchDeg, yaw: yawDeg }
     }
     return () => {
       delete window.__setPose
+      delete window.__abortComposerDrag
     }
-  }, [groupRef])
+  }, [])
 
   // Il primo render del <Canvas> spesso avviene prima che il container abbia
   // comunicato le sue dimensioni reali (size di default landscape), quindi
@@ -310,8 +315,7 @@ export function useComposerControls(
       : FIT_HALF_WIDTH / (tanHalfV * aspect)
     fit *= feel.fitMargin
     if (portrait) fit *= feel.zoomOutMobile
-    camera.position.set(0, PIVOT_Y, clamp(fit, 5.2, 200))
-    camera.lookAt(0, PIVOT_Y, 0) // mira al pivot: composizione centrata
+    cameraRadius.current = clamp(fit, 5.2, 200)
   }, [size, camera, focalLength, feel.fitMargin, feel.zoomOutMobile])
 
   useEffect(() => {
@@ -402,6 +406,25 @@ export function useComposerControls(
     }
     const onWindowBlur = () => {
       heldKeys.clear()
+    }
+
+    // NUOVO: API globale per abortire il gesto della camera quando si tocca il Gizmo
+    window.__abortComposerDrag = () => {
+      if (d.pointerId != null) {
+        // Resetta lo stato di movimento e i target alla posa originale
+        d.moved = false
+        p.targetX = d.pitch0
+        p.targetY = d.yaw0
+        
+        // Rilascia la cattura del puntatore
+        if (el.hasPointerCapture(d.pointerId)) {
+          try { el.releasePointerCapture(d.pointerId) } catch (err) {}
+        }
+        
+        // Uccide il gesto
+        d.pointerId = null
+        el.style.cursor = 'grab'
+      }
     }
 
     const onDown = (e) => {
@@ -510,11 +533,8 @@ export function useComposerControls(
       if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
       if (!d.moved) return
       d.moved = false
-
       const threshold = feelRef.current.commitFraction // 0.5 = nearest
-
       if (!d.step) {
-        // Nessun vicino: torna alla posa di partenza (l'elastico si riassorbe).
         spring.current.amp = 1
         p.pitch = d.pitch0
         p.yaw = d.yaw0
@@ -522,10 +542,6 @@ export function useComposerControls(
         p.targetY = p.yaw
         return
       }
-
-      // Progresso lungo l'asse dominante del gesto verso il vicino: oltre la
-      // soglia committa (anche in coda elastica, progresso > 1), altrimenti
-      // torna alla posa di partenza.
       const target = d.step
       const dPitch = target.pitch - d.pitch0
       const dYaw = target.yaw - d.yaw0
@@ -534,16 +550,22 @@ export function useComposerControls(
       const span = d.stepAxis === 'pitch' ? dPitch : dYaw
       const progress = Math.abs(span) < EPS ? 0 : Math.abs((soft - start) / span)
       const commit = progress >= threshold
-      // Solo se lo step viene davvero committato: il rientro alla posa di
-      // partenza è una corsa corta, va alla velocità piena.
-      spring.current.amp = commit ? stepAmp(dPitch, dYaw) : 1
 
+      spring.current.amp = commit ? stepAmp(dPitch, dYaw) : 1
       p.pitch = commit ? target.pitch : d.pitch0
       p.yaw = commit ? target.yaw : d.yaw0
       p.targetX = p.pitch
       p.targetY = p.yaw
-      // Da qui lavora la molla in useFrame: parte da posizione e velocità
-      // correnti del modello → overshoot e bounce se il gesto era più forte.
+    }
+
+    // LOGICA DI ZOOM
+    const onWheel = (e) => {
+      e.preventDefault()
+      cameraRadius.current = clamp(
+        cameraRadius.current * (1 + e.deltaY * 0.0012),
+        2.5,
+        200
+      )
     }
 
     el.addEventListener('pointerdown', onDown)
@@ -553,8 +575,11 @@ export function useComposerControls(
     el.addEventListener('pointerenter', onPointerEnter)
     el.addEventListener('pointerleave', onPointerLeave)
     el.addEventListener('keydown', onKeyDown)
+    el.addEventListener('wheel', onWheel, { passive: false }) // ASCOLTO ZOOM
+
     window.addEventListener('keyup', onKeyUp)
     window.addEventListener('blur', onWindowBlur)
+
     return () => {
       el.removeEventListener('pointerdown', onDown)
       el.removeEventListener('pointermove', onMove)
@@ -563,87 +588,67 @@ export function useComposerControls(
       el.removeEventListener('pointerenter', onPointerEnter)
       el.removeEventListener('pointerleave', onPointerLeave)
       el.removeEventListener('keydown', onKeyDown)
+      el.removeEventListener('wheel', onWheel) // RIMOZIONE ZOOM
+      
       window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', onWindowBlur)
     }
-  }, [gl, groupRef, initialRotation.x, initialRotation.y])
+  }, [gl, initialRotation.x, initialRotation.y]) // Dipendenze pulite
 
   useFrame((_, delta) => {
-    const group = groupRef.current
-    if (!group) return
     const p = pose.current
     const s = spring.current
+    const cur = curAngles.current
+    const f = feelRef.current
+
     if (!p.initialized) {
-      // Ordine Euler di default 'XYZ': R = Rx·Ry, quindi lo yaw ruota il
-      // modello attorno al proprio asse verticale e il pitch tumbla il tutto
-      // attorno all'asse orizzontale dello schermo — a qualunque yaw il
-      // flusso verticale resta naturale (mai rollio).
-      // Posa iniziale applicata secca al primo frame, senza animazione:
-      // deve combaciare con il poster sfocato mostrato durante il load.
-      group.rotation.x = p.targetX
-      group.rotation.y = p.targetY
+      cur.pitch = p.targetX
+      cur.yaw = p.targetY
       s.vx = 0
       s.vy = 0
       p.initialized = true
     }
-    const f = feelRef.current
-    // Tempo scalato dal pannello: rallenta/accelera in modo uniforme sia il
-    // follow del drag sia la molla di bounce. Tutte le integrazioni sotto usano
-    // scaledDelta/dt, quindi rigidità, gradi al secondo relativi e overshoot
-    // restano invariati — cambia solo la durata percepita.
+
     const scaledDelta = delta * f.timeScale
-    // dt clampato: stabilità della molla anche dopo un frame lungo (tab
-    // in background, hiccup) e con rigidità alta dal pannello.
     const dt = Math.min(scaledDelta, 1 / 30)
     if (dt <= 0) return
 
     if (drag.current.pointerId != null) {
-      // In drag: follow damp "pastoso" (riferimento Apple). La velocità
-      // risultante viene misurata per seminare la molla al rilascio.
-      const px = group.rotation.x
-      const py = group.rotation.y
-      easing.damp(group.rotation, 'x', p.targetX, f.followTime, scaledDelta)
-      easing.damp(group.rotation, 'y', p.targetY, f.followTime, scaledDelta)
-      s.vx = (group.rotation.x - px) / dt
-      s.vy = (group.rotation.y - py) / dt
-      return
+      const px = cur.pitch
+      const py = cur.yaw
+      easing.damp(cur, 'pitch', p.targetX, f.followTime, scaledDelta)
+      easing.damp(cur, 'yaw', p.targetY, f.followTime, scaledDelta)
+      s.vx = (cur.pitch - px) / dt
+      s.vy = (cur.yaw - py) / dt
+    } else {
+      const k = f.springStiffness
+      let c = 2 * f.springDamping * Math.sqrt(k)
+      if (s.amp > 1 && f.springDamping < 1) {
+        const z = f.springDamping
+        const u = (Math.PI * z) / Math.sqrt(1 - z * z) + Math.log(s.amp)
+        c = 2 * (u / Math.sqrt(Math.PI * Math.PI + u * u)) * Math.sqrt(k)
+      }
+      const stepDt = dt / s.amp
+      const integrate = (axis, vKey, target) => {
+        const x = cur[axis]
+        if (Math.abs(x - target) < 1e-4 && Math.abs(s[vKey]) < 1e-3) {
+          cur[axis] = target
+          s[vKey] = 0
+          return
+        }
+        s[vKey] += (k * (target - x) - c * s[vKey]) * stepDt
+        cur[axis] = x + s[vKey] * stepDt
+      }
+      integrate('pitch', 'vx', p.targetX)
+      integrate('yaw', 'vy', p.targetY)
     }
 
-    // Rilascio: molla smorzata per asse (semi-implicita, quindi stabile).
-    // springDamping < 1 = sotto-smorzata: l'energia in eccesso del gesto
-    // diventa overshoot oltre la posa e ritorno elastico — il bounce.
-    // Molla UNICA per ogni step (round 10): un solo preset (rigidità +
-    // smorzamento) tarato sul passo di riferimento da 45°. Gli step più ampi
-    // (i 90° dei 3/4) non hanno una molla "loro": la stessa molla viene
-    // riportata al feel dei 45° con due correzioni derivate da s.amp.
-    const k = f.springStiffness
-    let c = 2 * f.springDamping * Math.sqrt(k)
-    // BOUNCE. L'overshoot è la frazione e^(-πζ/√(1-ζ²)) dell'ampiezza: dipende
-    // solo da ζ, quindi un 90° rimbalza il doppio dei GRADI di un 45° (e la
-    // dilatazione del tempo qui sotto non lo tocca, rallenta e basta). Nel
-    // dominio log u = πζ/√(1-ζ²) dividere l'overshoot per `amp` costa un
-    // + ln(amp); si rinverte u → ζ = u/√(π²+u²). Così il rimbalzo assoluto
-    // resta quello del passo di riferimento invece di scalare con la corsa.
-    if (s.amp > 1 && f.springDamping < 1) {
-      const z = f.springDamping
-      const u = (Math.PI * z) / Math.sqrt(1 - z * z) + Math.log(s.amp)
-      c = 2 * (u / Math.sqrt(Math.PI * Math.PI + u * u)) * Math.sqrt(k)
-    }
-    // VELOCITÀ. Tempo dilatato di 1/amp (uguale su entrambi gli assi, così gli
-    // step a due assi restano sincronizzati): un 90° dura il doppio di un 45°
-    // e i due si muovono agli stessi gradi al secondo, invece di sferzare.
-    const stepDt = dt / s.amp
-    const integrate = (axis, vKey, target) => {
-      const x = group.rotation[axis]
-      if (Math.abs(x - target) < 1e-4 && Math.abs(s[vKey]) < 1e-3) {
-        group.rotation[axis] = target
-        s[vKey] = 0
-        return
-      }
-      s[vKey] += (k * (target - x) - c * s[vKey]) * stepDt
-      group.rotation[axis] = x + s[vKey] * stepDt
-    }
-    integrate('x', 'vx', p.targetX)
-    integrate('y', 'vy', p.targetY)
+    // Orbita della telecamera: rotazione inversa perfetta tramite quaternioni
+    camera.quaternion.setFromEuler(new THREE.Euler(-cur.pitch, -cur.yaw, 0, 'YXZ'))
+    
+    // Posizioniamo la telecamera al raggio corrente e applichiamo la rotazione
+    camera.position.set(0, 0, cameraRadius.current)
+    camera.position.applyQuaternion(camera.quaternion)
+    camera.position.y += PIVOT_Y
   })
 }

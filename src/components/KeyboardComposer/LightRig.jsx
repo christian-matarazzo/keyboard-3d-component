@@ -1,504 +1,1028 @@
-import { useEffect, useLayoutEffect, useRef } from 'react'
-import * as THREE from 'three'
-import { useFrame, useThree } from '@react-three/fiber'
+import { useMemo, useRef, useEffect, useState } from 'react'
+import { useFrame } from '@react-three/fiber'
+import { useControls, button } from 'leva'
 import { easing } from 'maath'
-import { useControls } from 'leva'
+import * as THREE from 'three'
+import { Html, useHelper, TransformControls } from '@react-three/drei'
+// Inizializzazione GLOBALE: deve avvenire prima che i materiali PBR 
+// vengano compilati, altrimenti le RectAreaLight vengono ignorate.
+import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js'
+RectAreaLightUniformsLib.init()
 
-/**
- * Rig luci solidale alla camera — impianto DIAGONALE avvolgente (round 8,
- * sketch cliente su vista top) + rake laterale e rim di profondità (round 9).
- * Il group è ancorato al pivot del modello e ogni frame copia l'orientamento
- * della camera: le luci restano fisse rispetto al frame mentre il prodotto
- * ruota dentro lo studio.
- *
- * Composizione (posizioni rig-local: +Z verso l'osservatore, −Z dietro):
- *  - keyMain: sorgente DOMINANTE da alto-sinistra, radente — rastrella di
- *             taglio la faccia visibile facendo "rotolare" la luce sui
- *             keycaps (è ciò che genera la FORMA). Unico shadow caster.
- *  - keyFill: seconda sorgente all'angolo OPPOSTO basso-destra, debole —
- *             risale a sollevare il lato in ombra senza pareggiare il
- *             gradiente (la diagonale key→fill evita il "piatto").
- *  - rake:    luce RADENTE dal lato, quasi orizzontale — spazzola le facce
- *             rivolte alla camera nelle elevazioni a pitch 0 (front/back/
- *             laterali), dove la key colpisce solo i top e le facce frontali
- *             resterebbero al buio. Rivela il rilievo come filo di luce sui
- *             bordi, NON come fill piatto (round 9).
- *  - rim:     kicker da dietro-alto — accende il bordo lontano della sagoma
- *             così il prodotto si stacca dal fondo nero: è il principale
- *             segnale di PROFONDITÀ su set nero (round 9).
- *
- * NB (round 8): nessun point light frontale — riempiva ogni faccia in modo
- * uniforme e appiattiva le pose inclinate. La leggibilità delle pose scure
- * resta garantita dalla cupola diffusa (Environment) e dall'orbitale sotto
- * (KeyboardModel.jsx). Il dettaglio delle facce frontali lo dà il RAKE, non
- * un frontale.
- *
- * Il "filo di luce" continuo che avvolge i bordi vive nell'Environment
- * (Scene.jsx): sono riflessi speculari, non luci dirette.
- *
- * ── LUCI PER-VISTA (round 12) ──────────────────────────────────────────────
- * Richiesta cliente: illuminazioni diverse per singola posa invece di un unico
- * set che deve andar bene per tutte. Il "trigger event" è il commit posa: il
- * LightRig legge `apiRef.currentPoseKey()` ogni frame e, in PRODUZIONE, sfuma
- * (crossfade morbido) i valori delle quattro sorgenti verso il set associato a
- * quella posa in `LIGHTING_PER_POSE`. Le pose senza voce nella tabella usano il
- * preset base (`BASE_LIGHTS`, che è anche il default degli slider).
- *
- * Workflow di autoring ("cattura da ?debug", scelto dal cliente):
- *  1. apri con ?debug, naviga alla posa da illuminare;
- *  2. regola gli slider Leva finché la vista è perfetta (in ?debug gli slider
- *     pilotano le luci DIRETTAMENTE, live — l'animazione per-vista è sospesa);
- *  3. dal pannello "Cattura luci" (in basso a destra, solo ?debug) premi
- *     "Cattura vista" — nessuna console: il pannello legge i valori live via
- *     `lightsApi.readLights()`, li accumula per posa e li esporta come blocco
- *     pronto da incollare in `LIGHTING_PER_POSE` (vedi LightCapturePanel.jsx).
- * In produzione (senza ?debug) la tabella viene riprodotta con il crossfade.
- *
- * Ambito v1: le quattro sorgenti dirette del rig (key/fill/rake/rim). Le strip
- * dell'Environment e l'esposizione (Scene.jsx) restano globali — si potranno
- * portare per-vista con lo stesso schema se servirà.
- *
- * Tutti i valori sono regolabili dal vivo con `?debug`: i default qui sotto
- * SONO i valori di produzione (vedi GUIDA-TUNING.md).
- */
+import { POSE_COORD, wrapYaw } from './poseGraph'
 
+const RIG_POSITION = [0, 0.1, 0]
 const DEBUG = new URLSearchParams(window.location.search).has('debug')
 
-const RIG_POSITION = [0, 0.1, 0] // pivot del modello
-
-// Layer dedicato al rake: la luce radente illumina SOLO le mesh su questo
-// layer (i keycaps, marcati in KeyboardModel). Così il rake rivela il
-// dettaglio dei tasti senza rasare — e bruciare — le piastre in alluminio
-// del case, che restano sul solo layer 0. (three.js: luce e oggetto si
-// illuminano solo se condividono un layer.)
-export const RAKE_LAYER = 1
-
-// Tempo di assestamento (secondi) del crossfade luci quando si cambia posa:
-// abbastanza lento da leggersi come "l'illuminazione si accomoda sulla vista",
-// non uno stacco. Coerente con il ritmo rallentato del movimento (round 12).
-const LIGHT_FADE = 0.45
-
-// ── Preset base delle sorgenti ─────────────────────────────────────────────
-// Unica fonte di verità: da qui derivano SIA i default degli slider Leva SIA il
-// fallback per le pose senza override. Modificare qui = spostare il default di
-// produzione.
-//
-// `accent`/`accent2`/`accent3` (round 12c/12d) sono il SET DI TRE luci-accento
-// PER-VISTA: point light aggiuntivi, tutti SPENTI di default (intensity 0), che
-// si accendono solo sulle pose che li definiscono in LIGHTING_PER_POSE e sfumano
-// dentro/fuori entrando e uscendo dalla vista (stessa dissolvenza `durata A→B`).
-// La prima è sempre disponibile, la seconda e la terza sono FACOLTATIVE: chi
-// vuole un set a tre luci le accende, altrimenti restano a zero e non pesano.
-// Lo studio a 4 sorgenti resta invariato su tutte le viste: gli accenti si
-// AGGIUNGONO, non lo sostituiscono. Chiavi diverse dagli spot: niente
-// angle/penumbra, hanno distance/decay (point light). Posizioni di default
-// distinte (fronte / sinistra-alta / destra-alta) per partire da un triangolo.
-const BASE_LIGHTS = {
-  keyMain: { intensity: 16, position: [-3.2, 3.2, 2.2], angle: 0.6, penumbra: 0.9 },
-  keyFill: { intensity: 6, position: [3, -2.2, 2.2], angle: 0.7, penumbra: 1 },
-  rake: { intensity: 12, position: [-5, 0.7, 2.2], color: '#d8e2ff', angle: 0.85, penumbra: 1 },
-  rim: { intensity: 14, position: [2.4, 3.2, -3.4], color: '#e6eeff', angle: 0.6, penumbra: 1 },
-  accent: { intensity: 0, position: [0, 0.6, 3], color: '#ffffff', distance: 0, decay: 2 },
-  accent2: { intensity: 0, position: [-3.5, 1, 1.5], color: '#ffffff', distance: 0, decay: 2 },
-  accent3: { intensity: 0, position: [3.5, 1, 1.5], color: '#ffffff', distance: 0, decay: 2 },
+const generateDefaultConfig = () => {
+  const def = { margin: 1.0, showHelpers: true, showSurfaces: true } 
+  for (let i = 0; i < 9; i++) { def[`top_${i}_intensity`] = 0; def[`top_${i}_color`] = '#ffffff'; def[`top_${i}_decay`] = 2; }
+  for (let i = 0; i < 8; i++) { def[`mid_${i}_intensity`] = 0; def[`mid_${i}_color`] = '#ffffff'; def[`mid_${i}_decay`] = 2; }
+  for (let i = 0; i < 9; i++) { def[`bot_${i}_intensity`] = 0; def[`bot_${i}_color`] = '#ffffff'; def[`bot_${i}_decay`] = 2; }
+  
+  const surfaces = ['top', 'bot', 'left', 'right', 'front', 'back']
+  surfaces.forEach(s => {
+    def[`surf_${s}_intensity`] = 0
+    def[`surf_${s}_color`] = '#ffffff'
+  })
+  
+  return def
 }
 
-/**
- * Override delle luci per singola posa (chiavi del grafo, vedi poseGraph.js).
- * Ogni voce è un merge PARZIALE sul preset base: si scrivono solo i parametri
- * che cambiano per quella vista (es. `TOP: { keyMain: { intensity: 20 } }`),
- * il resto resta il base. Le pose non elencate usano interamente il base.
- *
- * Da popolare con `window.__captureLights()` in ?debug (vedi sopra). Vuoto =
- * comportamento identico a prima (un solo set per tutte).
- */
-const LIGHTING_PER_POSE = {
-  // Esempio (commentato): illuminazione dedicata alla vista dall'alto.
-  // TOP: {
-  //   keyMain: { intensity: 20, position: [-2.6, 3.6, 1.8] },
-  //   rim: { intensity: 8 },
-  // },
+// --- SHADOW KEYLIGHT ---
+function ShadowKeyLight({ debug }) {
+  const lightRef = useRef()
+  
+  // 1. Salviamo l'oggetto intero in 'controls'
+  const [controls, setControls] = useControls('Ombra: Directional (Keylight)', () => ({
+    enabled: { value: true, label: 'Accesa' },
+    showGizmo: { value: false, label: 'Mostra Gizmo 3D' },
+    intensity: { value: 0.5, min: 0, max: 100, step: 0.05 },
+    posX: { value: 0, min: -10, max: 10 },
+    posY: { value: 5, min: -10, max: 10 },
+    posZ: { value: 2, min: -10, max: 10 },
+    bias: { value: -0.0005, min: -0.005, max: 0.005, step: 0.0001 },
+    normalBias: { value: 0.02, min: -0.1, max: 0.1, step: 0.001 },
+  }), { collapsed: true })
+
+  // 2. Destrutturiamo i valori per usarli nel JSX
+  const { enabled, showGizmo, intensity, posX, posY, posZ, bias, normalBias } = controls
+
+  // 3. Ora 'controls' esiste e l'useEffect funziona perfettamente!
+  useEffect(() => { window.__STATE_KEYLIGHT = controls }, [controls])
+  
+  useEffect(() => {
+    const handler = (e) => { if (e.detail) setControls(e.detail) }
+    window.addEventListener('app-load-keylight', handler)
+    return () => window.removeEventListener('app-load-keylight', handler)
+  }, [setControls])
+
+  useHelper(debug && showGizmo && lightRef, THREE.DirectionalLightHelper, 1, '#00ffcc')
+
+  // ... (il resto del return con la directionalLight e il Gizmo rimane identico)
+  if (!enabled) return null
+
+  return (
+    <>
+      <directionalLight 
+        ref={lightRef}
+        position={[posX, posY, posZ]} 
+        intensity={intensity} 
+        castShadow 
+        shadow-mapSize={[2048, 2048]} 
+        shadow-bias={bias} 
+        shadow-normalBias={normalBias} 
+      >
+        <orthographicCamera attach="shadow-camera" args={[-4, 4, 4, -4, 0.1, 20]} />
+      </directionalLight>
+      
+      {debug && showGizmo && (
+        <TransformControls 
+          object={lightRef} 
+          mode="translate" 
+          size={0.7} 
+          // 1. Appena il mouse preme il Gizmo, disabilitiamo il drag del modello!
+          onMouseDown={() => {
+            if (window.__abortComposerDrag) window.__abortComposerDrag()
+          }}
+          // 2. Sincronizziamo in tempo reale con i parametri Leva
+          // 3. Quando muoviamo il Gizmo, aggiorniamo in tempo reale gli slider di Leva
+          onChange={() => {
+            if (lightRef.current) {
+              setControls({
+                posX: lightRef.current.position.x,
+                posY: lightRef.current.position.y,
+                posZ: lightRef.current.position.z,
+              })
+            }
+          }}
+        />
+      )}
+    </>
+  )
 }
 
-// Risolve il set target per una posa da una TABELLA di override (per-vista):
-// base con l'override parziale della posa fuso sopra (per-sorgente, shallow:
-// ogni sorgente ha solo scalari + un array posizione, che si sostituisce in
-// blocco). Serve sia a LIGHTING_PER_POSE (produzione) sia allo store di cattura
-// (anteprima in ?debug).
-const mergeTarget = (table, poseKey) => {
-  const over = (poseKey && table && table[poseKey]) || null
-  if (!over) return BASE_LIGHTS
-  const out = {}
-  for (const slot in BASE_LIGHTS) {
-    out[slot] = over[slot] ? { ...BASE_LIGHTS[slot], ...over[slot] } : BASE_LIGHTS[slot]
-  }
-  return out
+// --- SHADOW SPOTLIGHT ---
+function ShadowSpotLight({ debug }) {
+  const lightRef = useRef()
+  
+  // 1. Salviamo l'oggetto intero in 'controls'
+  const [controls, setControls] = useControls('Ombra: Spotlight', () => ({
+    enabled: { value: false, label: 'Accesa' }, 
+    showGizmo: { value: false, label: 'Mostra Gizmo 3D' },
+    intensity: { value: 1.0, min: 0, max: 100, step: 0.1 },
+    angle: { value: 0.6, min: 0.1, max: Math.PI / 2, step: 0.01 },
+    penumbra: { value: 0.5, min: 0, max: 1, step: 0.01 },
+    distance: { value: 15, min: 1, max: 50, step: 0.5 },
+    posX: { value: -3, min: -10, max: 10 },
+    posY: { value: 4, min: -10, max: 10 },
+    posZ: { value: 3, min: -10, max: 10 },
+    bias: { value: -0.0005, min: -0.005, max: 0.005, step: 0.0001 },
+    normalBias: { value: 0.02, min: -0.1, max: 0.1, step: 0.001 },
+  }), { collapsed: true })
+
+  // 2. Destrutturiamo i valori per usarli nel JSX
+  const { enabled, showGizmo, intensity, angle, penumbra, distance, posX, posY, posZ, bias, normalBias } = controls
+
+  // 3. Salviamo lo stato globale
+  useEffect(() => { window.__STATE_SPOTLIGHT = controls }, [controls])
+  
+  useEffect(() => {
+    const handler = (e) => { if (e.detail) setControls(e.detail) }
+    window.addEventListener('app-load-spotlight', handler)
+    return () => window.removeEventListener('app-load-spotlight', handler)
+  }, [setControls])
+
+  useHelper(debug && showGizmo && lightRef, THREE.SpotLightHelper, '#ff00cc')
+
+  // ... (il resto del return con la spotLight e il Gizmo rimane identico)
+  if (!enabled) return null
+
+  return (
+    <>
+      <spotLight 
+        ref={lightRef}
+        position={[posX, posY, posZ]} 
+        intensity={intensity}
+        angle={angle}
+        penumbra={penumbra}
+        distance={distance}
+        castShadow 
+        shadow-mapSize={[2048, 2048]} 
+        shadow-bias={bias} 
+        shadow-normalBias={normalBias} 
+      />
+      
+      {debug && showGizmo && (
+        <TransformControls 
+          object={lightRef} 
+          mode="translate" 
+          size={0.7} 
+          // 1. Appena il mouse preme il Gizmo, disabilitiamo il drag del modello!
+          onMouseDown={() => {
+            if (window.__abortComposerDrag) window.__abortComposerDrag()
+          }}
+          // 2. Sincronizziamo in tempo reale con i parametri Leva
+          // 3. Sincronizzazione con Leva
+          onChange={() => {
+            if (lightRef.current) {
+              setControls({
+                posX: lightRef.current.position.x,
+                posY: lightRef.current.position.y,
+                posZ: lightRef.current.position.z,
+              })
+            }
+          }}
+        />
+      )}
+    </>
+  )
 }
-const resolveTarget = (poseKey) => mergeTarget(LIGHTING_PER_POSE, poseKey)
 
-// Set target = valori LIVE degli slider Leva (modo tuning in ?debug): le luci
-// inseguono direttamente ciò che l'utente muove, senza passare dalla tabella.
-const liveTarget = (live) => ({
-  keyMain: {
-    intensity: live.keyMain.intensity,
-    position: live.keyMain.position,
-    angle: live.keyMain.angle,
-    penumbra: live.keyMain.penumbra,
-  },
-  keyFill: {
-    intensity: live.keyFill.intensity,
-    position: live.keyFill.position,
-    angle: live.keyFill.angle,
-    penumbra: live.keyFill.penumbra,
-  },
-  rake: {
-    intensity: live.rake.intensity,
-    position: live.rake.position,
-    color: live.rake.color,
-    angle: live.rake.angle,
-    penumbra: live.rake.penumbra,
-  },
-  rim: {
-    intensity: live.rim.intensity,
-    position: live.rim.position,
-    color: live.rim.color,
-    angle: live.rim.angle,
-    penumbra: live.rim.penumbra,
-  },
-  accent: {
-    intensity: live.accent.intensity,
-    position: live.accent.position,
-    color: live.accent.color,
-    distance: live.accent.distance,
-    decay: live.accent.decay,
-  },
-  accent2: {
-    intensity: live.accent2.intensity,
-    position: live.accent2.position,
-    color: live.accent2.color,
-    distance: live.accent2.distance,
-    decay: live.accent2.decay,
-  },
-  accent3: {
-    intensity: live.accent3.intensity,
-    position: live.accent3.position,
-    color: live.accent3.color,
-    distance: live.accent3.distance,
-    decay: live.accent3.decay,
-  },
-})
+export default function LightRig({ modelSize, apiRef } = {}) {
+  const configsRef = useRef({})
 
-// Arrotonda a 3 decimali: numeri puliti nello snippet esportato.
-const round3 = (n) => Math.round(n * 1000) / 1000
+  const prevPoseRef = useRef(null) 
+  const activePoseRef = useRef(null) 
+  
+  const [activePose, setActivePose] = useState(null) 
+  const [selectedLight, setSelectedLight] = useState(null) 
+  const [lightEditor, setLightEditor] = useState({ intensity: 0, color: '#ffffff', decay: 2 })
 
-// Snapshot dei valori live delle quattro sorgenti (dagli slider Leva),
-// arrotondato e con position come array semplice — il formato di
-// LIGHTING_PER_POSE. È ciò che il pannello di cattura accumula ed esporta.
-const snapshotLights = (live) => ({
-  keyMain: {
-    intensity: round3(live.keyMain.intensity),
-    position: live.keyMain.position.map(round3),
-    angle: round3(live.keyMain.angle),
-    penumbra: round3(live.keyMain.penumbra),
-  },
-  keyFill: {
-    intensity: round3(live.keyFill.intensity),
-    position: live.keyFill.position.map(round3),
-    angle: round3(live.keyFill.angle),
-    penumbra: round3(live.keyFill.penumbra),
-  },
-  rake: {
-    intensity: round3(live.rake.intensity),
-    position: live.rake.position.map(round3),
-    color: live.rake.color,
-    angle: round3(live.rake.angle),
-    penumbra: round3(live.rake.penumbra),
-  },
-  rim: {
-    intensity: round3(live.rim.intensity),
-    position: live.rim.position.map(round3),
-    color: live.rim.color,
-    angle: round3(live.rim.angle),
-    penumbra: round3(live.rim.penumbra),
-  },
-  accent: {
-    intensity: round3(live.accent.intensity),
-    position: live.accent.position.map(round3),
-    color: live.accent.color,
-    distance: round3(live.accent.distance),
-    decay: round3(live.accent.decay),
-  },
-  accent2: {
-    intensity: round3(live.accent2.intensity),
-    position: live.accent2.position.map(round3),
-    color: live.accent2.color,
-    distance: round3(live.accent2.distance),
-    decay: round3(live.accent2.decay),
-  },
-  accent3: {
-    intensity: round3(live.accent3.intensity),
-    position: live.accent3.position.map(round3),
-    color: live.accent3.color,
-    distance: round3(live.accent3.distance),
-    decay: round3(live.accent3.decay),
-  },
-})
+  // Ref aggiuntivi per i Gruppi (utilizzati per animare dinamicamente il volume)
+  const animatedMargin = useRef(1.0)
+  
+  const topGroups = useRef([]); const topLights = useRef([]); const topHelpers = useRef([])
+  const midGroups = useRef([]); const midLights = useRef([]); const midHelpers = useRef([])
+  const botGroups = useRef([]); const botLights = useRef([]); const botHelpers = useRef([])
+  
+  const surfGroups = useRef({})
+  const surfLights = useRef({})
+  const surfHelpers = useRef({})
+  
+  const labelRef = useRef(null)
 
-export default function LightRig({ apiRef, lightsApi, previewRef } = {}) {
-  const camera = useThree((s) => s.camera)
-  const rigRef = useRef()
-  const keyMainRef = useRef()
-  const keyFillRef = useRef()
-  const rakeRef = useRef()
-  const rimRef = useRef()
-  const accentRef = useRef()
-  const accent2Ref = useRef()
-  const accent3Ref = useRef()
-  const targetRef = useRef()
-  const rimTargetRef = useRef()
+  const prevCamRef = useRef({ pitch: 0, yaw: 0, initialized: false })
+  const transitionRef = useRef({ totalDist: 0, progress: 1 })
 
-  const keyMain = useControls('Luci · key principale (alto-sx)', {
-    intensity: { value: BASE_LIGHTS.keyMain.intensity, min: 0, max: 200, step: 1 },
-    position: { value: BASE_LIGHTS.keyMain.position },
-    angle: { value: BASE_LIGHTS.keyMain.angle, min: 0.1, max: 1.2 },
-    penumbra: { value: BASE_LIGHTS.keyMain.penumbra, min: 0, max: 1 },
-  })
-  const keyFill = useControls('Luci · fill (basso-dx)', {
-    intensity: { value: BASE_LIGHTS.keyFill.intensity, min: 0, max: 200, step: 1 },
-    position: { value: BASE_LIGHTS.keyFill.position },
-    angle: { value: BASE_LIGHTS.keyFill.angle, min: 0.1, max: 1.2 },
-    penumbra: { value: BASE_LIGHTS.keyFill.penumbra, min: 0, max: 1 },
-  })
-  // Rake radente: basso e molto laterale, appena avanzato verso camera così
-  // sfiora di taglio le facce frontali (rivela il rilievo). Freddo per un
-  // tocco premium; intensità contenuta per non bruciare i bordi.
-  const rake = useControls('Luci · rake laterale', {
-    intensity: { value: BASE_LIGHTS.rake.intensity, min: 0, max: 60, step: 0.5 },
-    position: { value: BASE_LIGHTS.rake.position },
-    color: BASE_LIGHTS.rake.color,
-    angle: { value: BASE_LIGHTS.rake.angle, min: 0.1, max: 1.4 },
-    penumbra: { value: BASE_LIGHTS.rake.penumbra, min: 0, max: 1 },
-  })
-  // Rim di separazione: dietro-alto, mira leggermente alta così accende il
-  // bordo superiore lontano e stacca la sagoma dal nero.
-  const rim = useControls('Luci · rim (profondità)', {
-    intensity: { value: BASE_LIGHTS.rim.intensity, min: 0, max: 200, step: 1 },
-    position: { value: BASE_LIGHTS.rim.position },
-    color: BASE_LIGHTS.rim.color,
-    angle: { value: BASE_LIGHTS.rim.angle, min: 0.1, max: 1.2 },
-    penumbra: { value: BASE_LIGHTS.rim.penumbra, min: 0, max: 1 },
-  })
-  // SET DI TRE luci-accento PER-VISTA (point light): default SPENTE (intensity
-  // 0), le si accende/posiziona per singola vista e si catturano come le altre.
-  // Si accendono solo sulle pose che le definiscono, con dissolvenza. `distance`
-  // 0 = raggio infinito; `decay` 2 = attenuazione fisica. La 1 è quella base, la
-  // 2 e la 3 sono FACOLTATIVE per comporre un set a tre luci.
-  const accent = useControls('Luci · accento 1 (per-vista)', {
-    intensity: { value: BASE_LIGHTS.accent.intensity, min: 0, max: 200, step: 1 },
-    position: { value: BASE_LIGHTS.accent.position },
-    color: BASE_LIGHTS.accent.color,
-    distance: { value: BASE_LIGHTS.accent.distance, min: 0, max: 30, step: 0.5 },
-    decay: { value: BASE_LIGHTS.accent.decay, min: 0, max: 3, step: 0.1 },
-  })
-  const accent2 = useControls('Luci · accento 2 (facolt.)', {
-    intensity: { value: BASE_LIGHTS.accent2.intensity, min: 0, max: 200, step: 1 },
-    position: { value: BASE_LIGHTS.accent2.position },
-    color: BASE_LIGHTS.accent2.color,
-    distance: { value: BASE_LIGHTS.accent2.distance, min: 0, max: 30, step: 0.5 },
-    decay: { value: BASE_LIGHTS.accent2.decay, min: 0, max: 3, step: 0.1 },
-  })
-  const accent3 = useControls('Luci · accento 3 (facolt.)', {
-    intensity: { value: BASE_LIGHTS.accent3.intensity, min: 0, max: 200, step: 1 },
-    position: { value: BASE_LIGHTS.accent3.position },
-    color: BASE_LIGHTS.accent3.color,
-    distance: { value: BASE_LIGHTS.accent3.distance, min: 0, max: 30, step: 0.5 },
-    decay: { value: BASE_LIGHTS.accent3.decay, min: 0, max: 3, step: 0.1 },
-  })
+  const schema = useMemo(() => {
+    return {
+      showHelpers: { value: false, label: 'Mostra Punti' },
+      showSurfaces: { value: false, label: 'Mostra Superfici' },
+      margin: { value: 1.0, min: 0, max: 3, step: 0.1, label: 'Margine Scatola' },
+      
+      // Controlli per i Damping esposti per il Tuning
+      animMarginDamp: { value: 0.25, min: 0.01, max: 1, step: 0.01, label: 'Velocità Margine' },
+      animLightOnDamp: { value: 0.08, min: 0.01, max: 1, step: 0.01, label: 'Velocità Accensione' },
+      animLightOffDamp: { value: 0.25, min: 0.01, max: 1, step: 0.01, label: 'Velocità Spegnimento' },
+      animColorDamp: { value: 0.35, min: 0.01, max: 1, step: 0.01, label: 'Velocità Colore' },
 
-  // Durata (secondi) del crossfade quando si cambia vista: quanto è "soffusa"
-  // la dissolvenza A→B delle luci. Regolabile dal vivo; il default è il valore
-  // di produzione (LIGHT_FADE). 0 = stacco secco.
-  const trans = useControls('Luci · transizione', {
-    durata: { value: LIGHT_FADE, min: 0, max: 2, step: 0.05, label: 'durata A→B (s)' },
-  })
-
-  // Valori live degli slider (aggiornati a ogni render): in ?debug (tuning)
-  // pilotano le luci direttamente e sono la sorgente della cattura.
-  const liveRef = useRef({})
-  liveRef.current = { keyMain, keyFill, rake, rim, accent, accent2, accent3 }
-  // Durata di transizione live (letta nel useFrame e dal pannello per l'export).
-  const transitionRef = useRef(LIGHT_FADE)
-  transitionRef.current = trans.durata
-
-  // I target sono figli del rig (matrixWorld aggiornata dal grafo scena) e
-  // vanno assegnati imperativamente.
-  useLayoutEffect(() => {
-    keyMainRef.current.target = targetRef.current
-    keyFillRef.current.target = targetRef.current
-    rakeRef.current.target = targetRef.current
-    rimRef.current.target = rimTargetRef.current
-    // Il rake illumina SOLO i keycaps (layer dedicato): niente burn sul case.
-    rakeRef.current.layers.set(RAKE_LAYER)
+      'Resetta Vista': button(() => {
+        if (window.confirm(`Vuoi azzerare le luci per la vista ${activePoseRef.current}?`)) {
+          const def = generateDefaultConfig()
+          def.showHelpers = currentControlsRef.current.showHelpers
+          def.showSurfaces = currentControlsRef.current.showSurfaces
+          configsRef.current[activePoseRef.current] = def
+          setControls({ margin: def.margin })
+          setSelectedLight(null)
+        }
+      })
+    }
   }, [])
 
-  // API imperativa per il pannello di cattura (LightCapturePanel), che vive nel
-  // DOM fuori dal Canvas e non può leggere gli slider Leva altrimenti. Espone
-  // solo la lettura dei valori live correnti; posa, accumulo ed export li
-  // gestisce il pannello (che ha già poseApi per la posa corrente). Solo ?debug.
+  const [controls, setControls] = useControls('Impostazioni Globali Vista', () => schema, { collapsed: true })
+  const currentControlsRef = useRef(controls)
+  currentControlsRef.current = controls
+
+  // --- INIZIO IMPLEMENTAZIONE UNDO ---
+  const historyRef = useRef([])
+
+  // Salva una copia profonda (via JSON) prima di una modifica
+  const saveToHistory = () => {
+    const snapshot = JSON.stringify(configsRef.current)
+    const last = historyRef.current[historyRef.current.length - 1]
+    if (last !== snapshot) {
+      historyRef.current.push(snapshot)
+      // Limitiamo la history a 50 step per evitare memory leak
+      if (historyRef.current.length > 50) historyRef.current.shift()
+    }
+  }
+
   useEffect(() => {
-    if (!lightsApi) return
-    lightsApi.current = {
-      readLights: () => snapshotLights(liveRef.current),
-      getTransition: () => transitionRef.current,
-    }
-    return () => {
-      lightsApi.current = null
-    }
-  }, [lightsApi])
-
-  // Colore temporaneo riusato per il crossfade (evita allocazioni per frame).
-  const tmpColor = useRef(new THREE.Color())
-  // Prima applicazione: snap secco al set della posa d'ingresso (niente
-  // fade-in visibile al load).
-  const snappedRef = useRef(false)
-
-  // Le luci seguono la camera (rig solidale) e, ogni frame, i loro parametri
-  // vengono guidati IMPERATIVAMENTE verso un set-target — sempre, non solo in
-  // produzione: così lo stesso crossfade è osservabile anche in anteprima
-  // ?debug (lo slider "durata" si sente mentre lo si regola) e le prop JSX
-  // restano valori iniziali statici (nessun reset da re-render Leva). Tre modi:
-  //  - PRODUZIONE: target = LIGHTING_PER_POSE[posa], crossfade a `durata`.
-  //  - ?debug + anteprima ON: target = set CATTURATO della posa (store del
-  //    pannello), crossfade a `durata` → si prova la dissolvenza A→B dal vivo.
-  //  - ?debug + anteprima OFF (tuning): target = valori LIVE degli slider,
-  //    istantaneo → le luci seguono ciò che si muove, feedback immediato.
-  useFrame((_, delta) => {
-    if (rigRef.current) rigRef.current.quaternion.copy(camera.quaternion)
-
-    // dt clampato: dopo un frame lungo (tab in background poi ripresa, hiccup)
-    // il crossfade deve restare una dissolvenza, non uno scatto secco verso il
-    // target — stesso accorgimento della molla in useComposerControls.
-    const dt = Math.min(delta, 1 / 30)
-    const preview = DEBUG ? previewRef?.current : null
-    let t
-    let st
-    if (DEBUG && !(preview && preview.on)) {
-      // Tuning: insegui gli slider, immediato.
-      t = liveTarget(liveRef.current)
-      st = 0
-    } else {
-      // Produzione o anteprima: crossfade verso il set della posa.
-      const key = apiRef?.current?.currentPoseKey?.() || null
-      const table = preview && preview.on ? preview.store : LIGHTING_PER_POSE
-      t = mergeTarget(table, key)
-      // Primo frame: snap secco (nessun fade dal base al load).
-      st = snappedRef.current ? transitionRef.current : 0
-    }
-
-    const lights = {
-      keyMain: keyMainRef.current,
-      keyFill: keyFillRef.current,
-      rake: rakeRef.current,
-      rim: rimRef.current,
-      accent: accentRef.current,
-      accent2: accent2Ref.current,
-      accent3: accent3Ref.current,
-    }
-    for (const slot in lights) {
-      const light = lights[slot]
-      if (!light) continue
-      const target = t[slot]
-      // Crossfade KEY-DRIVEN: si animano solo le chiavi presenti nel target di
-      // quella sorgente. Gli spot hanno angle/penumbra; l'accento (point light)
-      // ha distance/decay. Iterando le chiavi il loop copre entrambi i tipi
-      // senza scrivere NaN su proprietà inesistenti.
-      for (const key in target) {
-        if (key === 'position') {
-          easing.damp3(light.position, target.position, st, dt)
-        } else if (key === 'color') {
-          tmpColor.current.set(target.color)
-          easing.dampC(light.color, tmpColor.current, st, dt)
-        } else {
-          easing.damp(light, key, target[key], st, dt)
+    const handleUndo = (e) => {
+      // Intercetta Ctrl-Z (Windows/Linux) o Cmd-Z (Mac)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault()
+        
+        if (historyRef.current.length > 0) {
+          const prevState = historyRef.current.pop()
+          configsRef.current = JSON.parse(prevState)
+          
+          // Forza l'aggiornamento UI per la posa attiva
+          if (activePoseRef.current) {
+            const restoredConf = configsRef.current[activePoseRef.current]
+            if (restoredConf) {
+              setControls({
+                margin: restoredConf.margin,
+                showHelpers: restoredConf.showHelpers,
+                showSurfaces: restoredConf.showSurfaces !== undefined ? restoredConf.showSurfaces : restoredConf.showHelpers
+              })
+              
+              // Se stiamo ispezionando una luce, ripristina i suoi slider
+              if (selectedLight) {
+                setLightEditor({
+                  intensity: restoredConf[`${selectedLight.layer}_${selectedLight.index}_intensity`] || 0,
+                  color: restoredConf[`${selectedLight.layer}_${selectedLight.index}_color`] || '#ffffff',
+                  decay: restoredConf[`${selectedLight.layer}_${selectedLight.index}_decay`] || 2,
+                })
+              }
+            }
+          }
         }
       }
     }
-    snappedRef.current = true
+    
+    window.addEventListener('keydown', handleUndo)
+    return () => window.removeEventListener('keydown', handleUndo)
+  }, [selectedLight, setControls])
+  // --- FINE IMPLEMENTAZIONE UNDO ---
+
+  // Fetch automatico in produzione (fuori dal debug)
+  useEffect(() => {
+    // Eseguiamo il fetch solo fuori dal debug
+    if (!DEBUG) {
+      // Usa il nuovo nome del file che comprende tutto lo stato
+      fetch('/lightconfig/app-state-config.json')
+        .then((res) => {
+          if (!res.ok) throw new Error('File di configurazione non trovato')
+          return res.json()
+        })
+        .then((parsed) => {
+          // Verifica se è il vecchio JSON (solo luci) o il nuovo formato globale
+          const isNewFormat = !!parsed.lights
+          const lightsData = isNewFormat ? parsed.lights : parsed
+          
+          // 1. Applica i dati alle luci volumetriche (il Rig originale)
+          configsRef.current = lightsData;
+          
+          // Aggiorna i controlli se c'è una posa già attiva
+          if (activePoseRef.current && lightsData[activePoseRef.current]) {
+            const newConfig = { ...generateDefaultConfig(), ...lightsData[activePoseRef.current] };
+            setControls({ 
+              margin: newConfig.margin, 
+              showHelpers: newConfig.showHelpers,
+              showSurfaces: newConfig.showSurfaces !== undefined ? newConfig.showSurfaces : newConfig.showHelpers 
+            });
+          }
+
+          // 2. Lancia gli eventi globali per aggiornare Materiali, Rotazioni e Ombre
+          if (isNewFormat) {
+            if (parsed.materials) window.dispatchEvent(new CustomEvent('app-load-materials', { detail: parsed.materials }))
+            if (parsed.rotation) window.dispatchEvent(new CustomEvent('app-load-rotation', { detail: parsed.rotation }))
+            if (parsed.keylight) window.dispatchEvent(new CustomEvent('app-load-keylight', { detail: parsed.keylight }))
+            if (parsed.spotlight) window.dispatchEvent(new CustomEvent('app-load-spotlight', { detail: parsed.spotlight }))
+          }
+        })
+        .catch((err) => {
+          console.warn('Nessun JSON personalizzato trovato, applico i default di sistema:', err.message)
+        })
+    }
+  }, [setControls])
+
+  useEffect(() => {
+    if (activePoseRef.current && configsRef.current[activePoseRef.current]) {
+      configsRef.current[activePoseRef.current].margin = controls.margin
+      configsRef.current[activePoseRef.current].showHelpers = controls.showHelpers
+      configsRef.current[activePoseRef.current].showSurfaces = controls.showSurfaces
+    }
+  }, [controls.margin, controls.showHelpers, controls.showSurfaces])
+
+  useEffect(() => {
+    if (!activePose) return
+    if (!configsRef.current[activePose]) {
+      configsRef.current[activePose] = generateDefaultConfig()
+    }
+    const newConfig = configsRef.current[activePose]
+    setControls({ 
+      margin: newConfig.margin, 
+      showHelpers: newConfig.showHelpers,
+      showSurfaces: newConfig.showSurfaces !== undefined ? newConfig.showSurfaces : newConfig.showHelpers
+    })
+    setSelectedLight(null) 
+  }, [activePose, setControls])
+
+  useEffect(() => {
+    if (selectedLight && activePoseRef.current) {
+      const conf = configsRef.current[activePoseRef.current]
+      if (conf) {
+        setLightEditor({
+          intensity: conf[`${selectedLight.layer}_${selectedLight.index}_intensity`] || 0,
+          color: conf[`${selectedLight.layer}_${selectedLight.index}_color`] || '#ffffff',
+          decay: conf[`${selectedLight.layer}_${selectedLight.index}_decay`] || 2,
+        })
+      }
+    }
+  }, [selectedLight, activePose])
+
+  const updateLightValue = (key, val) => {
+    setLightEditor(prev => ({ ...prev, [key]: val }))
+    if (activePoseRef.current && selectedLight) {
+      configsRef.current[activePoseRef.current][`${selectedLight.layer}_${selectedLight.index}_${key}`] = val
+    }
+  }
+
+  // La topologia di base viene memorizzata ignorando il margine variabile, così
+  // l'array React non causa re-render indesiderati e distruttivi al cambio del margine.
+  const layers = useMemo(() => {
+    if (!modelSize) return { top: [], mid: [], bot: [] }
+    const top = [], mid = [], bot = []
+    
+    for (let y of [1, 0, -1]) {
+      for (let z of [-1, 0, 1]) {
+        for (let x of [-1, 0, 1]) {
+          if (y === 0 && x === 0 && z === 0) continue
+          if (y === 1) top.push({ x, y, z })
+          else if (y === -1) bot.push({ x, y, z })
+          else mid.push({ x, y, z })
+        }
+      }
+    }
+    return { top, mid, bot }
+  }, [modelSize])
+
+  const faces = useMemo(() => {
+    if (!modelSize) return []
+    return [
+      { id: 'surf_top', layer: 'surf', index: 'top', rot: [-Math.PI/2, 0, 0] },
+      { id: 'surf_bot', layer: 'surf', index: 'bot', rot: [Math.PI/2, 0, 0] },
+      { id: 'surf_left', layer: 'surf', index: 'left', rot: [0, -Math.PI/2, 0] },
+      { id: 'surf_right', layer: 'surf', index: 'right', rot: [0, Math.PI/2, 0] },
+      { id: 'surf_front', layer: 'surf', index: 'front', rot: [0, 0, 0] },
+      { id: 'surf_back', layer: 'surf', index: 'back', rot: [0, Math.PI, 0] },
+    ]
+  }, [modelSize])
+
+  // --- INIZIO LISTA LUCI ATTIVE ---
+  const activeLightsList = useMemo(() => {
+    if (!activePose || !configsRef.current[activePose]) return []
+    const conf = configsRef.current[activePose]
+    const active = []
+    
+    const checkLight = (layer, idx, name) => {
+      const intensity = conf[`${layer}_${idx}_intensity`] || 0
+      if (intensity > 0) {
+        active.push({
+          value: `${layer}_${idx}`,
+          label: `${name} (Int: ${intensity.toFixed(1)})`
+        })
+      }
+    }
+
+    faces.forEach(f => checkLight('surf', f.index, `Superficie ${f.index.toUpperCase()}`))
+    if (layers.top) layers.top.forEach((_, i) => checkLight('top', i, `Top ${i}`))
+    if (layers.mid) layers.mid.forEach((_, i) => checkLight('mid', i, `Mid ${i}`))
+    if (layers.bot) layers.bot.forEach((_, i) => checkLight('bot', i, `Bot ${i}`))
+
+    return active
+  }, [activePose, lightEditor.intensity, faces, layers])
+  // --- FINE LISTA LUCI ATTIVE ---
+
+  useFrame((state, delta) => {
+    if (!modelSize) return
+
+    const poseKey = apiRef?.current?.currentPoseKey?.()
+    
+    if (poseKey && poseKey !== activePoseRef.current) {
+      const targetCoord = POSE_COORD[poseKey]
+      const prevCoord = POSE_COORD[activePoseRef.current] || targetCoord
+      if (targetCoord && prevCoord) {
+        const totalDist = Math.hypot(
+          wrapYaw(targetCoord.yaw - prevCoord.yaw),
+          targetCoord.pitch - prevCoord.pitch
+        )
+        transitionRef.current.totalDist = totalDist
+        transitionRef.current.progress = totalDist > 0.001 ? 0 : 1
+      }
+      prevPoseRef.current = activePoseRef.current
+      activePoseRef.current = poseKey
+      setActivePose(poseKey)
+    }
+
+    if (labelRef.current) {
+      const expectedText = activePoseRef.current ? `Vista attiva: ${activePoseRef.current}` : 'Caricamento Vista...'
+      if (labelRef.current.innerText !== expectedText) {
+        labelRef.current.innerText = expectedText
+      }
+    }
+
+    const camEuler = new THREE.Euler().setFromQuaternion(state.camera.quaternion, 'YXZ')
+    const currentPitch = -camEuler.x
+    const currentYaw = -camEuler.y
+    
+    if (!prevCamRef.current.initialized) {
+      prevCamRef.current.pitch = currentPitch
+      prevCamRef.current.yaw = currentYaw
+      prevCamRef.current.initialized = true
+    }
+    
+    const deltaPitch = currentPitch - prevCamRef.current.pitch
+    const deltaYaw = wrapYaw(currentYaw - prevCamRef.current.yaw)
+    const moveDist = Math.hypot(deltaPitch, deltaYaw)
+    
+    prevCamRef.current.pitch = currentPitch
+    prevCamRef.current.yaw = currentYaw
+
+    if (transitionRef.current.progress < 1 && transitionRef.current.totalDist > 0.001) {
+      transitionRef.current.progress += moveDist / transitionRef.current.totalDist
+      if (transitionRef.current.progress > 1) transitionRef.current.progress = 1
+    }
+
+    const p = transitionRef.current.progress
+    const targetC = configsRef.current[activePoseRef.current] || generateDefaultConfig()
+    const prevC = configsRef.current[prevPoseRef.current] || targetC
+
+    const lerpVal = (key, defaultVal) => {
+      const v1 = prevC[key] ?? defaultVal
+      const v2 = targetC[key] ?? defaultVal
+      return v1 + (v2 - v1) * p
+    }
+
+    const currentCtrl = currentControlsRef.current
+    
+    // 1. ANIMA IL MARGINE
+    easing.damp(animatedMargin, 'current', currentCtrl.margin, currentCtrl.animMarginDamp, delta)
+    const m = animatedMargin.current
+
+    const isVisiblePoints = DEBUG && currentCtrl.showHelpers
+    const isVisibleSurfaces = DEBUG && currentCtrl.showSurfaces
+
+    const updateLightGroup = (lightsArray, helpersArray, groupsArray, prefix, gridItems) => {
+      gridItems.forEach((gridItem, i) => {
+        const light = lightsArray.current[i]
+        const helper = helpersArray.current[i]
+        const group = groupsArray.current[i]
+        if (!light) return
+
+        // 2. MUOVI IL GRUPPO FLUIDAMENTE IN BASE AL MARGINE
+        if (group) {
+            const px = gridItem.x === 0 ? 0 : (modelSize.x / 2 + m) * gridItem.x
+            const py = gridItem.y === 0 ? 0 : (modelSize.y / 2 + m) * gridItem.y
+            const pz = gridItem.z === 0 ? 0 : (modelSize.z / 2 + m) * gridItem.z
+            group.position.set(px, py, pz)
+        }
+
+        const targetIntensity = lerpVal(`${prefix}_${i}_intensity`, 0)
+        const targetDecay = lerpVal(`${prefix}_${i}_decay`, 2)
+        const targetColor = targetC[`${prefix}_${i}_color`] || '#ffffff'
+        
+        // 3. DAMPING ASIMMETRICO (Più reattivo in salita o discesa a seconda delle tue impostazioni Leva)
+        const isTurningOn = targetIntensity > light.intensity
+        const dynamicDamp = isTurningOn ? currentCtrl.animLightOnDamp : currentCtrl.animLightOffDamp
+        
+        easing.damp(light, 'intensity', targetIntensity, dynamicDamp, delta)
+        easing.damp(light, 'decay', targetDecay, dynamicDamp, delta)
+        
+        // 4. EVITA TRANSIZIONE AL BIANCO
+        if (targetIntensity > 0.05) {
+            easing.dampC(light.color, targetColor, currentCtrl.animColorDamp, delta)
+        }
+
+        if (helper) {
+          helper.visible = isVisiblePoints
+          if (isVisiblePoints) {
+            const isSelected = selectedLight?.layer === prefix && selectedLight?.index === i
+            if (isSelected) {
+              easing.damp(helper.scale, 'x', 1.2, dynamicDamp, delta)
+              easing.damp(helper.scale, 'y', 1.2, dynamicDamp, delta)
+              easing.damp(helper.scale, 'z', 1.2, dynamicDamp, delta)
+              easing.dampC(helper.material.color, '#00ff44', dynamicDamp, delta) 
+              helper.material.opacity = 1.0
+            } else {
+              const targetScale = 0.5 + (targetIntensity / 50) * 1.5 
+              easing.damp(helper.scale, 'x', targetScale, dynamicDamp, delta)
+              easing.damp(helper.scale, 'y', targetScale, dynamicDamp, delta)
+              easing.damp(helper.scale, 'z', targetScale, dynamicDamp, delta)
+              if (targetIntensity > 0.05) {
+                  easing.dampC(helper.material.color, targetColor, currentCtrl.animColorDamp, delta)
+              }
+              helper.material.opacity = Math.max(0.1, targetIntensity / 50)
+            }
+          }
+        }
+      })
+    }
+
+    const updateSurfGroup = () => {
+      const w = modelSize.x + m * 2
+      const h = modelSize.y + m * 2
+      const d = modelSize.z + m * 2
+  
+      const dynamicFaces = {
+        top: { pos: [0, h/2, 0], args: [w, d] },
+        bot: { pos: [0, -h/2, 0], args: [w, d] },
+        left: { pos: [-w/2, 0, 0], args: [d, h] },
+        right: { pos: [w/2, 0, 0], args: [d, h] },
+        front: { pos: [0, 0, d/2], args: [w, h] },
+        back: { pos: [0, 0, -d/2], args: [w, h] }
+      }
+
+      faces.forEach((face) => {
+        const s = face.index
+        const light = surfLights.current[s]
+        const helper = surfHelpers.current[s]
+        const group = surfGroups.current[s]
+        if (!light) return
+        
+        const { pos, args } = dynamicFaces[s]
+        if (group) group.position.set(...pos)
+        
+        // Adattamento dimensioni RectAreaLight
+        easing.damp(light, 'width', args[0], currentCtrl.animMarginDamp, delta)
+        easing.damp(light, 'height', args[1], currentCtrl.animMarginDamp, delta)
+
+        const targetIntensity = lerpVal(`surf_${s}_intensity`, 0)
+        const targetColor = targetC[`surf_${s}_color`] || '#ffffff'
+        
+        const isTurningOn = targetIntensity > light.intensity
+        const dynamicDamp = isTurningOn ? currentCtrl.animLightOnDamp : currentCtrl.animLightOffDamp
+
+        easing.damp(light, 'intensity', targetIntensity, dynamicDamp, delta)
+        
+        if (targetIntensity > 0.05) {
+            easing.dampC(light.color, targetColor, currentCtrl.animColorDamp, delta)
+        }
+
+        if (helper) {
+          helper.visible = isVisibleSurfaces
+          if (isVisibleSurfaces) {
+            // Adattamento scala mesh Helper in base all'animazione
+            easing.damp(helper.scale, 'x', args[0], currentCtrl.animMarginDamp, delta)
+            easing.damp(helper.scale, 'y', args[1], currentCtrl.animMarginDamp, delta)
+
+            const isSelected = selectedLight?.layer === 'surf' && selectedLight?.index === s
+            if (isSelected) {
+              easing.dampC(helper.material.color, '#00ff44', dynamicDamp, delta) 
+              helper.material.opacity = 0.6
+            } else {
+              if (targetIntensity > 0.05) {
+                  easing.dampC(helper.material.color, targetColor, currentCtrl.animColorDamp, delta)
+              }
+              helper.material.opacity = Math.max(0.05, targetIntensity / 1500) 
+            }
+          }
+        }
+      })
+    }
+
+    updateLightGroup(topLights, topHelpers, topGroups, 'top', layers.top)
+    updateLightGroup(midLights, midHelpers, midGroups, 'mid', layers.mid)
+    updateLightGroup(botLights, botHelpers, botGroups, 'bot', layers.bot)
+    updateSurfGroup()
   })
 
+  const handleEntityClick = (e, layerPrefix, i) => {
+    e.stopPropagation()
+    setSelectedLight({ layer: layerPrefix, index: i })
+  }
+
+  const handlePointerOver = (e) => {
+    e.stopPropagation()
+    document.body.style.cursor = 'pointer'
+  }
+
+  const handlePointerOut = (e) => {
+    e.stopPropagation()
+    document.body.style.cursor = 'grab'
+  }
+
+  const fixedDistance = 6
+  const isSurfSelected = selectedLight?.layer === 'surf'
+
+  const handleSaveJSON = () => {
+    if (activePoseRef.current && currentControlsRef.current) {
+      configsRef.current[activePoseRef.current].margin = currentControlsRef.current.margin
+      configsRef.current[activePoseRef.current].showHelpers = currentControlsRef.current.showHelpers
+      configsRef.current[activePoseRef.current].showSurfaces = currentControlsRef.current.showSurfaces
+    }
+    
+    const fullData = {
+      lights: configsRef.current,
+      materials: window.__STATE_MATERIALS || {},
+      rotation: window.__STATE_ROTATION || {},
+      keylight: window.__STATE_KEYLIGHT || {},
+      spotlight: window.__STATE_SPOTLIGHT || {}
+    }
+
+    const json = JSON.stringify(fullData, null, 2)
+    const blob = new Blob([json], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'app-state-config.json'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  const handleLoadJSON = () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = 'application/json'
+    input.onchange = (e) => {
+      const file = e.target.files[0]
+      if (!file) return
+      const reader = new FileReader()
+      reader.onload = (ev) => {
+        try {
+          const parsed = JSON.parse(ev.target.result)
+          
+          const isNewFormat = !!parsed.lights
+          const lightsData = isNewFormat ? parsed.lights : parsed
+
+          configsRef.current = lightsData
+          let alertMsg = "Configurazione Globale caricata con successo!"
+          
+          const currentPose = activePoseRef.current
+          if (currentPose && lightsData[currentPose]) {
+            const newConfig = { ...generateDefaultConfig(), ...lightsData[currentPose] }
+            setControls({ 
+              margin: newConfig.margin, 
+              showHelpers: newConfig.showHelpers, 
+              showSurfaces: newConfig.showSurfaces !== undefined ? newConfig.showSurfaces : newConfig.showHelpers 
+            })
+          }
+          
+          if (isNewFormat) {
+            if (parsed.materials) window.dispatchEvent(new CustomEvent('app-load-materials', { detail: parsed.materials }))
+            if (parsed.rotation) window.dispatchEvent(new CustomEvent('app-load-rotation', { detail: parsed.rotation }))
+            if (parsed.keylight) window.dispatchEvent(new CustomEvent('app-load-keylight', { detail: parsed.keylight }))
+            if (parsed.spotlight) window.dispatchEvent(new CustomEvent('app-load-spotlight', { detail: parsed.spotlight }))
+          }
+
+          setSelectedLight(null)
+          alert(alertMsg)
+        } catch (err) {
+          alert("Errore: Il JSON fornito non è valido.")
+        }
+      }
+      reader.readAsText(file)
+    }
+    input.click()
+  }
+
   return (
-    <group ref={rigRef} position={RIG_POSITION}>
-      {/* Le prop dinamiche (intensity/position/angle/penumbra/color) sono solo
-          VALORI INIZIALI statici (BASE_LIGHTS): da qui in poi le luci sono
-          guidate dal useFrame sopra, che insegue slider live / tabella / store.
-          Tenerle statiche evita che un re-render Leva le resetti a metà
-          crossfade. */}
-      <spotLight
-        ref={keyMainRef}
-        castShadow
-        position={BASE_LIGHTS.keyMain.position}
-        intensity={BASE_LIGHTS.keyMain.intensity}
-        angle={BASE_LIGHTS.keyMain.angle}
-        penumbra={BASE_LIGHTS.keyMain.penumbra}
-        decay={1.4}
-        shadow-mapSize={[1024, 1024]}
-        shadow-bias={-0.0001}
-      />
-      <spotLight
-        ref={keyFillRef}
-        position={BASE_LIGHTS.keyFill.position}
-        intensity={BASE_LIGHTS.keyFill.intensity}
-        angle={BASE_LIGHTS.keyFill.angle}
-        penumbra={BASE_LIGHTS.keyFill.penumbra}
-        decay={1.4}
-      />
-      <spotLight
-        ref={rakeRef}
-        position={BASE_LIGHTS.rake.position}
-        intensity={BASE_LIGHTS.rake.intensity}
-        angle={BASE_LIGHTS.rake.angle}
-        penumbra={BASE_LIGHTS.rake.penumbra}
-        color={BASE_LIGHTS.rake.color}
-        decay={1.3}
-      />
-      <spotLight
-        ref={rimRef}
-        position={BASE_LIGHTS.rim.position}
-        intensity={BASE_LIGHTS.rim.intensity}
-        angle={BASE_LIGHTS.rim.angle}
-        penumbra={BASE_LIGHTS.rim.penumbra}
-        color={BASE_LIGHTS.rim.color}
-        decay={1.2}
-      />
-      {/* Set di tre luci-accento per-vista: point light, spente di default
-          (intensity 0), guidate dal useFrame come le altre. Solidali al rig
-          (camera). La 2 e la 3 sono facoltative. */}
-      <pointLight
-        ref={accentRef}
-        position={BASE_LIGHTS.accent.position}
-        intensity={BASE_LIGHTS.accent.intensity}
-        color={BASE_LIGHTS.accent.color}
-        distance={BASE_LIGHTS.accent.distance}
-        decay={BASE_LIGHTS.accent.decay}
-      />
-      <pointLight
-        ref={accent2Ref}
-        position={BASE_LIGHTS.accent2.position}
-        intensity={BASE_LIGHTS.accent2.intensity}
-        color={BASE_LIGHTS.accent2.color}
-        distance={BASE_LIGHTS.accent2.distance}
-        decay={BASE_LIGHTS.accent2.decay}
-      />
-      <pointLight
-        ref={accent3Ref}
-        position={BASE_LIGHTS.accent3.position}
-        intensity={BASE_LIGHTS.accent3.intensity}
-        color={BASE_LIGHTS.accent3.color}
-        distance={BASE_LIGHTS.accent3.distance}
-        decay={BASE_LIGHTS.accent3.decay}
-      />
-      <object3D ref={targetRef} position={[0, 0, 0]} />
-      <object3D ref={rimTargetRef} position={[0, 0.4, 0]} />
+    <group position={RIG_POSITION}>
+      
+      {/* NUOVE LUCI CON GIZMO 3D */}
+      <ShadowKeyLight debug={DEBUG} />
+      <ShadowSpotLight debug={DEBUG} />
+
+      {/* PANNELLO DI SALVATAGGIO/CARICAMENTO (In alto a sinistra) */}
+      {DEBUG && (
+        <Html fullscreen style={{ pointerEvents: 'none', zIndex: 10000 }}>
+          <div style={{
+            position: 'absolute',
+            top: '20px',
+            left: '20px',
+            pointerEvents: 'auto',
+            display: 'flex',
+            gap: '10px'
+          }}>
+            <button 
+              onClick={handleSaveJSON}
+              style={{
+                background: 'rgba(20, 100, 200, 0.8)',
+                color: 'white',
+                border: '1px solid rgba(100, 180, 255, 0.5)',
+                padding: '8px 16px',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontWeight: 'bold',
+                fontFamily: 'sans-serif',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                backdropFilter: 'blur(4px)'
+              }}
+            >
+              Salva Configurazione
+            </button>
+            <button 
+              onClick={handleLoadJSON}
+              style={{
+                background: 'rgba(20, 20, 20, 0.8)',
+                color: 'white',
+                border: '1px solid rgba(255, 255, 255, 0.2)',
+                padding: '8px 16px',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontWeight: 'bold',
+                fontFamily: 'sans-serif',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                backdropFilter: 'blur(4px)'
+              }}
+            >
+              Carica JSON
+            </button>
+          </div>
+        </Html>
+      )}
+
+      {DEBUG && (controls.showHelpers || controls.showSurfaces) && (
+        <Html fullscreen style={{ pointerEvents: 'none', zIndex: 9999 }}>
+          
+          <div
+            ref={labelRef}
+            style={{
+              position: 'absolute',
+              bottom: '30px',
+              left: '30px',
+              background: 'rgba(20, 20, 20, 0.85)',
+              border: '1px solid rgba(255, 255, 255, 0.2)',
+              color: '#4dabf7',
+              padding: '10px 20px',
+              borderRadius: '16px',
+              fontFamily: 'monospace',
+              fontSize: '15px',
+              fontWeight: 'bold',
+              whiteSpace: 'nowrap',
+              backdropFilter: 'blur(4px)',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.5)'
+            }}
+          />
+
+          {/* --- INIZIO PUNTO 3A: CONTENITORE DEI DUE SELETTORI --- */}
+          <div style={{
+            position: 'absolute',
+            bottom: '85px',
+            left: '30px',
+            pointerEvents: 'auto',
+            display: 'flex',        // Trasformato in flexbox per impilare i selettori
+            flexDirection: 'column', 
+            gap: '12px'             // Spazio tra il selettore globale e quello attivo
+          }}>
+            
+            {/* 1. SELETTORE ORIGINALE (Globale) */}
+            <select
+              value={selectedLight ? `${selectedLight.layer}_${selectedLight.index}` : ''}
+              onChange={(e) => {
+                if (!e.target.value) { setSelectedLight(null); return; }
+                const [layer, idx] = e.target.value.split('_');
+                setSelectedLight({ layer, index: layer === 'surf' ? idx : parseInt(idx, 10) });
+              }}
+              style={{
+                background: 'rgba(20, 20, 20, 0.85)',
+                border: '1px solid rgba(255, 255, 255, 0.2)',
+                color: '#fff',
+                padding: '10px 14px',
+                borderRadius: '12px',
+                fontFamily: 'sans-serif',
+                fontSize: '13px',
+                fontWeight: '600',
+                cursor: 'pointer',
+                backdropFilter: 'blur(4px)',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+                outline: 'none',
+                appearance: 'auto'
+              }}
+            >
+              <option value="">-- Seleziona Luce GLOBALE --</option>
+              <optgroup label="Facce (Superfici)">
+                {faces.map(f => <option key={`surf_${f.index}`} value={`surf_${f.index}`}>Superficie {f.index.toUpperCase()}</option>)}
+              </optgroup>
+              <optgroup label="Griglia Top">
+                {layers.top.map((_, i) => <option key={`top_${i}`} value={`top_${i}`}>Top {i}</option>)}
+              </optgroup>
+              <optgroup label="Griglia Mid">
+                {layers.mid.map((_, i) => <option key={`mid_${i}`} value={`mid_${i}`}>Mid {i}</option>)}
+              </optgroup>
+              <optgroup label="Griglia Bot">
+                {layers.bot.map((_, i) => <option key={`bot_${i}`} value={`bot_${i}`}>Bot {i}</option>)}
+              </optgroup>
+            </select>
+
+            {/* 2. NUOVO SELETTORE (Solo Luci Attive in questa vista) */}
+            <select
+              value={selectedLight ? `${selectedLight.layer}_${selectedLight.index}` : ''}
+              onChange={(e) => {
+                if (!e.target.value) { setSelectedLight(null); return; }
+                const [layer, idx] = e.target.value.split('_');
+                setSelectedLight({ layer, index: layer === 'surf' ? idx : parseInt(idx, 10) });
+              }}
+              style={{
+                background: 'rgba(20, 50, 80, 0.85)', // Sfondo leggermente blu/diverso per distinguerlo
+                border: '1px solid rgba(100, 180, 255, 0.4)',
+                color: '#fff',
+                padding: '10px 14px',
+                borderRadius: '12px',
+                fontFamily: 'sans-serif',
+                fontSize: '13px',
+                fontWeight: '600',
+                cursor: 'pointer',
+                backdropFilter: 'blur(4px)',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+                outline: 'none',
+                appearance: 'auto'
+              }}
+            >
+              <option value="">-- Luci ATTIVE --</option>
+              {activeLightsList.length === 0 && <option value="" disabled>Nessuna luce attiva in questa vista</option>}
+              {activeLightsList.map(l => (
+                <option key={`active_${l.value}`} value={l.value}>{l.label}</option>
+              ))}
+            </select>
+          </div>
+          {/* --- FINE PUNTO 3A --- */}
+
+          {selectedLight && (
+            <div
+              style={{
+                position: 'absolute',
+                right: '30px',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                width: '260px',
+                background: 'rgba(20, 20, 20, 0.85)',
+                border: '1px solid rgba(255, 255, 255, 0.2)',
+                borderRadius: '16px',
+                padding: '20px',
+                color: '#fff',
+                fontFamily: 'sans-serif',
+                pointerEvents: 'auto', 
+                backdropFilter: 'blur(8px)',
+                boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '16px'
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 style={{ margin: 0, fontSize: '16px', color: '#4dabf7', textTransform: 'uppercase' }}>
+                  LUCE {selectedLight.layer} {selectedLight.index}
+                </h3>
+                <button 
+                  onClick={() => setSelectedLight(null)}
+                  style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', fontSize: '16px', fontWeight: 'bold' }}
+                >✕</button>
+              </div>
+
+              {/* --- INIZIO PUNTO 3B: AGGIUNTA onPointerDown={saveToHistory} AGLI INPUT --- */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                <label style={{ fontSize: '12px', fontWeight: '600' }}>
+                  Intensità: {lightEditor.intensity.toFixed(1)}
+                </label>
+                <input 
+                  type="range" 
+                  min="0" 
+                  max={isSurfSelected ? 100 : 50} 
+                  step={isSurfSelected ? 0.2 : 0.1} 
+                  value={lightEditor.intensity} 
+                  onPointerDown={saveToHistory} // SALVA STATO PRIMA DI TRASCINARE
+                  onChange={(e) => updateLightValue('intensity', parseFloat(e.target.value))}
+                  style={{ accentColor: '#4dabf7', cursor: 'ew-resize' }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                <label style={{ fontSize: '12px', fontWeight: '600' }}>Colore:</label>
+                <input 
+                  type="color" 
+                  value={lightEditor.color} 
+                  onPointerDown={saveToHistory} // SALVA STATO PRIMA DI CLICCARE IL COLORE
+                  onChange={(e) => updateLightValue('color', e.target.value)}
+                  style={{ width: '100%', height: '32px', border: 'none', borderRadius: '4px', cursor: 'pointer', background: 'transparent' }}
+                />
+              </div>
+
+              {!isSurfSelected && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                  <label style={{ fontSize: '12px', fontWeight: '600' }}>
+                    Decadimento: {lightEditor.decay.toFixed(1)}
+                  </label>
+                  <input 
+                    type="range" min="0" max="5" step="0.1" 
+                    value={lightEditor.decay} 
+                    onPointerDown={saveToHistory} // SALVA STATO PRIMA DI TRASCINARE
+                    onChange={(e) => updateLightValue('decay', parseFloat(e.target.value))}
+                    style={{ accentColor: '#4dabf7', cursor: 'ew-resize' }}
+                  />
+                </div>
+              )}
+              {/* --- FINE PUNTO 3B --- */}
+            </div>
+          )}
+        </Html>
+      )}
+
+      {faces.map((face) => (
+        <group key={face.id} ref={el => { if (el) surfGroups.current[face.index] = el }} rotation={face.rot}>
+          <rectAreaLight 
+            intensity={0}
+            width={1} // Base dimension pre-animation 
+            height={1}
+            ref={el => { if (el) surfLights.current[face.index] = el }} 
+          />
+          <mesh 
+            ref={el => { if (el) surfHelpers.current[face.index] = el }}
+            onClick={(e) => handleEntityClick(e, 'surf', face.index)}
+            onPointerOver={handlePointerOver}
+            onPointerOut={handlePointerOut}
+            renderOrder={998}
+          >
+            {/* args statici a 1x1, si scala il nodo nel loop piuttosto che ricreare la geometria costantemente */}
+            <planeGeometry args={[1, 1]} />
+            <meshBasicMaterial transparent opacity={0.1} wireframe depthTest={false} depthWrite={false} color="#ffffff" side={THREE.DoubleSide} />
+          </mesh>
+        </group>
+      ))}
+
+      {layers.top.map((gridItem, i) => (
+        <group key={`top-${i}`} ref={el => { if (el) topGroups.current[i] = el }}>
+          <pointLight intensity={0} ref={el => { if (el) topLights.current[i] = el }} distance={fixedDistance} />
+          <mesh 
+            ref={el => { if (el) topHelpers.current[i] = el }}
+            onClick={(e) => handleEntityClick(e, 'top', i)}
+            onPointerOver={handlePointerOver}
+            onPointerOut={handlePointerOut}
+            renderOrder={999}
+          >
+            <sphereGeometry args={[0.05, 16, 16]} />
+            <meshBasicMaterial transparent opacity={0.1} wireframe depthTest={false} depthWrite={false} color="#ffffff" />
+          </mesh>
+        </group>
+      ))}
+
+      {layers.mid.map((gridItem, i) => (
+        <group key={`mid-${i}`} ref={el => { if (el) midGroups.current[i] = el }}>
+          <pointLight intensity={0} ref={el => { if (el) midLights.current[i] = el }} distance={fixedDistance} />
+          <mesh 
+            ref={el => { if (el) midHelpers.current[i] = el }}
+            onClick={(e) => handleEntityClick(e, 'mid', i)}
+            onPointerOver={handlePointerOver}
+            onPointerOut={handlePointerOut}
+            renderOrder={999}
+          >
+            <sphereGeometry args={[0.05, 16, 16]} />
+            <meshBasicMaterial transparent opacity={0.1} wireframe depthTest={false} depthWrite={false} color="#ffffff" />
+          </mesh>
+        </group>
+      ))}
+
+      {layers.bot.map((gridItem, i) => (
+        <group key={`bot-${i}`} ref={el => { if (el) botGroups.current[i] = el }}>
+          <pointLight intensity={0} ref={el => { if (el) botLights.current[i] = el }} distance={fixedDistance} />
+          <mesh 
+            ref={el => { if (el) botHelpers.current[i] = el }}
+            onClick={(e) => handleEntityClick(e, 'bot', i)}
+            onPointerOver={handlePointerOver}
+            onPointerOut={handlePointerOut}
+            renderOrder={999}
+          >
+            <sphereGeometry args={[0.05, 16, 16]} />
+            <meshBasicMaterial transparent opacity={0.1} wireframe depthTest={false} depthWrite={false} color="#ffffff" />
+          </mesh>
+        </group>
+      ))}
+
     </group>
   )
 }
