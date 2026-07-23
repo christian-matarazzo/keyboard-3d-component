@@ -11,6 +11,10 @@
   /* Tripletta RGB (non hex): composta con l'alpha via rgb(var(--hud-fg) / X%)
      in tutto il file, così l'inversione dark→light parte da un solo punto. */
   --hud-fg: 255 255 255;
+  /* Fill dei quadrati attivi (pager/toggle): in dark è derivato da --hud-fg,
+     in light viene forzato a bianco pieno (vedi .hud[data-theme='light']) per
+     evitare il fill grigio su sfondo bianco segnalato dal cliente. */
+  --hud-active-bg: rgb(var(--hud-fg) / 6%);
 
   /* Token condivisi fra .pager/.page e .themeToggle: il toggle deriva la sua
      posizione da questi stessi valori (vedi .themeToggle) invece di duplicare
@@ -39,6 +43,7 @@
 
 .hud[data-theme='light'] {
   --hud-fg: 0 0 0;
+  --hud-active-bg: #fff;
 }
 
 /* ── Riga superiore: brand · telemetria · versione ─────────────────────── */
@@ -142,7 +147,7 @@
 .pageActive {
   color: rgb(var(--hud-fg));
   border-color: rgb(var(--hud-fg));
-  background: rgb(var(--hud-fg) / 6%);
+  background: var(--hud-active-bg);
 }
 
 .page:focus-visible {
@@ -187,7 +192,7 @@
 .themeToggleActive {
   color: rgb(var(--hud-fg));
   border-color: rgb(var(--hud-fg));
-  background: rgb(var(--hud-fg) / 6%);
+  background: var(--hud-active-bg);
 }
 
 .themeToggle:focus-visible {
