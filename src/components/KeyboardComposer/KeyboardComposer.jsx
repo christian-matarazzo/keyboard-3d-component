@@ -104,14 +104,22 @@ export default function KeyboardComposer({
   // viene popolato da useComposerControls con `{ goTo(poseKey), currentPoseKey() }`.
   const poseApi = useRef(null)
 
+  // Tema HUD/sfondo: 'dark' (default, attuale look nero) o 'light' (sfondo
+  // bianco, HUD invertito). Guida anche quale JSON di luci carica il LightRig.
+  const [theme, setTheme] = useState('dark')
+
   return (
-    <section className={styles.section}>
+    <section className={styles.section} data-theme={theme}>
       <DebugPanel />
       <div
         className={`${styles.canvasWrap} ${loaded ? styles.canvasWrapLoaded : ''}`}
       >
-        <Scene modelUrl={modelUrl} finish={finish} apiRef={poseApi} />
-        <Hud poseApi={poseApi} />
+        <Scene modelUrl={modelUrl} finish={finish} apiRef={poseApi} theme={theme} />
+        <Hud
+          poseApi={poseApi}
+          theme={theme}
+          onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+        />
       </div>
     </section>
   )

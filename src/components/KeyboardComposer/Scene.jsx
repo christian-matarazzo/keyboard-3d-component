@@ -83,7 +83,7 @@ function MaterialTuner({ finish }) {
   return null
 }
 
-export default function Scene({ modelUrl, finish, apiRef }) {
+export default function Scene({ modelUrl, finish, apiRef, theme = 'dark' }) {
   const [modelSize, setModelSize] = useState(null)
 
   return (
@@ -121,7 +121,7 @@ export default function Scene({ modelUrl, finish, apiRef }) {
             (key/spot) con gizmo di editing. Sostituisce lo studio fotografico
             camera-solidale + Environment/Lightformer della vecchia versione:
             è l'unica sorgente di luce della scena. */}
-        <LightRig modelSize={modelSize} apiRef={apiRef} />
+        <LightRig modelSize={modelSize} apiRef={apiRef} theme={theme} />
       </Suspense>
     </Canvas>
   )

@@ -8,6 +8,16 @@
   --logo-h: clamp(44px, 4.84vw, 68px);
   --hud-fs: clamp(11.5px, 0.99vw, 15px);
   --hud-pad: clamp(18px, 2.64vw, 37px);
+  /* Tripletta RGB (non hex): composta con l'alpha via rgb(var(--hud-fg) / X%)
+     in tutto il file, così l'inversione dark→light parte da un solo punto. */
+  --hud-fg: 255 255 255;
+
+  /* Token condivisi fra .pager/.page e .themeToggle: il toggle deriva la sua
+     posizione da questi stessi valori (vedi .themeToggle) invece di duplicare
+     i numeri, così il pager resta pixel-identico quando si aggiunge il toggle. */
+  --page-size: clamp(29px, 2.64vw, 37px);
+  --pager-gap: clamp(6px, 0.7vw, 10px);
+  --toggle-gap: clamp(10px, 1.1vw, 16px);
 
   position: absolute;
   inset: 0;
@@ -23,8 +33,12 @@
   line-height: 1.2;
   letter-spacing: -0.02em; /* LETTER SPACING −2% */
   text-transform: uppercase; /* ALWAYS CAPS-LOCK */
-  color: #fff;
+  color: rgb(var(--hud-fg));
   user-select: none;
+}
+
+.hud[data-theme='light'] {
+  --hud-fg: 0 0 0;
 }
 
 /* ── Riga superiore: brand · telemetria · versione ─────────────────────── */
@@ -49,12 +63,16 @@
   display: block;
 }
 
+.logoInvert {
+  filter: invert(1);
+}
+
 .telemetry {
   display: inline-flex;
   align-items: center;
   gap: 12px;
   justify-self: center;
-  color: rgb(255 255 255 / 92%);
+  color: rgb(var(--hud-fg) / 92%);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   /* Allineata (centro riga) alla scritta "Array Keyboard Series" del logo:
@@ -70,13 +88,13 @@
 .sep {
   width: 1px;
   height: 1em;
-  background: rgb(255 255 255 / 35%);
+  background: rgb(var(--hud-fg) / 35%);
 }
 
 .version {
   justify-self: end;
   text-align: right;
-  color: rgb(255 255 255 / 78%);
+  color: rgb(var(--hud-fg) / 78%);
   /* Stessa riga di telemetria e "Array Keyboard Series" (vedi .telemetry). */
   transform: translateY(calc(0.6522 * var(--logo-h) - 0.6 * var(--hud-fs)));
 }
@@ -92,20 +110,20 @@
   left: 50%;
   transform: translateX(-50%);
   display: flex;
-  gap: clamp(6px, 0.7vw, 10px);
+  gap: var(--pager-gap);
   pointer-events: auto;
 }
 
 .page {
-  width: clamp(29px, 2.64vw, 37px);
-  height: clamp(29px, 2.64vw, 37px);
+  width: var(--page-size);
+  height: var(--page-size);
   display: grid;
   place-items: center;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 0;
   background: transparent;
-  color: rgb(255 255 255 / 34%);
+  color: rgb(var(--hud-fg) / 34%);
   font: inherit;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
@@ -118,18 +136,69 @@
 }
 
 .page:hover {
-  color: rgb(255 255 255 / 80%);
+  color: rgb(var(--hud-fg) / 80%);
 }
 
 .pageActive {
-  color: #fff;
-  border-color: #fff;
-  background: rgb(255 255 255 / 6%);
+  color: rgb(var(--hud-fg));
+  border-color: rgb(var(--hud-fg));
+  background: rgb(var(--hud-fg) / 6%);
 }
 
 .page:focus-visible {
-  outline: 2px solid rgb(255 255 255 / 60%);
+  outline: 2px solid rgb(var(--hud-fg) / 60%);
   outline-offset: 2px;
+}
+
+/* ── Toggle luce/buio: sibling FUORI dal gruppo centrato del pager, ancorato
+   subito alla sua destra. Calcolato dagli stessi token (--page-size,
+   --pager-gap) usati da .pager/.page così il pager resta pixel-identico:
+   nessun magic number duplicato fra i due. */
+.themeToggle {
+  position: absolute;
+  top: calc(var(--hud-pad) + var(--logo-h) + clamp(14px, 1.4vw, 22px));
+  left: calc(
+    50% + (5 * var(--page-size) + 4 * var(--pager-gap)) / 2 + var(--toggle-gap)
+  );
+  width: var(--page-size);
+  height: var(--page-size);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: rgb(var(--hud-fg) / 60%);
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    color 0.16s ease,
+    border-color 0.16s ease,
+    background 0.16s ease;
+}
+
+.themeToggle:hover {
+  color: rgb(var(--hud-fg) / 100%);
+}
+
+/* Acceso (tema light attivo): stesso trattamento di .pageActive, il toggle
+   si comporta come un bottone snapshot "selezionato". */
+.themeToggleActive {
+  color: rgb(var(--hud-fg));
+  border-color: rgb(var(--hud-fg));
+  background: rgb(var(--hud-fg) / 6%);
+}
+
+.themeToggle:focus-visible {
+  outline: 2px solid rgb(var(--hud-fg) / 60%);
+  outline-offset: 2px;
+}
+
+.themeToggle svg {
+  width: 60%;
+  height: 60%;
+  display: block;
 }
 
 /* ── Riga inferiore: locale · disclaimer · claim ───────────────────────── */
@@ -138,7 +207,7 @@
   grid-template-columns: 1fr auto 1fr;
   align-items: end;
   gap: 16px;
-  color: rgb(255 255 255 / 62%);
+  color: rgb(var(--hud-fg) / 62%);
 }
 
 .bottom span:first-child {
@@ -174,6 +243,9 @@
     --logo-h: 29px;
     --hud-fs: 11.5px;
     --hud-pad: clamp(13px, 4.4vw, 20px);
+    --page-size: 33px;
+    --pager-gap: 8px;
+    --toggle-gap: 8px;
   }
 
   /* Due colonne: logo a sinistra, telemetria a destra. La versione (stringa
@@ -194,15 +266,9 @@
   }
 
   /* Il top del pager è calcolato dalla formula base (padding + logo + gap):
-     con --logo-h/--hud-pad ridotti scende sotto il logo corto in automatico. */
-  .pager {
-    gap: 8px;
-  }
-
-  .page {
-    width: 33px;
-    height: 33px;
-  }
+     con --logo-h/--hud-pad ridotti scende sotto il logo corto in automatico.
+     gap/size di .pager/.page/.themeToggle arrivano già da --pager-gap/--page-size
+     ridefiniti sopra in .hud, nessuna regola dedicata necessaria qui. */
 
   /* Footer impilato e centrato: le tre stringhe non entrano affiancate. */
   .bottom {
@@ -220,7 +286,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .page {
+  .page,
+  .themeToggle {
     transition: none;
   }
 }

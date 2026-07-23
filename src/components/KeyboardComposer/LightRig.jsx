@@ -179,7 +179,15 @@ function ShadowSpotLight({ debug }) {
   )
 }
 
-export default function LightRig({ modelSize, apiRef } = {}) {
+// Dark riusa il file già catturato dal cliente (zero migrazione); light è un
+// file nuovo, non ancora catturato — il fallback del fetch più sotto gestisce
+// la sua assenza applicando i default di sistema (luci spente).
+const lightConfigUrl = (theme) =>
+  theme === 'light'
+    ? '/lightconfig/app-state-config-light.json'
+    : '/lightconfig/app-state-config.json'
+
+export default function LightRig({ modelSize, apiRef, theme = 'dark' } = {}) {
   const configsRef = useRef({})
 
   const prevPoseRef = useRef(null) 
@@ -291,8 +299,8 @@ export default function LightRig({ modelSize, apiRef } = {}) {
   useEffect(() => {
     // Eseguiamo il fetch solo fuori dal debug
     if (!DEBUG) {
-      // Usa il nuovo nome del file che comprende tutto lo stato
-      fetch('/lightconfig/app-state-config.json')
+      // Usa il nuovo nome del file che comprende tutto lo stato (uno per tema)
+      fetch(lightConfigUrl(theme))
         .then((res) => {
           if (!res.ok) throw new Error('File di configurazione non trovato')
           return res.json()
@@ -301,10 +309,15 @@ export default function LightRig({ modelSize, apiRef } = {}) {
           // Verifica se è il vecchio JSON (solo luci) o il nuovo formato globale
           const isNewFormat = !!parsed.lights
           const lightsData = isNewFormat ? parsed.lights : parsed
-          
+
           // 1. Applica i dati alle luci volumetriche (il Rig originale)
           configsRef.current = lightsData;
-          
+          // Il tema può cambiare a runtime (toggle HUD) senza che la posa attiva
+          // cambi: forziamo uno snap immediato al nuovo set invece di lasciare
+          // che un'eventuale transizione in corso mescoli luci vecchie/nuove.
+          prevPoseRef.current = activePoseRef.current
+          transitionRef.current.progress = 1
+
           // Aggiorna i controlli se c'è una posa già attiva
           if (activePoseRef.current && lightsData[activePoseRef.current]) {
             const newConfig = { ...generateDefaultConfig(), ...lightsData[activePoseRef.current] };
@@ -327,7 +340,7 @@ export default function LightRig({ modelSize, apiRef } = {}) {
           console.warn('Nessun JSON personalizzato trovato, applico i default di sistema:', err.message)
         })
     }
-  }, [setControls])
+  }, [setControls, theme])
 
   useEffect(() => {
     if (activePoseRef.current && configsRef.current[activePoseRef.current]) {
@@ -658,7 +671,7 @@ export default function LightRig({ modelSize, apiRef } = {}) {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = 'app-state-config.json'
+    a.download = theme === 'light' ? 'app-state-config-light.json' : 'app-state-config.json'
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -744,7 +757,7 @@ export default function LightRig({ modelSize, apiRef } = {}) {
                 backdropFilter: 'blur(4px)'
               }}
             >
-              Salva Configurazione
+              {`Salva Configurazione (${theme === 'light' ? 'Light' : 'Dark'})`}
             </button>
             <button 
               onClick={handleLoadJSON}

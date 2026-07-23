@@ -1,8 +1,13 @@
 .section {
-  background: #000; /* nero pieno come il configuratore Apple */
+  --kc-bg: #000; /* nero pieno come il configuratore Apple */
+  background: var(--kc-bg);
   width: 100%;
   height: 100%;
   display: flex;
+}
+
+.section[data-theme='light'] {
+  --kc-bg: #ffffff;
 }
 
 .canvasWrap {
