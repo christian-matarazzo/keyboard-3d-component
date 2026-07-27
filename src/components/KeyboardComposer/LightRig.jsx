@@ -179,13 +179,13 @@ function ShadowSpotLight({ debug }) {
   )
 }
 
-// Dark riusa il file già catturato dal cliente (zero migrazione); light è un
-// file nuovo, non ancora catturato — il fallback del fetch più sotto gestisce
-// la sua assenza applicando i default di sistema (luci spente).
+// Dark usa il file DARK_ dedicato; light è un file nuovo, non ancora
+// catturato — il fallback del fetch più sotto gestisce la sua assenza
+// applicando i default di sistema (luci spente).
 const lightConfigUrl = (theme) =>
   theme === 'light'
     ? '/lightconfig/app-state-config-light.json'
-    : '/lightconfig/app-state-config.json'
+    : '/lightconfig/DARK_app-state-config.json'
 
 export default function LightRig({ modelSize, apiRef, theme = 'dark' } = {}) {
   const configsRef = useRef({})
