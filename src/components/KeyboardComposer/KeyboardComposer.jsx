@@ -103,6 +103,10 @@ export default function KeyboardComposer({
   // Ponte fra la pulsantiera (DOM) e i controlli (dentro il Canvas): il ref
   // viene popolato da useComposerControls con `{ goTo(poseKey), currentPoseKey() }`.
   const poseApi = useRef(null)
+  // Ponte dedicato per il toggle "vista esplosa" (KeyboardModel.jsx): stesso
+  // pattern di poseApi ma ref separato, non un'estensione a posteriori
+  // dell'oggetto costruito da useComposerControls.
+  const explodeApi = useRef(null)
 
   return (
     <section className={styles.section}>
@@ -110,8 +114,8 @@ export default function KeyboardComposer({
       <div
         className={`${styles.canvasWrap} ${loaded ? styles.canvasWrapLoaded : ''}`}
       >
-        <Scene modelUrl={modelUrl} finish={finish} apiRef={poseApi} />
-        <Hud poseApi={poseApi} />
+        <Scene modelUrl={modelUrl} finish={finish} apiRef={poseApi} explodeApiRef={explodeApi} />
+        <Hud poseApi={poseApi} explodeApi={explodeApi} />
       </div>
     </section>
   )

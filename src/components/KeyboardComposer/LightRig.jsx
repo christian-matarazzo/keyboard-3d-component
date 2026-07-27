@@ -30,7 +30,7 @@ const generateDefaultConfig = () => {
 }
 
 // --- SHADOW KEYLIGHT ---
-function ShadowKeyLight({ debug }) {
+function ShadowKeyLight({ debug, lightsActive }) {
   const lightRef = useRef()
   
   // 1. Salviamo l'oggetto intero in 'controls'
@@ -43,7 +43,10 @@ function ShadowKeyLight({ debug }) {
     posZ: { value: 2, min: -10, max: 10 },
     bias: { value: -0.0005, min: -0.005, max: 0.005, step: 0.0001 },
     normalBias: { value: 0.02, min: -0.1, max: 0.1, step: 0.001 },
-  }), { collapsed: true })
+  // Cartella visibile solo in modalità Luci: `render` nasconde la riga nel
+  // pannello senza smontare il componente, quindi i valori restano intatti
+  // (a differenza di un unmount/remount, che li resetterebbe ai default).
+  }), { collapsed: true, render: (get) => get('⚙️ Editor · Modalità.editMode') === 'lights' })
 
   // 2. Destrutturiamo i valori per usarli nel JSX
   const { enabled, showGizmo, intensity, posX, posY, posZ, bias, normalBias } = controls
@@ -57,26 +60,26 @@ function ShadowKeyLight({ debug }) {
     return () => window.removeEventListener('app-load-keylight', handler)
   }, [setControls])
 
-  useHelper(debug && showGizmo && lightRef, THREE.DirectionalLightHelper, 1, '#00ffcc')
+  useHelper(debug && lightsActive && showGizmo && lightRef, THREE.DirectionalLightHelper, 1, '#00ffcc')
 
   // ... (il resto del return con la directionalLight e il Gizmo rimane identico)
   if (!enabled) return null
 
   return (
     <>
-      <directionalLight 
+      <directionalLight
         ref={lightRef}
-        position={[posX, posY, posZ]} 
-        intensity={intensity} 
-        castShadow 
-        shadow-mapSize={[2048, 2048]} 
-        shadow-bias={bias} 
-        shadow-normalBias={normalBias} 
+        position={[posX, posY, posZ]}
+        intensity={intensity}
+        castShadow
+        shadow-mapSize={[2048, 2048]}
+        shadow-bias={bias}
+        shadow-normalBias={normalBias}
       >
         <orthographicCamera attach="shadow-camera" args={[-4, 4, 4, -4, 0.1, 20]} />
       </directionalLight>
-      
-      {debug && showGizmo && (
+
+      {debug && lightsActive && showGizmo && (
         <TransformControls 
           object={lightRef} 
           mode="translate" 
@@ -103,7 +106,7 @@ function ShadowKeyLight({ debug }) {
 }
 
 // --- SHADOW SPOTLIGHT ---
-function ShadowSpotLight({ debug }) {
+function ShadowSpotLight({ debug, lightsActive }) {
   const lightRef = useRef()
   
   // 1. Salviamo l'oggetto intero in 'controls'
@@ -119,7 +122,7 @@ function ShadowSpotLight({ debug }) {
     posZ: { value: 3, min: -10, max: 10 },
     bias: { value: -0.0005, min: -0.005, max: 0.005, step: 0.0001 },
     normalBias: { value: 0.02, min: -0.1, max: 0.1, step: 0.001 },
-  }), { collapsed: true })
+  }), { collapsed: true, render: (get) => get('⚙️ Editor · Modalità.editMode') === 'lights' })
 
   // 2. Destrutturiamo i valori per usarli nel JSX
   const { enabled, showGizmo, intensity, angle, penumbra, distance, posX, posY, posZ, bias, normalBias } = controls
@@ -133,27 +136,27 @@ function ShadowSpotLight({ debug }) {
     return () => window.removeEventListener('app-load-spotlight', handler)
   }, [setControls])
 
-  useHelper(debug && showGizmo && lightRef, THREE.SpotLightHelper, '#ff00cc')
+  useHelper(debug && lightsActive && showGizmo && lightRef, THREE.SpotLightHelper, '#ff00cc')
 
   // ... (il resto del return con la spotLight e il Gizmo rimane identico)
   if (!enabled) return null
 
   return (
     <>
-      <spotLight 
+      <spotLight
         ref={lightRef}
-        position={[posX, posY, posZ]} 
+        position={[posX, posY, posZ]}
         intensity={intensity}
         angle={angle}
         penumbra={penumbra}
         distance={distance}
-        castShadow 
-        shadow-mapSize={[2048, 2048]} 
-        shadow-bias={bias} 
-        shadow-normalBias={normalBias} 
+        castShadow
+        shadow-mapSize={[2048, 2048]}
+        shadow-bias={bias}
+        shadow-normalBias={normalBias}
       />
-      
-      {debug && showGizmo && (
+
+      {debug && lightsActive && showGizmo && (
         <TransformControls 
           object={lightRef} 
           mode="translate" 
@@ -179,7 +182,19 @@ function ShadowSpotLight({ debug }) {
   )
 }
 
-export default function LightRig({ modelSize, apiRef } = {}) {
+export default function LightRig({ modelSize, apiRef, editMode = 'none' } = {}) {
+  // Editor luci esclusivo: interattivo solo con ?debug ED editMode === 'lights'
+  // (vedi Scene.jsx). Prima di questo switch gli helper qui sotto restavano
+  // cliccabili ogni volta che showHelpers/showSurfaces era acceso, anche
+  // mentre si usava l'editor mesh — dato che onPointerDown (mesh) e onClick
+  // (luci) sono raycast R3F indipendenti, stopPropagation sull'uno non
+  // fermava l'altro, e lo stesso click selezionava sia una mesh sia una luce
+  // sottostante. `editModeRef` rispecchia la prop dentro la closure di lunga
+  // durata di useFrame, come già fa currentControlsRef.
+  const lightsInteractive = DEBUG && editMode === 'lights'
+  const editModeRef = useRef(editMode)
+  editModeRef.current = editMode
+
   const configsRef = useRef({})
 
   const prevPoseRef = useRef(null) 
@@ -230,7 +245,10 @@ export default function LightRig({ modelSize, apiRef } = {}) {
     }
   }, [])
 
-  const [controls, setControls] = useControls('Impostazioni Globali Vista', () => schema, { collapsed: true })
+  const [controls, setControls] = useControls('Impostazioni Globali Vista', () => schema, {
+    collapsed: true,
+    render: (get) => get('⚙️ Editor · Modalità.editMode') === 'lights',
+  })
   const currentControlsRef = useRef(controls)
   currentControlsRef.current = controls
 
@@ -364,6 +382,12 @@ export default function LightRig({ modelSize, apiRef } = {}) {
     }
   }, [selectedLight, activePose])
 
+  // Uscendo dalla modalità Luci si deseleziona: evita un pannello luce
+  // "fantasma" ancora aperto mentre si è passati all'editor mesh.
+  useEffect(() => {
+    if (editMode !== 'lights') setSelectedLight(null)
+  }, [editMode])
+
   const updateLightValue = (key, val) => {
     setLightEditor(prev => ({ ...prev, [key]: val }))
     if (activePoseRef.current && selectedLight) {
@@ -493,8 +517,9 @@ export default function LightRig({ modelSize, apiRef } = {}) {
     easing.damp(animatedMargin, 'current', currentCtrl.margin, currentCtrl.animMarginDamp, delta)
     const m = animatedMargin.current
 
-    const isVisiblePoints = DEBUG && currentCtrl.showHelpers
-    const isVisibleSurfaces = DEBUG && currentCtrl.showSurfaces
+    const lightsActiveNow = DEBUG && editModeRef.current === 'lights'
+    const isVisiblePoints = lightsActiveNow && currentCtrl.showHelpers
+    const isVisibleSurfaces = lightsActiveNow && currentCtrl.showSurfaces
 
     const updateLightGroup = (lightsArray, helpersArray, groupsArray, prefix, gridItems) => {
       gridItems.forEach((gridItem, i) => {
@@ -621,6 +646,7 @@ export default function LightRig({ modelSize, apiRef } = {}) {
   })
 
   const handleEntityClick = (e, layerPrefix, i) => {
+    if (!lightsInteractive) return
     e.stopPropagation()
     setSelectedLight({ layer: layerPrefix, index: i })
   }
@@ -715,8 +741,8 @@ export default function LightRig({ modelSize, apiRef } = {}) {
     <group position={RIG_POSITION}>
       
       {/* NUOVE LUCI CON GIZMO 3D */}
-      <ShadowKeyLight debug={DEBUG} />
-      <ShadowSpotLight debug={DEBUG} />
+      <ShadowKeyLight debug={DEBUG} lightsActive={editMode === 'lights'} />
+      <ShadowSpotLight debug={DEBUG} lightsActive={editMode === 'lights'} />
 
       {/* PANNELLO DI SALVATAGGIO/CARICAMENTO (In alto a sinistra) */}
       {DEBUG && (
@@ -767,7 +793,7 @@ export default function LightRig({ modelSize, apiRef } = {}) {
         </Html>
       )}
 
-      {DEBUG && (controls.showHelpers || controls.showSurfaces) && (
+      {lightsInteractive && (controls.showHelpers || controls.showSurfaces) && (
         <Html fullscreen style={{ pointerEvents: 'none', zIndex: 9999 }}>
           
           <div
@@ -961,12 +987,13 @@ export default function LightRig({ modelSize, apiRef } = {}) {
             height={1}
             ref={el => { if (el) surfLights.current[face.index] = el }} 
           />
-          <mesh 
+          <mesh
             ref={el => { if (el) surfHelpers.current[face.index] = el }}
             onClick={(e) => handleEntityClick(e, 'surf', face.index)}
             onPointerOver={handlePointerOver}
             onPointerOut={handlePointerOut}
             renderOrder={998}
+            raycast={lightsInteractive ? THREE.Mesh.prototype.raycast : () => null}
           >
             {/* args statici a 1x1, si scala il nodo nel loop piuttosto che ricreare la geometria costantemente */}
             <planeGeometry args={[1, 1]} />
@@ -978,12 +1005,13 @@ export default function LightRig({ modelSize, apiRef } = {}) {
       {layers.top.map((gridItem, i) => (
         <group key={`top-${i}`} ref={el => { if (el) topGroups.current[i] = el }}>
           <pointLight intensity={0} ref={el => { if (el) topLights.current[i] = el }} distance={fixedDistance} />
-          <mesh 
+          <mesh
             ref={el => { if (el) topHelpers.current[i] = el }}
             onClick={(e) => handleEntityClick(e, 'top', i)}
             onPointerOver={handlePointerOver}
             onPointerOut={handlePointerOut}
             renderOrder={999}
+            raycast={lightsInteractive ? THREE.Mesh.prototype.raycast : () => null}
           >
             <sphereGeometry args={[0.05, 16, 16]} />
             <meshBasicMaterial transparent opacity={0.1} wireframe depthTest={false} depthWrite={false} color="#ffffff" />
@@ -994,12 +1022,13 @@ export default function LightRig({ modelSize, apiRef } = {}) {
       {layers.mid.map((gridItem, i) => (
         <group key={`mid-${i}`} ref={el => { if (el) midGroups.current[i] = el }}>
           <pointLight intensity={0} ref={el => { if (el) midLights.current[i] = el }} distance={fixedDistance} />
-          <mesh 
+          <mesh
             ref={el => { if (el) midHelpers.current[i] = el }}
             onClick={(e) => handleEntityClick(e, 'mid', i)}
             onPointerOver={handlePointerOver}
             onPointerOut={handlePointerOut}
             renderOrder={999}
+            raycast={lightsInteractive ? THREE.Mesh.prototype.raycast : () => null}
           >
             <sphereGeometry args={[0.05, 16, 16]} />
             <meshBasicMaterial transparent opacity={0.1} wireframe depthTest={false} depthWrite={false} color="#ffffff" />
@@ -1010,12 +1039,13 @@ export default function LightRig({ modelSize, apiRef } = {}) {
       {layers.bot.map((gridItem, i) => (
         <group key={`bot-${i}`} ref={el => { if (el) botGroups.current[i] = el }}>
           <pointLight intensity={0} ref={el => { if (el) botLights.current[i] = el }} distance={fixedDistance} />
-          <mesh 
+          <mesh
             ref={el => { if (el) botHelpers.current[i] = el }}
             onClick={(e) => handleEntityClick(e, 'bot', i)}
             onPointerOver={handlePointerOver}
             onPointerOut={handlePointerOut}
             renderOrder={999}
+            raycast={lightsInteractive ? THREE.Mesh.prototype.raycast : () => null}
           >
             <sphereGeometry args={[0.05, 16, 16]} />
             <meshBasicMaterial transparent opacity={0.1} wireframe depthTest={false} depthWrite={false} color="#ffffff" />

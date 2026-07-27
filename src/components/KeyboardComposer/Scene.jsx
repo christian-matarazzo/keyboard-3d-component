@@ -5,6 +5,7 @@ import { Html, useProgress } from '@react-three/drei'
 import { useControls } from 'leva'
 import { KeyboardModel } from './KeyboardModel'
 import LightRig from './LightRig'
+import MeshController from './MeshController'
 import { tuneSlotMaterial } from './materials/applyFinish'
 
 function Loader() {
@@ -83,8 +84,36 @@ function MaterialTuner({ finish }) {
   return null
 }
 
-export default function Scene({ modelUrl, finish, apiRef }) {
+export default function Scene({ modelUrl, finish, apiRef, explodeApiRef }) {
   const [modelSize, setModelSize] = useState(null)
+  const [selectedMesh, setSelectedMesh] = useState(null)
+
+  // Modalità editor esclusiva (Nessuno/Luci/Mesh): l'editor luci (LightRig,
+  // helper cliccabili) e l'editor mesh (KeyboardModel + MeshController)
+  // condividono lo stesso canvas e raycastano indipendentemente — prima di
+  // questo switch un click sul modello poteva selezionare anche una luce
+  // sottostante (onPointerDown della mesh e onClick degli helper luce sono
+  // due pipeline di eventi R3F separate, stopPropagation sull'una non ferma
+  // l'altra). Un solo sistema alla volta riceve i click (vedi editMode
+  // passato a KeyboardModel/LightRig/MeshController); il drag di rotazione
+  // si disattiva solo in Mesh (in Luci serve poter cambiare posa per
+  // configurare le luci vista per vista — vedi controlsDisabled sotto).
+  const { editMode } = useControls('⚙️ Editor · Modalità', {
+    editMode: {
+      options: { Nessuno: 'none', Luci: 'lights', Mesh: 'meshes' },
+      value: 'none',
+      label: 'Modalità',
+    },
+  }, { collapsed: false })
+
+  // Entrando in modalità Mesh, snappa subito alla vista 3/4 FT ('TL') — non
+  // al selezionare una mesh (altrimenti risalterebbe lì ogni volta che si
+  // cambia mesh dal dropdown/click 3D dentro la stessa sessione di editing).
+  useEffect(() => {
+    if (editMode === 'meshes' && apiRef?.current) {
+      apiRef.current.goTo('TL')
+    }
+  }, [editMode, apiRef])
 
   return (
     <Canvas
@@ -103,6 +132,8 @@ export default function Scene({ modelUrl, finish, apiRef }) {
         if (new URLSearchParams(window.location.search).has('debug'))
           window.__r3f_state = state
       }}
+      // Deseleziona quando si clicca sullo sfondo vuoto
+      onPointerMissed={() => setSelectedMesh(null)}
     >
       <Suspense fallback={<Loader />}>
         {/* Modello centrato: ruotando su X i bordi non escono dal frame. */}
@@ -111,7 +142,15 @@ export default function Scene({ modelUrl, finish, apiRef }) {
             url={modelUrl}
             finish={finish}
             apiRef={apiRef}
+            explodeApiRef={explodeApiRef}
             onSizeComputed={setModelSize}
+            onSelectMesh={setSelectedMesh}
+            // Solo Mesh disattiva il drag: in Luci serve poter cambiare posa
+            // per configurare le luci vista per vista (vedi anche onWheel in
+            // useComposerControls.js, che resta sempre attivo — zoom mai
+            // disattivato da nessuna modalità).
+            controlsDisabled={editMode === 'meshes'}
+            editMode={editMode}
           />
         </group>
         <MaterialTuner finish={finish} />
@@ -121,7 +160,14 @@ export default function Scene({ modelUrl, finish, apiRef }) {
             (key/spot) con gizmo di editing. Sostituisce lo studio fotografico
             camera-solidale + Environment/Lightformer della vecchia versione:
             è l'unica sorgente di luce della scena. */}
-        <LightRig modelSize={modelSize} apiRef={apiRef} />
+        <LightRig modelSize={modelSize} apiRef={apiRef} editMode={editMode} />
+        {/* AGGIUNGI IL CONTROLLER */}
+        <MeshController
+          modelUrl={modelUrl}
+          selectedMesh={selectedMesh}
+          onSelectMesh={setSelectedMesh}
+          editMode={editMode}
+        />
       </Suspense>
     </Canvas>
   )

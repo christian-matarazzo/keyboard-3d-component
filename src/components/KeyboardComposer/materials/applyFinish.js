@@ -41,6 +41,33 @@ export function collectSlotMeshes(scene) {
   return slots
 }
 
+const SLOT_ORDER = ['keycaps', 'body', 'damping', 'landing']
+const SLOT_LABEL = { keycaps: 'Keycaps', body: 'Body', damping: 'Damping', landing: 'Rialzo' }
+
+/**
+ * Appiattisce collectSlotMeshes in un elenco selezionabile (mesh selector di
+ * MeshController): stessa logica di enumerazione/classificazione dei
+ * materiali, solo appiattita e ordinata per slot poi nome, con suffisso di
+ * disambiguazione per i nomi duplicati (le option Leva richiedono chiavi
+ * uniche).
+ */
+export function collectMeshList(scene) {
+  const slots = collectSlotMeshes(scene)
+  const seen = new Map()
+  const list = []
+  for (const slot of SLOT_ORDER) {
+    const meshes = [...slots[slot]].sort((a, b) => a.name.localeCompare(b.name))
+    for (const mesh of meshes) {
+      const base = mesh.name || mesh.uuid.slice(0, 8)
+      const count = (seen.get(base) || 0) + 1
+      seen.set(base, count)
+      const name = count > 1 ? `${base} (${count})` : base
+      list.push({ uuid: mesh.uuid, label: `${SLOT_LABEL[slot]} · ${name}`, mesh })
+    }
+  }
+  return list
+}
+
 // Cache module-level: un materiale per (finitura, slot), creato una sola
 // volta e riassegnato per riferimento → swap istantaneo, zero allocazioni.
 const materialCache = new Map()

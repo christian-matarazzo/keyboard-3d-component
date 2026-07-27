@@ -20,20 +20,24 @@ import { DEFAULT_MODEL_URL } from './KeyboardModel'
  * Font/colori/spaziatura arrivano dallo style guide: Suisse Int'l Mono,
  * letter-spacing −2%, sempre CAPS-LOCK (text-transform sul contenitore).
  */
-export default function Hud({ poseApi }) {
+export default function Hud({ poseApi, explodeApi }) {
   const [poseKey, setPoseKey] = useState(null)
+  const [exploded, setExploded] = useState(false)
   const [fps, setFps] = useState(0)
   const [modelMB, setModelMB] = useState(null)
   const [ramMB, setRamMB] = useState(null)
 
-  // Posa attiva: poll leggero (currentPoseKey è imperativo, non reattivo).
+  // Posa attiva + stato esploso: poll leggero (entrambi imperativi, non
+  // reattivi — stesso bridge di poseApi, vedi KeyboardModel.jsx).
   useEffect(() => {
     const id = setInterval(() => {
       const k = poseApi.current?.currentPoseKey?.() ?? null
       setPoseKey((prev) => (prev === k ? prev : k))
+      const ex = explodeApi.current?.isExploded?.() ?? false
+      setExploded((prev) => (prev === ex ? prev : ex))
     }, 150)
     return () => clearInterval(id)
-  }, [poseApi])
+  }, [poseApi, explodeApi])
 
   // FPS reali del browser: conto i frame di rAF e ricalcolo ogni ~500ms.
   // Questo è il refresh effettivo del browser (60, 120, 144, 240…), non un
@@ -144,6 +148,16 @@ export default function Hud({ poseApi }) {
             </button>
           )
         })}
+        <i className={styles.sep} />
+        <button
+          type="button"
+          className={`${styles.explodeToggle} ${exploded ? styles.pageActive : ''}`}
+          aria-pressed={exploded}
+          aria-label="Exploded view"
+          onClick={() => explodeApi.current?.toggle?.()}
+        >
+          Explode
+        </button>
       </nav>
 
       {/* ── Riga inferiore ──────────────────────────────────────────────── */}

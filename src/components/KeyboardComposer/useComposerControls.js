@@ -135,11 +135,17 @@ export function useComposerControls(
     // pulsantiera delle viste, che vive nel DOM FUORI dal Canvas e non può
     // quindi raggiungere questi ref altrimenti.
     apiRef,
+    disabled = false,
   } = {},
 ) {
   const gl = useThree((s) => s.gl)
   const camera = useThree((s) => s.camera)
   const size = useThree((s) => s.size)
+
+  // Usiamo una ref per 'disabled' così da avere il valore aggiornato nei listener 
+  // senza dover ricreare gli eventi a ogni render.
+  const disabledRef = useRef(disabled)
+  disabledRef.current = disabled
 
   // NUOVO: Svincoliamo l'interpolazione dal group 3D
   const curAngles = useRef({ pitch: initialRotation.x, yaw: initialRotation.y })
@@ -382,6 +388,7 @@ export function useComposerControls(
     // debounce anti-raffica (vedi KEY_DEBOUNCE_MS).
     let lastKeyStepAt = 0
     const onKeyDown = (e) => {
+      if (disabledRef.current) return
       if (!hovered && document.activeElement !== el) return
       const dir = ARROW_DIR[e.key]
       if (!dir) return
@@ -428,6 +435,7 @@ export function useComposerControls(
     }
 
     const onDown = (e) => {
+      if (disabledRef.current) return
       if (d.pointerId != null) return // gesto già in corso: dita extra ignorate
       d.pointerId = e.pointerId
       d.moved = false
@@ -448,6 +456,7 @@ export function useComposerControls(
     }
 
     const onMove = (e) => {
+      if (disabledRef.current) return
       if (e.pointerId !== d.pointerId) return
       const dx = e.clientX - d.startX
       const dy = e.clientY - d.startY
@@ -558,7 +567,9 @@ export function useComposerControls(
       p.targetY = p.yaw
     }
 
-    // LOGICA DI ZOOM
+    // LOGICA DI ZOOM — indipendente da `disabled`: a differenza di
+    // drag/frecce (bloccati in modalità Mesh, vedi Scene.jsx), lo zoom resta
+    // sempre attivo in ogni modalità dell'editor debug.
     const onWheel = (e) => {
       e.preventDefault()
       cameraRadius.current = clamp(
