@@ -28,6 +28,11 @@ going forward:
    "explode" as an authored pose instead of a hardcoded animation. There is
    currently no shipped exploded-view UI.)
 
+Planned render-quality work (anti-aliasing, inter-mesh contact shadows) is
+**designed but not implemented** — see "Planned work: anti-aliasing and
+contact shadows" at the end of this file. Like the product zoom above, treat
+it as still to build, not something to go looking for.
+
 When making changes, keep debug-only controls/UI behind the `DEBUG` flag
 (`new URLSearchParams(window.location.search).has('debug')`, redefined
 per-file — see below) rather than leaking them into the always-on product
@@ -267,7 +272,7 @@ to know which per-pose lighting config is active. `Timeline.jsx` reads
 
 ### Pose graph (`poseGraph.js`)
 
-Navigation is over a fixed set of **18 named poses** (`POSE_COORD`:
+Navigation is over a fixed set of **21 named poses** (`POSE_COORD`:
 pitch/yaw pairs) connected by an explicit adjacency graph (`NEIGHBORS`,
 one neighbor per `up`/`down`/`left`/`right`, or `null`). There is no free
 orbit — a step is always "jump to the named neighbor in this direction."
@@ -581,16 +586,16 @@ into `public/lightconfig/app-state-config.json`**, authored via the
 defaults in the component files (those Leva `value:` defaults are only the
 fallback if the JSON fetch fails).
 
-⚠️ **Only 3 of the 15 poses in the shipped JSON currently have lights
-authored** — `TL` (13 lights on), `CFL` (20), `BFL` (12). Every other pose,
-`TOP` and `FRONT` included, has all intensities at `0`, so **in production the
-model renders unlit — a black screen — on those views**, including 4 of the 5
-buttons in the HUD pager. This is a content gap in
-`public/lightconfig/app-state-config.json`, not a bug in the rig: known and
-accepted for now, to be filled in by authoring those poses in `?debug` and
-re-exporting. Don't go debugging `LightRig.jsx` over it, and don't treat a
-black view as a regression — check whether that pose has non-zero intensities
-in the JSON first:
+**Light authoring coverage — the content gap is now closed.** All 21 poses in
+the shipped JSON have lights authored (7–19 lights on per pose). This used to
+be the opposite: only `TL`/`CFL`/`BFL` had non-zero intensities and every
+other view, `TOP` and `FRONT` included, rendered as a black screen in
+production. If you find that warning quoted anywhere else, it is stale.
+
+The underlying point still stands, though, and is the reason to keep this
+paragraph: **a black view is a JSON content question before it is a rig bug.**
+Don't go debugging `LightRig.jsx` over one — check that pose's intensities
+first:
 
 ```bash
 node -e "const L=require('./public/lightconfig/app-state-config.json').lights;
@@ -931,3 +936,183 @@ itself is always mounted
 `hidden={!DEBUG}`, because Leva creates a default panel the instant any
 `useControls()` call exists anywhere in the tree — there's no other way to
 suppress it short of not calling `useControls` at all.
+
+## Planned work: anti-aliasing and contact shadows
+
+⚠️ **Nothing in this section exists in the code yet.** It is a design record
+for a discussed-but-unbuilt feature — don't go looking for an
+`EffectComposer`, an AO pass or a quality-LOD state machine, and don't treat
+their absence as a regression. What follows is the reasoning that should
+survive into whoever implements it, because most of it is specific to this
+scene's cost profile and is not the answer a generic three.js guide gives.
+
+### The cost profile that drives every choice below
+
+Two bottlenecks exist *before* adding any effect, and they push in the same
+direction:
+
+- **CPU — 264 draw calls.** The asset pipeline forbids `gltf-transform
+  join`/`optimize` (it would merge node names and break both the per-node
+  group classification and the per-group material clone — see "Model asset
+  pipeline"), so the mesh count is permanent. Every additional *geometry*
+  pass (shadow map, depth prepass, normal prepass) re-pays all 264.
+- **Fragment — ~34 forward-rendered lights.** 26 point (9 `top` + 8 `mid` +
+  9 `bot`) + 6 `rectAreaLight` (LTC evaluation, not cheap) + the directional
+  + the spot. Every fragment evaluates all of them.
+
+The cheap axis is therefore **screen-space**: a full-screen pass is
+geometry-independent, and at half resolution it costs a fraction of the main
+34-light pass. The rule that follows: **prefer screen-space effects over
+extra geometry passes, and never increase the pixel count.** Raising DPR or
+brute-force SSAA scales the already-worst axis; a depth prepass doubles the
+other one.
+
+The second structural fact: **the scene is static most of the time.** The
+camera only moves during the spring settle and the model never rotates at
+all. There is no reason to pay per-frame for quality that only matters once
+the image has settled.
+
+### Anti-aliasing
+
+The dominant aliasing source here is **not** geometric edges — it's
+**specular aliasing**: sub-pixel highlights flickering on rounded keycap
+edges, driven by clearcoat + satin metal + 34 light sources. That is a
+*shading-rate* problem, not a *coverage* problem, so **MSAA does not fix
+it** (MSAA multiplies coverage samples, not shader evaluations), and SMAA
+barely helps (it post-processes a final image in which the specular is
+already wrong). Only supersampling — too expensive on the fragment axis — or
+**temporal accumulation** actually addresses it.
+
+Hence a two-tier scheme tied to motion state:
+
+| State | Technique | Cost |
+| --- | --- | --- |
+| Moving (drag, spring, timeline scrub) | MSAA 4× on the render target + SMAA | ≈ today's |
+| At rest (spring settled, no input) | Progressive accumulation: sub-pixel Halton jitter on the projection matrix, averaged into an HDR buffer at weight `1/n` over ~16–32 frames, then **stop rendering** | Zero at steady state |
+
+Conceptually `TAARenderPass`/`SSAARenderPass` in unbiased/progressive mode.
+The key property for the stated requirement ("no stuttering"): during motion
+the cost is exactly what it is today, and the extra work happens only when
+idle. **It cannot introduce stutter into navigation by construction.**
+
+⚠️ **MSAA on the default framebuffer is lost the moment you render through a
+composer.** A multisampled render target must be requested explicitly (in
+pmndrs `postprocessing`, the `multisampling` prop on `EffectComposer`), or
+the first effect added makes the image *worse*, not better.
+
+### Contact shadows (between meshes)
+
+Terminology matters here, because it selects a different technique:
+
+- drei's `<ContactShadows>` is a **ground** shadow — a blurred shadow map
+  projected onto a plane below the model. It produces no darkening *between*
+  meshes and is not what this feature means. (It also no longer exists in
+  this codebase; the old `Scene.jsx` had one.)
+- What's wanted — keycap against plate, tasselli in their sockets, rotors in
+  the body — is **ambient occlusion**, optionally plus directional contact
+  hardening from the key light.
+
+The reason none of this exists today is structural, not an oversight:
+**31 of the 34 lights physically cannot cast shadows.** `rectAreaLight` has
+no shadow support in three.js at all, and point lights only shadow via cube
+maps — 6 scene renders *per light*, i.e. 26 × 6 × 264 draw calls, which is
+not a tradeoff to evaluate but a non-starter. The only real shadow in the
+scene is `ShadowKeyLight`'s. **The volumetric rig therefore behaves as
+ambient light that never occludes anything** — AO is not a polish item here,
+it is what stands in for the rig's missing occlusion.
+
+Two separate contributions:
+
+1. **Half-resolution screen-space AO** (GTAO/N8AO class) with a
+   depth-guided bilateral upsample. It responds to any transform, so it
+   keeps working under the mesh editor and the Timeline. Use an
+   implementation that can **reconstruct normals from depth** — that removes
+   the normal prepass, i.e. 264 draw calls, which is worth the marginal
+   quality loss on this cost profile. Physically AO should modulate only
+   indirect light, but here the 32 non-shadowing lights *are already* a
+   stand-in for indirect, so multiplying the final color is defensible in
+   this scene specifically.
+2. **Freeze the directional light's shadow map.** The camera orbits, the
+   model never rotates, the key light is fixed — **the shadow map is
+   identical frame after frame.** Rendering it once (`shadow.autoUpdate =
+   false`, `shadow.needsUpdate = true` on demand) and regenerating it only
+   when the mesh editor moves something returns 264 draw calls per frame.
+   This is likely the single largest win in this whole list and it lands
+   *before* any effect is added. The recovered headroom is what pays for a
+   contact-hardening (PCSS-style) filter on that one light.
+
+**Baked AO** is the zero-runtime-cost option and would be the obvious choice
+for a static product shot, but it breaks exactly where this project is
+heading: if "explode" becomes an authored pose via `MeshController`, AO
+baked between parts stays painted on the surfaces as they separate. Per-mesh
+*self*-occlusion stays valid regardless. A sensible hybrid is baked self-AO
+plus screen-space inter-mesh AO — but only if measurement shows screen-space
+alone is insufficient. Don't assume it up front.
+
+### The mechanism that unifies both
+
+A **render-quality LOD driven by a "scene is at rest" signal**, which
+`useComposerControls.js` largely already has (it knows whether the spring is
+settled, whether a drag is active, whether an arrow was pressed):
+
+```
+moving   -> MSAA + SMAA, low-sample half-res AO (or AO frozen from the last settled frame)
+at rest  -> progressive accumulation for N frames -> stop
+any input -> invalidate, drop back to the base tier
+```
+
+The elegant coupling: **accumulation makes everything else cheaper.** If the
+final image is the mean of 32 jittered frames, the AO can run at a low,
+noisy sample count and the noise averages out — you pay for a dirty AO that
+converges, not a clean one every frame.
+
+Two invalidation sources that are not obvious and would bite:
+
+- **`LightRig` is never truly "at rest".** Intensities damp asymptotically
+  toward their targets and the adaptive box re-measures every
+  `BOX_REFRESH_FRAMES`. Accumulating while the damping is still converging
+  averages genuinely different images and yields a dirty result. A
+  convergence threshold on the damping is needed, not just the camera
+  spring's signal.
+- **In `?debug`**, gizmo drags and timeline scrubbing must invalidate like a
+  normal drag.
+
+### Codebase-specific traps
+
+- **Tone mapping has to move.** ACES currently sits on the renderer
+  (`Scene.jsx`'s `gl={{ toneMapping, toneMappingExposure }}`). With a
+  composer it must become the second-to-last effect and be disabled on the
+  renderer, or AO gets applied to already-tone-mapped values and AA blends
+  in display space. Correct order: scene in linear HDR -> AO -> accumulate
+  -> tone map -> SMAA last, on LDR.
+- **`__editorHelper` meshes must be excluded from depth passes.** The
+  selection halos are 4%-inflated shells; in the depth buffer they'd
+  generate an AO halo around every selected object. This is the same class
+  of bug already handled in `collectMeshGroups` and `measureModelBox` —
+  same tag, a third site to cover.
+- **Shader recompilation is real stutter.** With 34 lights the permutation
+  count is large and a mid-interaction compile is visible. The rig already
+  does the right thing by animating light *intensities* and never light
+  *counts* — that invariant must hold. Precompile asynchronously
+  (`renderer.compileAsync`) during the existing fade-in, which is already
+  dead time.
+- **Don't reallocate render targets on resize** without debouncing, or
+  window resizing becomes a microfreeze.
+
+### Suggested implementation order
+
+1. **Freeze the shadow map.** No new effect, pure headroom. Everything else
+   is measured from there.
+2. **Measure whether the app is CPU- or fragment-bound.** The ratio decides
+   whether half-res AO is nearly free, and it cannot be derived on paper.
+3. **Composer with MSAA + relocated tone mapping + SMAA.** Checkpoint:
+   verify the image is *identical* to today before adding any effect — the
+   only moment a color-space mistake is still easy to isolate.
+4. **Half-res AO** with depth-reconstructed normals.
+5. **Progressive accumulation at rest**, last: biggest quality jump, and the
+   piece needing the most accurate invalidation signal.
+
+What not to do: raise DPR or add a depth prepass "since it's cheap." With 34
+lights the first doubles the fragment axis; with 264 draw calls the second
+doubles the CPU one. Those are the two moves this scene's profile punishes
+hardest.
