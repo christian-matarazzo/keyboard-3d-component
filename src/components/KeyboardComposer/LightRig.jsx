@@ -3,16 +3,116 @@ import { useFrame } from '@react-three/fiber'
 import { useControls, button } from 'leva'
 import { easing } from 'maath'
 import * as THREE from 'three'
-import { Html, useHelper, TransformControls } from '@react-three/drei'
-// Inizializzazione GLOBALE: deve avvenire prima che i materiali PBR 
+import { Html, useHelper, TransformControls, useGLTF } from '@react-three/drei'
+// Inizializzazione GLOBALE: deve avvenire prima che i materiali PBR
 // vengano compilati, altrimenti le RectAreaLight vengono ignorate.
 import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js'
 RectAreaLightUniformsLib.init()
 
 import { POSE_COORD, wrapYaw } from './poseGraph'
+import { DRACO_PATH, DEFAULT_MODEL_URL } from './KeyboardModel'
 
 const RIG_POSITION = [0, 0.1, 0]
 const DEBUG = new URLSearchParams(window.location.search).has('debug')
+
+// --- Stili degli overlay di debug ----------------------------------------
+// Erano oggetti inline ripetuti quasi identici (i due <select>, i due bottoni
+// salva/carica): qui una sola volta, con le sole differenze come override sul
+// posto. Sono overlay dell'editor `?debug`, non UI di prodotto — per quella
+// valgono i CSS module (Hud.module.css / Timeline.module.css).
+const SELECT_STYLE = {
+  background: 'rgba(20, 20, 20, 0.85)',
+  border: '1px solid rgba(255, 255, 255, 0.2)',
+  color: '#fff',
+  padding: '10px 14px',
+  borderRadius: '12px',
+  fontFamily: 'sans-serif',
+  fontSize: '13px',
+  fontWeight: '600',
+  cursor: 'pointer',
+  backdropFilter: 'blur(4px)',
+  boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+  outline: 'none',
+  appearance: 'auto',
+}
+
+const PANEL_BTN_STYLE = {
+  background: 'rgba(20, 20, 20, 0.8)',
+  border: '1px solid rgba(255, 255, 255, 0.2)',
+  color: 'white',
+  padding: '8px 16px',
+  borderRadius: '8px',
+  cursor: 'pointer',
+  fontWeight: 'bold',
+  fontFamily: 'sans-serif',
+  boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+  backdropFilter: 'blur(4px)',
+}
+
+// --- SCATOLA LUCI ADATTIVA ------------------------------------------------
+// La scatola (griglia 3x3x3 di point light + 6 rectAreaLight per faccia) non
+// deriva più dalla bounding box STATICA del modello vergine (`modelSize`,
+// calcolata una volta sola in KeyboardModel.jsx e simmetrica attorno
+// all'origine): viene misurata dal vivo sull'albero di scena reale, quindi
+// segue qualunque traslazione/rotazione applicata a mesh o gruppi
+// dall'editor Mesh/Timeline. Se la mesh più alta sale di m, il piano `top`
+// (e le luci della fascia top) salgono con lei e restano a distanza
+// `margin` dalla superficie: la scatola si ALLUNGA sull'asse, non trasla in
+// blocco — ogni faccia è ancorata al proprio estremo del box.
+//
+// Costo: la misura è un traverse dell'intera scena, quindi NON gira a ogni
+// frame ma ogni BOX_REFRESH_FRAMES; il valore misurato è poi smorzato
+// (stesso damping del margine) così il movimento resta fluido anche a
+// frequenza di campionamento bassa.
+const BOX_REFRESH_FRAMES = 4
+const BOX_KEYS = ['minX', 'maxX', 'minY', 'maxY', 'minZ', 'maxZ']
+
+const _geoBox = new THREE.Box3()
+const _worldBox = new THREE.Box3()
+const _corner = new THREE.Vector3()
+
+/**
+ * Bounding box del modello espressa nello spazio LOCALE del rig.
+ * Ignora le mesh di servizio dell'editor (halo di selezione, marcate con
+ * `userData.__editorHelper`): sono gusci ingranditi del 4% attorno alla mesh
+ * selezionata e falserebbero il box mentre si edita.
+ * Ritorna null se non c'è nulla da misurare.
+ */
+function measureModelBox(root, rig) {
+  if (!root || !rig) return null
+  root.updateWorldMatrix(true, true)
+  _worldBox.makeEmpty()
+  root.traverse((node) => {
+    if (!node.isMesh || node.userData?.__editorHelper) return
+    const geo = node.geometry
+    if (!geo) return
+    if (!geo.boundingBox) geo.computeBoundingBox()
+    if (!geo.boundingBox) return
+    _geoBox.copy(geo.boundingBox).applyMatrix4(node.matrixWorld)
+    _worldBox.union(_geoBox)
+  })
+  if (_worldBox.isEmpty()) return null
+
+  // Il rig non ha rotazione (è figlio diretto della root della scena), quindi
+  // i due angoli restano gli estremi anche dopo la conversione; il min/max
+  // esplicito è comunque una difesa a costo zero.
+  rig.updateWorldMatrix(true, false)
+  const min = rig.worldToLocal(_corner.copy(_worldBox.min)).clone()
+  const max = rig.worldToLocal(_corner.copy(_worldBox.max)).clone()
+  return {
+    minX: Math.min(min.x, max.x), maxX: Math.max(min.x, max.x),
+    minY: Math.min(min.y, max.y), maxY: Math.max(min.y, max.y),
+    minZ: Math.min(min.z, max.z), maxZ: Math.max(min.z, max.z),
+  }
+}
+
+/** Fallback simmetrico attorno all'origine del rig: il comportamento
+ *  storico, usato solo finché la prima misura live non è disponibile. */
+const boxFromModelSize = (modelSize) => ({
+  minX: -modelSize.x / 2, maxX: modelSize.x / 2,
+  minY: -modelSize.y / 2, maxY: modelSize.y / 2,
+  minZ: -modelSize.z / 2, maxZ: modelSize.z / 2,
+})
 
 const generateDefaultConfig = () => {
   const def = { margin: 1.0, showHelpers: true, showSurfaces: true } 
@@ -182,7 +282,19 @@ function ShadowSpotLight({ debug, lightsActive }) {
   )
 }
 
-export default function LightRig({ modelSize, apiRef, editMode = 'none' } = {}) {
+export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUrl = DEFAULT_MODEL_URL } = {}) {
+  // Stessa cache di drei condivisa con KeyboardModel/MeshController/
+  // MaterialTuner: nessun fetch aggiuntivo, è la STESSA istanza di scena su
+  // cui l'editor mesh applica le sue trasformate — che è esattamente ciò che
+  // qui va misurato dal vivo (vedi measureModelBox).
+  const { scene: modelScene } = useGLTF(modelUrl, DRACO_PATH)
+  const rigRef = useRef()
+  // Box misurato (target) e box smorzato (quello effettivamente usato per
+  // posizionare luci e superfici).
+  const boxTargetRef = useRef(null)
+  const animBoxRef = useRef(null)
+  const boxFrameRef = useRef(0)
+
   // Editor luci esclusivo: interattivo solo con ?debug ED editMode === 'lights'
   // (vedi Scene.jsx). Prima di questo switch gli helper qui sotto restavano
   // cliccabili ogni volta che showHelpers/showSurfaces era acceso, anche
@@ -210,7 +322,24 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none' } = {}) 
   const topGroups = useRef([]); const topLights = useRef([]); const topHelpers = useRef([])
   const midGroups = useRef([]); const midLights = useRef([]); const midHelpers = useRef([])
   const botGroups = useRef([]); const botLights = useRef([]); const botHelpers = useRef([])
-  
+
+  // Unica descrizione delle tre fasce della griglia: la consumano il JSX della
+  // griglia, il loop di aggiornamento per-frame, gli <optgroup> del selettore
+  // e activeLightsList — prima erano quattro copie testuali da tenere
+  // allineate a mano.
+  //
+  // ATTENZIONE: `prefix` e l'indice dentro `layers[prefix]` compongono le
+  // chiavi del JSON di configurazione (`top_0_intensity`, `mid_3_color`, …).
+  // Non rinominare i prefissi e non toccare l'ordine con cui il useMemo
+  // `layers` più sotto riempie gli array: cambiarli rimappa in silenzio ogni
+  // configurazione già salvata su luci diverse.
+  const gridLayers = useMemo(() => [
+    { prefix: 'top', label: 'Top', groups: topGroups, lights: topLights, helpers: topHelpers },
+    { prefix: 'mid', label: 'Mid', groups: midGroups, lights: midLights, helpers: midHelpers },
+    { prefix: 'bot', label: 'Bot', groups: botGroups, lights: botLights, helpers: botHelpers },
+  ], [])
+
+
   const surfGroups = useRef({})
   const surfLights = useRef({})
   const surfHelpers = useRef({})
@@ -224,7 +353,10 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none' } = {}) 
     return {
       showHelpers: { value: false, label: 'Mostra Punti' },
       showSurfaces: { value: false, label: 'Mostra Superfici' },
-      margin: { value: 1.0, min: 0, max: 3, step: 0.1, label: 'Margine Scatola' },
+      // Max alzato da 3 a 12: con la scatola adattiva (che segue le mesh
+      // traslate dall'editor) serve poter allontanare le luci molto più del
+      // vecchio modello statico senza rimanere incastrati nel modello.
+      margin: { value: 1.0, min: 0, max: 12, step: 0.1, label: 'Margine Scatola' },
       
       // Controlli per i Damping esposti per il Tuning
       animMarginDamp: { value: 0.25, min: 0.01, max: 1, step: 0.01, label: 'Velocità Margine' },
@@ -443,12 +575,10 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none' } = {}) 
     }
 
     faces.forEach(f => checkLight('surf', f.index, `Superficie ${f.index.toUpperCase()}`))
-    if (layers.top) layers.top.forEach((_, i) => checkLight('top', i, `Top ${i}`))
-    if (layers.mid) layers.mid.forEach((_, i) => checkLight('mid', i, `Mid ${i}`))
-    if (layers.bot) layers.bot.forEach((_, i) => checkLight('bot', i, `Bot ${i}`))
+    gridLayers.forEach(L => (layers[L.prefix] ?? []).forEach((_, i) => checkLight(L.prefix, i, `${L.label} ${i}`)))
 
     return active
-  }, [activePose, lightEditor.intensity, faces, layers])
+  }, [activePose, lightEditor.intensity, faces, layers, gridLayers])
   // --- FINE LISTA LUCI ATTIVE ---
 
   useFrame((state, delta) => {
@@ -517,22 +647,53 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none' } = {}) 
     easing.damp(animatedMargin, 'current', currentCtrl.margin, currentCtrl.animMarginDamp, delta)
     const m = animatedMargin.current
 
+    // 1b. MISURA (throttled) E SMORZA LA SCATOLA
+    // Il target è la bounding box REALE del modello nello spazio del rig:
+    // qualunque mesh/gruppo spostato dall'editor la fa crescere/traslare, e
+    // le facce qui sotto restano ancorate ai suoi estremi ± margine.
+    if (boxFrameRef.current % BOX_REFRESH_FRAMES === 0) {
+      const measured = measureModelBox(modelScene, rigRef.current)
+      if (measured) boxTargetRef.current = measured
+    }
+    boxFrameRef.current++
+    const boxTarget = boxTargetRef.current ?? boxFromModelSize(modelSize)
+    if (!animBoxRef.current) {
+      animBoxRef.current = { ...boxTarget }
+    } else {
+      for (const k of BOX_KEYS) {
+        easing.damp(animBoxRef.current, k, boxTarget[k], currentCtrl.animMarginDamp, delta)
+      }
+    }
+    const b = animBoxRef.current
+    // Centro e semi-estensioni della scatola CORRENTE (non più il centro
+    // modello: se una mesh sale, il centro sale con lei).
+    const boxCenter = { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2, z: (b.minZ + b.maxZ) / 2 }
+    // Coordinata della griglia (-1/0/+1) → posizione sull'asse: gli estremi
+    // sono agganciati alla faccia corrispondente del box + margine, il centro
+    // al centro del box. È qui che avviene lo "stretch": i due estremi di un
+    // asse si muovono in modo indipendente l'uno dall'altro.
+    const axisPos = (sign, min, max, center) =>
+      sign === 0 ? center : sign > 0 ? max + m : min - m
+
     const lightsActiveNow = DEBUG && editModeRef.current === 'lights'
     const isVisiblePoints = lightsActiveNow && currentCtrl.showHelpers
     const isVisibleSurfaces = lightsActiveNow && currentCtrl.showSurfaces
 
-    const updateLightGroup = (lightsArray, helpersArray, groupsArray, prefix, gridItems) => {
+    const updateLightGroup = (layer, gridItems) => {
+      const prefix = layer.prefix
       gridItems.forEach((gridItem, i) => {
-        const light = lightsArray.current[i]
-        const helper = helpersArray.current[i]
-        const group = groupsArray.current[i]
+        const light = layer.lights.current[i]
+        const helper = layer.helpers.current[i]
+        const group = layer.groups.current[i]
         if (!light) return
 
-        // 2. MUOVI IL GRUPPO FLUIDAMENTE IN BASE AL MARGINE
+        // 2. MUOVI IL GRUPPO FLUIDAMENTE IN BASE AL MARGINE E ALLA SCATOLA
+        //    ADATTIVA (b): ogni luce resta a `m` dalla faccia del box che le
+        //    compete, quindi segue le mesh spostate dall'editor.
         if (group) {
-            const px = gridItem.x === 0 ? 0 : (modelSize.x / 2 + m) * gridItem.x
-            const py = gridItem.y === 0 ? 0 : (modelSize.y / 2 + m) * gridItem.y
-            const pz = gridItem.z === 0 ? 0 : (modelSize.z / 2 + m) * gridItem.z
+            const px = axisPos(gridItem.x, b.minX, b.maxX, boxCenter.x)
+            const py = axisPos(gridItem.y, b.minY, b.maxY, boxCenter.y)
+            const pz = axisPos(gridItem.z, b.minZ, b.maxZ, boxCenter.z)
             group.position.set(px, py, pz)
         }
 
@@ -578,17 +739,23 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none' } = {}) 
     }
 
     const updateSurfGroup = () => {
-      const w = modelSize.x + m * 2
-      const h = modelSize.y + m * 2
-      const d = modelSize.z + m * 2
-  
+      // Dimensioni e posizioni derivate dalla scatola adattiva: ogni faccia è
+      // ancorata al proprio estremo (max.y + m per il top, min.y - m per il
+      // bottom, …) invece che a ±metà di una dimensione simmetrica. È questo
+      // che fa "allungare" il light box quando una mesh trasla: la faccia dal
+      // lato in cui si è mossa si allontana, l'opposta resta ferma.
+      const w = (b.maxX - b.minX) + m * 2
+      const h = (b.maxY - b.minY) + m * 2
+      const d = (b.maxZ - b.minZ) + m * 2
+      const { x: cx, y: cy, z: cz } = boxCenter
+
       const dynamicFaces = {
-        top: { pos: [0, h/2, 0], args: [w, d] },
-        bot: { pos: [0, -h/2, 0], args: [w, d] },
-        left: { pos: [-w/2, 0, 0], args: [d, h] },
-        right: { pos: [w/2, 0, 0], args: [d, h] },
-        front: { pos: [0, 0, d/2], args: [w, h] },
-        back: { pos: [0, 0, -d/2], args: [w, h] }
+        top: { pos: [cx, b.maxY + m, cz], args: [w, d] },
+        bot: { pos: [cx, b.minY - m, cz], args: [w, d] },
+        left: { pos: [b.minX - m, cy, cz], args: [d, h] },
+        right: { pos: [b.maxX + m, cy, cz], args: [d, h] },
+        front: { pos: [cx, cy, b.maxZ + m], args: [w, h] },
+        back: { pos: [cx, cy, b.minZ - m], args: [w, h] }
       }
 
       faces.forEach((face) => {
@@ -639,11 +806,19 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none' } = {}) 
       })
     }
 
-    updateLightGroup(topLights, topHelpers, topGroups, 'top', layers.top)
-    updateLightGroup(midLights, midHelpers, midGroups, 'mid', layers.mid)
-    updateLightGroup(botLights, botHelpers, botGroups, 'bot', layers.bot)
+    gridLayers.forEach((layer) => updateLightGroup(layer, layers[layer.prefix]))
     updateSurfGroup()
   })
+
+  // Handler condiviso dai due <select> dell'editor (elenco completo ed elenco
+  // delle sole luci accese nella vista): il valore dell'option è sempre
+  // `${layer}_${index}`. L'indice delle facce è una stringa ('top', 'left'…),
+  // quello della griglia un numero — da qui il parseInt condizionale.
+  const onSelectLight = (e) => {
+    if (!e.target.value) { setSelectedLight(null); return }
+    const [layer, idx] = e.target.value.split('_')
+    setSelectedLight({ layer, index: layer === 'surf' ? idx : parseInt(idx, 10) })
+  }
 
   const handleEntityClick = (e, layerPrefix, i) => {
     if (!lightsInteractive) return
@@ -738,8 +913,8 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none' } = {}) 
   }
 
   return (
-    <group position={RIG_POSITION}>
-      
+    <group position={RIG_POSITION} ref={rigRef}>
+
       {/* NUOVE LUCI CON GIZMO 3D */}
       <ShadowKeyLight debug={DEBUG} lightsActive={editMode === 'lights'} />
       <ShadowSpotLight debug={DEBUG} lightsActive={editMode === 'lights'} />
@@ -755,38 +930,13 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none' } = {}) 
             display: 'flex',
             gap: '10px'
           }}>
-            <button 
+            <button
               onClick={handleSaveJSON}
-              style={{
-                background: 'rgba(20, 100, 200, 0.8)',
-                color: 'white',
-                border: '1px solid rgba(100, 180, 255, 0.5)',
-                padding: '8px 16px',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                fontWeight: 'bold',
-                fontFamily: 'sans-serif',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-                backdropFilter: 'blur(4px)'
-              }}
+              style={{ ...PANEL_BTN_STYLE, background: 'rgba(20, 100, 200, 0.8)', border: '1px solid rgba(100, 180, 255, 0.5)' }}
             >
               Salva Configurazione
             </button>
-            <button 
-              onClick={handleLoadJSON}
-              style={{
-                background: 'rgba(20, 20, 20, 0.8)',
-                color: 'white',
-                border: '1px solid rgba(255, 255, 255, 0.2)',
-                padding: '8px 16px',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                fontWeight: 'bold',
-                fontFamily: 'sans-serif',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-                backdropFilter: 'blur(4px)'
-              }}
-            >
+            <button onClick={handleLoadJSON} style={PANEL_BTN_STYLE}>
               Carica JSON
             </button>
           </div>
@@ -830,65 +980,28 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none' } = {}) 
             {/* 1. SELETTORE ORIGINALE (Globale) */}
             <select
               value={selectedLight ? `${selectedLight.layer}_${selectedLight.index}` : ''}
-              onChange={(e) => {
-                if (!e.target.value) { setSelectedLight(null); return; }
-                const [layer, idx] = e.target.value.split('_');
-                setSelectedLight({ layer, index: layer === 'surf' ? idx : parseInt(idx, 10) });
-              }}
-              style={{
-                background: 'rgba(20, 20, 20, 0.85)',
-                border: '1px solid rgba(255, 255, 255, 0.2)',
-                color: '#fff',
-                padding: '10px 14px',
-                borderRadius: '12px',
-                fontFamily: 'sans-serif',
-                fontSize: '13px',
-                fontWeight: '600',
-                cursor: 'pointer',
-                backdropFilter: 'blur(4px)',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
-                outline: 'none',
-                appearance: 'auto'
-              }}
+              onChange={onSelectLight}
+              style={SELECT_STYLE}
             >
               <option value="">-- Seleziona Luce GLOBALE --</option>
               <optgroup label="Facce (Superfici)">
                 {faces.map(f => <option key={`surf_${f.index}`} value={`surf_${f.index}`}>Superficie {f.index.toUpperCase()}</option>)}
               </optgroup>
-              <optgroup label="Griglia Top">
-                {layers.top.map((_, i) => <option key={`top_${i}`} value={`top_${i}`}>Top {i}</option>)}
-              </optgroup>
-              <optgroup label="Griglia Mid">
-                {layers.mid.map((_, i) => <option key={`mid_${i}`} value={`mid_${i}`}>Mid {i}</option>)}
-              </optgroup>
-              <optgroup label="Griglia Bot">
-                {layers.bot.map((_, i) => <option key={`bot_${i}`} value={`bot_${i}`}>Bot {i}</option>)}
-              </optgroup>
+              {gridLayers.map(L => (
+                <optgroup key={L.prefix} label={`Griglia ${L.label}`}>
+                  {layers[L.prefix].map((_, i) => (
+                    <option key={`${L.prefix}_${i}`} value={`${L.prefix}_${i}`}>{L.label} {i}</option>
+                  ))}
+                </optgroup>
+              ))}
             </select>
 
             {/* 2. NUOVO SELETTORE (Solo Luci Attive in questa vista) */}
             <select
               value={selectedLight ? `${selectedLight.layer}_${selectedLight.index}` : ''}
-              onChange={(e) => {
-                if (!e.target.value) { setSelectedLight(null); return; }
-                const [layer, idx] = e.target.value.split('_');
-                setSelectedLight({ layer, index: layer === 'surf' ? idx : parseInt(idx, 10) });
-              }}
-              style={{
-                background: 'rgba(20, 50, 80, 0.85)', // Sfondo leggermente blu/diverso per distinguerlo
-                border: '1px solid rgba(100, 180, 255, 0.4)',
-                color: '#fff',
-                padding: '10px 14px',
-                borderRadius: '12px',
-                fontFamily: 'sans-serif',
-                fontSize: '13px',
-                fontWeight: '600',
-                cursor: 'pointer',
-                backdropFilter: 'blur(4px)',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
-                outline: 'none',
-                appearance: 'auto'
-              }}
+              onChange={onSelectLight}
+              // Sfondo blu per distinguerlo dal selettore globale qui sopra.
+              style={{ ...SELECT_STYLE, background: 'rgba(20, 50, 80, 0.85)', border: '1px solid rgba(100, 180, 255, 0.4)' }}
             >
               <option value="">-- Luci ATTIVE --</option>
               {activeLightsList.length === 0 && <option value="" disabled>Nessuna luce attiva in questa vista</option>}
@@ -1002,12 +1115,15 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none' } = {}) 
         </group>
       ))}
 
-      {layers.top.map((gridItem, i) => (
-        <group key={`top-${i}`} ref={el => { if (el) topGroups.current[i] = el }}>
-          <pointLight intensity={0} ref={el => { if (el) topLights.current[i] = el }} distance={fixedDistance} />
+      {/* Le tre fasce della griglia (9 top + 8 mid + 9 bot): un solo blocco
+          guidato da `gridLayers`. L'indice `i` all'interno di `layers[prefix]`
+          è la chiave del JSON di configurazione — vedi la nota su gridLayers. */}
+      {gridLayers.map((L) => layers[L.prefix].map((gridItem, i) => (
+        <group key={`${L.prefix}-${i}`} ref={el => { if (el) L.groups.current[i] = el }}>
+          <pointLight intensity={0} ref={el => { if (el) L.lights.current[i] = el }} distance={fixedDistance} />
           <mesh
-            ref={el => { if (el) topHelpers.current[i] = el }}
-            onClick={(e) => handleEntityClick(e, 'top', i)}
+            ref={el => { if (el) L.helpers.current[i] = el }}
+            onClick={(e) => handleEntityClick(e, L.prefix, i)}
             onPointerOver={handlePointerOver}
             onPointerOut={handlePointerOut}
             renderOrder={999}
@@ -1017,41 +1133,7 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none' } = {}) 
             <meshBasicMaterial transparent opacity={0.1} wireframe depthTest={false} depthWrite={false} color="#ffffff" />
           </mesh>
         </group>
-      ))}
-
-      {layers.mid.map((gridItem, i) => (
-        <group key={`mid-${i}`} ref={el => { if (el) midGroups.current[i] = el }}>
-          <pointLight intensity={0} ref={el => { if (el) midLights.current[i] = el }} distance={fixedDistance} />
-          <mesh
-            ref={el => { if (el) midHelpers.current[i] = el }}
-            onClick={(e) => handleEntityClick(e, 'mid', i)}
-            onPointerOver={handlePointerOver}
-            onPointerOut={handlePointerOut}
-            renderOrder={999}
-            raycast={lightsInteractive ? THREE.Mesh.prototype.raycast : () => null}
-          >
-            <sphereGeometry args={[0.05, 16, 16]} />
-            <meshBasicMaterial transparent opacity={0.1} wireframe depthTest={false} depthWrite={false} color="#ffffff" />
-          </mesh>
-        </group>
-      ))}
-
-      {layers.bot.map((gridItem, i) => (
-        <group key={`bot-${i}`} ref={el => { if (el) botGroups.current[i] = el }}>
-          <pointLight intensity={0} ref={el => { if (el) botLights.current[i] = el }} distance={fixedDistance} />
-          <mesh
-            ref={el => { if (el) botHelpers.current[i] = el }}
-            onClick={(e) => handleEntityClick(e, 'bot', i)}
-            onPointerOver={handlePointerOver}
-            onPointerOut={handlePointerOut}
-            renderOrder={999}
-            raycast={lightsInteractive ? THREE.Mesh.prototype.raycast : () => null}
-          >
-            <sphereGeometry args={[0.05, 16, 16]} />
-            <meshBasicMaterial transparent opacity={0.1} wireframe depthTest={false} depthWrite={false} color="#ffffff" />
-          </mesh>
-        </group>
-      ))}
+      )))}
 
     </group>
   )

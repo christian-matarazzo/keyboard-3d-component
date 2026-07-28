@@ -22,6 +22,21 @@ const PIVOT_Y = 0.1
 const AXIS_DEADZONE = 6
 const EPS = 1e-6
 
+// ZOOM UTENTE — lo zoom della rotella NON è un raggio assoluto ma un FATTORE
+// moltiplicativo applicato sopra al raggio di inquadratura calcolato dal fit.
+// È l'unico modo per garantire quello che serve: qualunque ricalcolo del fit
+// (resize della finestra, cambio focale/margine, fit dinamico entrando in
+// modalità Luci, caricamento di un JSON che cambia fitMargin/zoomOutMobile)
+// riscrive solo la BASE, e lo zoom scelto dall'utente viene riapplicato
+// sopra — mai azzerato. Prima lo zoom viveva direttamente in cameraRadius e
+// il primo fit che passava lo cancellava.
+const ZOOM_MIN = 0.2
+const ZOOM_MAX = 4
+const RADIUS_MIN = 2.5
+const RADIUS_MAX = 200
+// Raggio minimo che il FIT (non lo zoom manuale) può produrre.
+const FIT_RADIUS_MIN = 5.2
+
 // Stima della "velocità di interazione" da tastiera, dalla cadenza dei
 // commit sullo stesso asse (il drag ha già una velocità reale misurata dal
 // gesto). Oltre KEY_BOUNCE_MAX_DT tra due step si considera una pressione
@@ -117,9 +132,12 @@ const softClamp = (raw, lo, hi, factor, cap) => {
  *    dall'ampiezza (vedi stepAmp e la molla in useFrame) — tempo dilatato di
  *    1/amp (stessa velocità angolare) e ζ alzato di ln(amp) (stesso overshoot
  *    in gradi). Un 90° quindi dura il doppio di un 45° e rimbalza uguale.
- *  - nessuno zoom: né rotella, né pinch. La distanza camera deriva solo dal
- *    fit responsive; focale tele (200mm) per la prospettiva compressa
+ *  - zoom a rotella come FATTORE sopra il fit responsive (vedi userZoom): il
+ *    fit detta l'inquadratura, lo zoom dell'utente la moltiplica e non viene
+ *    mai azzerato. Focale tele (200mm) per la prospettiva compressa
  *    "commercial".
+ *  - il modello non viene mai ruotato: è la camera a orbitare (vedi useFrame),
+ *    quindi l'hook NON riceve alcun ref al <group> del modello.
  *  - mobile portrait: ingresso nella posa top verticale (pitch 90° + yaw 90°,
  *    manopole in alto); l'intero grafo è traslato di +90° in yaw
  *    (PORTRAIT_YAW_OFFSET) per il fit su schermo alto, per il resto identico.
@@ -127,7 +145,6 @@ const softClamp = (raw, lo, hi, factor, cap) => {
  *    un resize non la sposta mai sotto i piedi della posa corrente.
  */
 export function useComposerControls(
-  groupRef,
   {
     focalLength = 200, // mm equivalenti (35mm): tele spinto, effetto commercial
     initialRotation = { x: ENTRY_LANDSCAPE.x, y: ENTRY_LANDSCAPE.y },
@@ -136,20 +153,45 @@ export function useComposerControls(
     // quindi raggiungere questi ref altrimenti.
     apiRef,
     disabled = false,
+    // NUOVO: stato editor, per il lock-guard di goTo (posa bloccata in Mesh/
+    // Timeline) e per il fit dinamico in Luci (vedi sotto). `scene` serve SOLO
+    // al Box3 live del fit dinamico — già disponibile in KeyboardModel.jsx
+    // (useGLTF), nessun fetch nuovo.
+    editMode = 'none',
+    lockedPoseKey = null,
+    scene,
   } = {},
 ) {
   const gl = useThree((s) => s.gl)
   const camera = useThree((s) => s.camera)
   const size = useThree((s) => s.size)
 
-  // Usiamo una ref per 'disabled' così da avere il valore aggiornato nei listener 
+  // Usiamo una ref per 'disabled' così da avere il valore aggiornato nei listener
   // senza dover ricreare gli eventi a ogni render.
   const disabledRef = useRef(disabled)
   disabledRef.current = disabled
 
+  // Stessa idea per editMode/lockedPoseKey: lette dentro goTo (closure creata
+  // una sola volta, deps [apiRef]) e dentro il useFrame del fit dinamico,
+  // senza dover ricreare closure/riattivare effetti a ogni cambio di editor
+  // state.
+  const editModeRef = useRef(editMode)
+  editModeRef.current = editMode
+  const lockedPoseKeyRef = useRef(lockedPoseKey)
+  lockedPoseKeyRef.current = lockedPoseKey
+
   // NUOVO: Svincoliamo l'interpolazione dal group 3D
   const curAngles = useRef({ pitch: initialRotation.x, yaw: initialRotation.y })
+  // Distanza camera EFFETTIVA = baseRadius (fit) * userZoom (rotella).
+  // Nessun percorso scrive mai cameraRadius direttamente: il fit scrive
+  // baseRadius, la rotella scrive userZoom, e applyRadius() ricompone. Così
+  // lo zoom manuale sopravvive a ogni ricalcolo dell'inquadratura.
   const cameraRadius = useRef(5.2)
+  const baseRadius = useRef(5.2)
+  const userZoom = useRef(1)
+  const applyRadius = () => {
+    cameraRadius.current = clamp(baseRadius.current * userZoom.current, RADIUS_MIN, RADIUS_MAX)
+  }
 
   // Parametri "feel" regolabili dal pannello (?debug): i default sono i
   // valori di produzione.
@@ -229,10 +271,26 @@ export function useComposerControls(
   // lì senza casi speciali.
   useEffect(() => {
     if (!apiRef) return
-    apiRef.current = {
+    // Object.assign, non riassegnazione: apiRef.current è condiviso con
+    // Scene.jsx (che vi pubblica editMode/lockedPoseKey da fuori del Canvas,
+    // senza ordine di commit garantito rispetto a questo effetto) — ogni
+    // scrittore deve solo aggiungere/aggiornare i propri campi, mai
+    // rimpiazzare l'oggetto intero.
+    Object.assign(apiRef.current, {
       goTo(key) {
         const c = POSE_COORD[key]
         if (!c) return
+        // Lock: in Mesh/Timeline la navigazione ESTERNA (pulsantiera HUD, o
+        // qualunque altro chiamante) resta congelata sulla posa bloccata.
+        // L'unica goTo ammessa mentre il lock è attivo è verso la STESSA
+        // lockedPoseKey (è quella che Scene.jsx richiama entrando in
+        // Mesh/Timeline o cambiando la posa bloccata) — qualunque altra
+        // richiesta viene ignorata silenziosamente, mai un salto a metà.
+        const mode = editModeRef.current
+        const lockedKey = lockedPoseKeyRef.current
+        const locked = (mode === 'meshes' || mode === 'timeline') && lockedKey != null
+        if (locked && key !== lockedKey) return
+
         const p = pose.current
         // Percorso più breve dallo yaw GREZZO corrente (che può aver
         // accumulato giri) al target nel frame corrente: mai un giro intero
@@ -258,9 +316,10 @@ export function useComposerControls(
           frame.current.yawOffset,
         )
       },
-    }
+    })
     return () => {
-      apiRef.current = null
+      delete apiRef.current.goTo
+      delete apiRef.current.currentPoseKey
     }
   }, [apiRef])
 
@@ -321,8 +380,66 @@ export function useComposerControls(
       : FIT_HALF_WIDTH / (tanHalfV * aspect)
     fit *= feel.fitMargin
     if (portrait) fit *= feel.zoomOutMobile
-    cameraRadius.current = clamp(fit, 5.2, 200)
+    // Scrive la BASE, non il raggio: lo zoom manuale (userZoom) viene
+    // riapplicato sopra da applyRadius() e quindi non si perde nemmeno su
+    // resize o al caricamento di un JSON che cambia fitMargin.
+    baseRadius.current = clamp(fit, FIT_RADIUS_MIN, RADIUS_MAX)
+    applyRadius()
   }, [size, camera, focalLength, feel.fitMargin, feel.zoomOutMobile])
+
+  // Fit dinamico (Luci + posa corrente === posa bloccata): il modello può
+  // essere stato deformato in Mesh/Timeline (gruppi/mesh traslati/ruotati,
+  // trasformate cotte nella scena reale da MeshController.jsx) — invece della
+  // costante FIT_HALF_WIDTH (tarata sul modello vergine), l'inquadratura usa
+  // il Box3 LIVE di `scene`. NIENTE ulteriore moltiplicazione per uno
+  // "scale" esterno: a runtime `scene` è già figlio di `<group
+  // scale={scale}>` in KeyboardModel.jsx, quindi Box3().setFromObject(scene)
+  // restituisce il box in WORLD SPACE — cioè già nelle stesse unità-scena
+  // finali di FIT_HALF_WIDTH/TARGET_WIDTH — a differenza dell'auto-fit
+  // statico di KeyboardModel.jsx, che calcola il proprio box UNA VOLA SOLA
+  // su `scene` ancora senza parent (appena caricato, prima di essere
+  // inserito nell'albero), quando è quindi genuinamente "raw"/non scalato:
+  // riapplicare `scale` qui raddoppierebbe la scala e collasserebbe
+  // l'inquadratura quasi a zero (bug osservato e verificato in Chrome prima
+  // di questo fix).
+  //
+  // SOLO ALLARGAMENTO (nuovo): questo percorso esiste per non tagliare un
+  // modello DEFORMATO in Mesh/Timeline, non per re-inquadrare il modello
+  // vergine. Se quel che c'è in scena sta già dentro l'inquadratura corrente
+  // non tocca nulla — altrimenti ogni ingresso in modalità Luci riscriveva il
+  // raggio e cancellava lo zoom dell'utente (era il reset di zoom "al cambio
+  // modalità"). E anche quando allarga, allarga la BASE: userZoom resta.
+  const dynamicFitActiveRef = useRef(false)
+  const recomputeDynamicFit = () => {
+    if (!scene) return
+    const box = new THREE.Box3().setFromObject(scene)
+    if (box.isEmpty()) return
+    const worldSize = box.getSize(new THREE.Vector3())
+    const halfWidth = Math.max(worldSize.x, worldSize.z) / 2
+    const aspect = size.width / Math.max(size.height, 1)
+    const portrait = aspect < 1
+    const tanHalfV = Math.tan((camera.fov * Math.PI) / 360)
+    let fit = portrait ? halfWidth / tanHalfV : halfWidth / (tanHalfV * aspect)
+    fit *= feelRef.current.fitMargin
+    if (portrait) fit *= feelRef.current.zoomOutMobile
+    const needed = clamp(fit, FIT_RADIUS_MIN, RADIUS_MAX)
+    if (needed <= baseRadius.current) return
+    baseRadius.current = needed
+    applyRadius()
+  }
+
+  // Stessi input del fit statico sopra: se un resize (o uno slider
+  // fitMargin/zoomOutMobile) arriva MENTRE il fit dinamico è già attivo,
+  // questo effetto (dichiarato SUBITO DOPO quello statico, stesso commit)
+  // ricalcola col Box3 live e riprende il sopravvento — altrimenti l'effetto
+  // statico appena eseguito sopra vincerebbe silenziosamente col valore
+  // costante, vanificando il fit dinamico.
+  useEffect(() => {
+    if (!scene) return
+    if (editModeRef.current === 'lights' && dynamicFitActiveRef.current) {
+      recomputeDynamicFit()
+    }
+  }, [size, camera, focalLength, scene, feel.fitMargin, feel.zoomOutMobile])
 
   useEffect(() => {
     const el = gl.domElement
@@ -569,14 +686,13 @@ export function useComposerControls(
 
     // LOGICA DI ZOOM — indipendente da `disabled`: a differenza di
     // drag/frecce (bloccati in modalità Mesh, vedi Scene.jsx), lo zoom resta
-    // sempre attivo in ogni modalità dell'editor debug.
+    // sempre attivo in ogni modalità dell'editor debug. Muove il FATTORE
+    // userZoom, non il raggio: è ciò che lo rende immune a ogni ricalcolo del
+    // fit (resize, cambio modalità, cambio posa, selezione mesh…).
     const onWheel = (e) => {
       e.preventDefault()
-      cameraRadius.current = clamp(
-        cameraRadius.current * (1 + e.deltaY * 0.0012),
-        2.5,
-        200
-      )
+      userZoom.current = clamp(userZoom.current * (1 + e.deltaY * 0.0012), ZOOM_MIN, ZOOM_MAX)
+      applyRadius()
     }
 
     el.addEventListener('pointerdown', onDown)
@@ -661,5 +777,27 @@ export function useComposerControls(
     camera.position.set(0, 0, cameraRadius.current)
     camera.position.applyQuaternion(camera.quaternion)
     camera.position.y += PIVOT_Y
+  })
+
+  // Edge-detector del fit dinamico (requisito Luci + posa bloccata): la posa
+  // vive in ref imperativi, non in state React, quindi il trigger "sono
+  // entrato/uscito dalla condizione" va controllato per-frame — ma la
+  // ricostruzione vera e propria del Box3 (costosa, O(scena)) gira solo sul
+  // fronte di salita, non a ogni frame. useFrame SEPARATO dalla molla sopra:
+  // check economico (pochi confronti, nessuna allocazione/traversal) che non
+  // deve competere con l'integrazione della molla nello stesso blocco.
+  useFrame(() => {
+    if (!scene) return
+    const mode = editModeRef.current
+    const lockedKey = lockedPoseKeyRef.current
+    const curKey =
+      mode === 'lights' && lockedKey != null
+        ? findPoseKey(pose.current.pitch, pose.current.yaw, frame.current.yawOffset)
+        : null
+    const qualifies = mode === 'lights' && lockedKey != null && curKey === lockedKey
+    if (qualifies && !dynamicFitActiveRef.current) {
+      recomputeDynamicFit()
+    }
+    dynamicFitActiveRef.current = qualifies
   })
 }

@@ -132,20 +132,6 @@ export const NEIGHBORS = {
 }
 
 /**
- * Viste della pulsantiera (ViewPad): le 4 pose che il cliente vuole a un
- * click, con la freccetta che le richiama. Sono SCORCIATOIE — saltano
- * direttamente alla posa, senza percorrere il grafo passo-passo come fanno
- * le frecce della tastiera — ma restano pose del grafo, quindi da lì la
- * navigazione normale riprende senza casi speciali.
- */
-export const VIEW_SHORTCUTS = {
-  up: 'TOP', // vista dall'alto piena
-  left: 'TL', // 3/4 sinistro ("initial position")
-  right: 'TR', // 3/4 destro ("3-4 front right")
-  down: 'BOTTOM', // sottoscocca piatto
-}
-
-/**
  * Selettore vista dell'HUD di prodotto: la paginazione `01–05` sopra la
  * tastiera (rimpiazza le frecce ViewPad). Ordine = ordine dei numeri. La `04`
  * = `TL` (initial position, 3/4 front) è la posa d'ingresso landscape, quindi
@@ -194,7 +180,7 @@ export const ENTRY_PORTRAIT = { x: 90 * DEG, y: 90 * DEG }
 export const PORTRAIT_YAW_OFFSET = 90 * DEG
 
 const EPS_ANGLE = 1e-3
-export const nearAngle = (a, b) => Math.abs(a - b) < EPS_ANGLE
+const nearAngle = (a, b) => Math.abs(a - b) < EPS_ANGLE
 
 // Riduce lo yaw a (-180°, 180°]: lo yaw grezzo del modello può accumulare più
 // giri (il loop orizzontale non normalizza mai, vedi stepTo), ma il

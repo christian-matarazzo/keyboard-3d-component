@@ -121,45 +121,23 @@
   color: rgb(255 255 255 / 80%);
 }
 
-/* Toggle "vista esplosa": stesso linguaggio visivo di .page (bordo/colore/
-   hover/focus, riusa .pageActive sotto per lo stato attivo — DEVE restare
-   dichiarata PRIMA di .pageActive: CSS Modules risolve proprietà in
-   conflitto fra due classi sullo stesso elemento per ordine nel file, non
-   per ordine nell'attributo className, quindi qui sotto sovrascriverebbe
-   silenziosamente border/background/color di .pageActive) ma larghezza
-   intrinseca + padding orizzontale — l'etichetta non entra nel quadrato
-   fisso pensato per le 2 cifre della paginazione. */
-.explodeToggle {
-  height: clamp(29px, 2.64vw, 37px);
-  display: grid;
-  place-items: center;
-  padding: 0 clamp(10px, 1vw, 14px);
-  border: 1px solid transparent;
-  border-radius: 0;
-  background: transparent;
-  color: rgb(255 255 255 / 34%);
-  font: inherit;
-  letter-spacing: -0.02em;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  transition:
-    color 0.16s ease,
-    border-color 0.16s ease,
-    background 0.16s ease;
-}
-
-.explodeToggle:hover {
-  color: rgb(255 255 255 / 80%);
-}
-
 .pageActive {
   color: #fff;
   border-color: #fff;
   background: rgb(255 255 255 / 6%);
 }
 
-.page:focus-visible,
-.explodeToggle:focus-visible {
+/* Posa bloccata (Mesh/Timeline, vedi Scene.jsx): i pulsanti diversi dalla
+   posa bloccata restano visibili ma inerti — mai co-presente con
+   .pageActive (la posa attiva È sempre la posa bloccata mentre si è
+   bloccati), quindi nessun conflitto d'ordine con la regola sopra. */
+.pageDisabled {
+  color: rgb(255 255 255 / 14%);
+  cursor: default;
+  pointer-events: none;
+}
+
+.page:focus-visible {
   outline: 2px solid rgb(255 255 255 / 60%);
   outline-offset: 2px;
 }
@@ -252,8 +230,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .page,
-  .explodeToggle {
+  .page {
     transition: none;
   }
 }

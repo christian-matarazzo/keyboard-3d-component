@@ -20,24 +20,33 @@ import { DEFAULT_MODEL_URL } from './KeyboardModel'
  * Font/colori/spaziatura arrivano dallo style guide: Suisse Int'l Mono,
  * letter-spacing −2%, sempre CAPS-LOCK (text-transform sul contenitore).
  */
-export default function Hud({ poseApi, explodeApi }) {
+export default function Hud({ poseApi }) {
   const [poseKey, setPoseKey] = useState(null)
-  const [exploded, setExploded] = useState(false)
+  const [lockState, setLockState] = useState({ locked: false, lockedPoseKey: null })
   const [fps, setFps] = useState(0)
   const [modelMB, setModelMB] = useState(null)
   const [ramMB, setRamMB] = useState(null)
 
-  // Posa attiva + stato esploso: poll leggero (entrambi imperativi, non
-  // reattivi — stesso bridge di poseApi, vedi KeyboardModel.jsx).
+  // Posa attiva + stato di blocco (Mesh/Timeline): poll leggero (imperativo,
+  // non reattivo — stesso bridge di poseApi, popolato anche da Scene.jsx con
+  // editMode/lockedPoseKey, vedi KeyboardModel.jsx/Scene.jsx).
   useEffect(() => {
     const id = setInterval(() => {
-      const k = poseApi.current?.currentPoseKey?.() ?? null
+      const api = poseApi.current
+      const k = api?.currentPoseKey?.() ?? null
       setPoseKey((prev) => (prev === k ? prev : k))
-      const ex = explodeApi.current?.isExploded?.() ?? false
-      setExploded((prev) => (prev === ex ? prev : ex))
+
+      const mode = api?.editMode ?? 'none'
+      const lockedPoseKey = api?.lockedPoseKey ?? null
+      const locked = mode === 'meshes' || mode === 'timeline'
+      setLockState((prev) =>
+        prev.locked === locked && prev.lockedPoseKey === lockedPoseKey
+          ? prev
+          : { locked, lockedPoseKey }
+      )
     }, 150)
     return () => clearInterval(id)
-  }, [poseApi, explodeApi])
+  }, [poseApi])
 
   // FPS reali del browser: conto i frame di rAF e ricalcolo ogni ~500ms.
   // Questo è il refresh effettivo del browser (60, 120, 144, 240…), non un
@@ -135,29 +144,26 @@ export default function Hud({ poseApi, explodeApi }) {
         {HUD_VIEWS.map((view, i) => {
           const n = String(i + 1).padStart(2, '0')
           const active = view === poseKey
+          // In Mesh/Timeline la posa è bloccata (vedi Scene.jsx): ogni
+          // pulsante diverso dalla posa bloccata è inerte — goTo() la
+          // rifiuterebbe comunque (guard in useComposerControls.js), ma
+          // disabilitarlo qui rende visibile perché non succede nulla.
+          const disabled = lockState.locked && view !== lockState.lockedPoseKey
           return (
             <button
               key={view}
               type="button"
-              className={`${styles.page} ${active ? styles.pageActive : ''}`}
+              className={`${styles.page} ${active ? styles.pageActive : ''} ${disabled ? styles.pageDisabled : ''}`}
               aria-current={active ? 'true' : undefined}
+              aria-disabled={disabled || undefined}
+              disabled={disabled}
               aria-label={`Vista ${n} — ${POSE_HUD_LABEL[view] ?? view}`}
-              onClick={() => poseApi.current?.goTo(view)}
+              onClick={() => { if (!disabled) poseApi.current?.goTo(view) }}
             >
               {n}
             </button>
           )
         })}
-        <i className={styles.sep} />
-        <button
-          type="button"
-          className={`${styles.explodeToggle} ${exploded ? styles.pageActive : ''}`}
-          aria-pressed={exploded}
-          aria-label="Exploded view"
-          onClick={() => explodeApi.current?.toggle?.()}
-        >
-          Explode
-        </button>
       </nav>
 
       {/* ── Riga inferiore ──────────────────────────────────────────────── */}

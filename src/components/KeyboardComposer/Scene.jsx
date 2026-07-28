@@ -1,12 +1,22 @@
-import { Suspense, useEffect, useState } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import * as THREE from 'three'
 import { Canvas } from '@react-three/fiber'
-import { Html, useProgress } from '@react-three/drei'
+import { Html, useGLTF, useProgress } from '@react-three/drei'
 import { useControls } from 'leva'
-import { KeyboardModel } from './KeyboardModel'
+import { KeyboardModel, DRACO_PATH } from './KeyboardModel'
 import LightRig from './LightRig'
 import MeshController from './MeshController'
-import { tuneSlotMaterial } from './materials/applyFinish'
+import { prepareGroupMaterials, applyMaterialProps } from './materials/groupMaterials'
+import { DEFAULT_MESH_GROUPS } from './materials/meshGroups'
+import { POSE_COORD, POSE_HUD_LABEL } from './poseGraph'
+
+// POSE_HUD_LABEL ha etichette duplicate per design (più pose condividono la
+// stessa label breve, es. 'TL'/'TR'/'CFB' → '3/4 FT') — non può essere usata
+// da sola come chiave dell'options Leva, si disambigua accodando la chiave
+// posa. Costruito una sola volta a livello di modulo.
+const LOCKED_POSE_OPTIONS = Object.fromEntries(
+  Object.keys(POSE_COORD).map((key) => [`${POSE_HUD_LABEL[key] ?? key} · ${key}`, key])
+)
 
 function Loader() {
   const { progress } = useProgress()
@@ -26,65 +36,80 @@ function Loader() {
   )
 }
 
-// Ritocco live dei materiali dei quattro slot (pannello ?debug): i default
-// rispecchiano la finitura attiva definita nel registry. Il valore corrente
-// è specchiato su `window.__STATE_MATERIALS` e ripristinabile via l'evento
-// `app-load-materials`, entrambi usati dal salvataggio/caricamento JSON del
-// LightRig (vedi handleSaveJSON/handleLoadJSON).
-function MaterialTuner({ finish }) {
-  const [body, setBody] = useControls('Materiale · body', () => ({
-    color: finish.slots.body.color,
-    roughness: { value: finish.slots.body.roughness, min: 0, max: 1 },
-    metalness: { value: finish.slots.body.metalness, min: 0, max: 1 },
-    envMapIntensity: { value: finish.slots.body.envMapIntensity ?? 1, min: 0, max: 2 },
-    clearcoat: { value: finish.slots.body.clearcoat ?? 0, min: 0, max: 1 },
-    clearcoatRoughness: { value: finish.slots.body.clearcoatRoughness ?? 0, min: 0, max: 1 },
-  }), { collapsed: true })
-  const [keycaps, setKeycaps] = useControls('Materiale · keycaps', () => ({
-    color: finish.slots.keycaps.color,
-    roughness: { value: finish.slots.keycaps.roughness, min: 0, max: 1 },
-    metalness: { value: finish.slots.keycaps.metalness, min: 0, max: 1 },
-    envMapIntensity: { value: finish.slots.keycaps.envMapIntensity ?? 1, min: 0, max: 2 },
-    clearcoat: { value: finish.slots.keycaps.clearcoat ?? 0, min: 0, max: 1 },
-    clearcoatRoughness: { value: finish.slots.keycaps.clearcoatRoughness ?? 0, min: 0, max: 1 },
-  }), { collapsed: true })
-  const [landing, setLanding] = useControls('Materiale · rialzo', () => ({
-    color: finish.slots.landing.color,
-    roughness: { value: finish.slots.landing.roughness, min: 0, max: 1 },
-    metalness: { value: finish.slots.landing.metalness, min: 0, max: 1 },
-    envMapIntensity: { value: finish.slots.landing.envMapIntensity ?? 1, min: 0, max: 2 },
-    clearcoat: { value: finish.slots.landing.clearcoat ?? 0, min: 0, max: 1 },
-    clearcoatRoughness: { value: finish.slots.landing.clearcoatRoughness ?? 0, min: 0, max: 1 },
+// Ritocco live del materiale di UN gruppo (pannello ?debug): i default
+// vengono letti dal materiale REALE già presente sul GLB (autorato in
+// Maya/DCC), non da un preset "finish" autorato a mano — vedi
+// materials/groupMaterials.js per il perché. Il valore corrente viene
+// riportato al genitore (window.__STATE_MATERIALS, usato dal salvataggio/
+// caricamento JSON del LightRig — vedi handleSaveJSON/handleLoadJSON) e
+// ripristinabile via l'evento `app-load-materials`.
+//
+// Componente per-gruppo, non un loop di `useControls` dentro MaterialTuner:
+// mappare un array di lunghezza variabile su una CHIAMATA DI HOOK dentro un
+// ciclo violerebbe le Rules of Hooks; mappare l'array su un COMPONENTE per
+// iterazione (ognuno con la propria istanza React, quindi la propria singola
+// chiamata fissa a useControls) è invece il pattern sicuro — è così che
+// MaterialTuner sotto instanzia un folder Leva per gruppo a runtime.
+function MaterialGroupTuner({ group, materials, onChange }) {
+  const seed = materials[0] ?? null
+  const folderLabel = `Materiale · ${group.label.toLowerCase()}`
+  const [values, setValues] = useControls(folderLabel, () => ({
+    color: seed ? `#${seed.color.getHexString()}` : '#888888',
+    roughness: { value: seed?.roughness ?? 0.5, min: 0, max: 1 },
+    metalness: { value: seed?.metalness ?? 0, min: 0, max: 1 },
+    envMapIntensity: { value: seed?.envMapIntensity ?? 1, min: 0, max: 2 },
+    clearcoat: { value: seed?.clearcoat ?? 0, min: 0, max: 1 },
+    clearcoatRoughness: { value: seed?.clearcoatRoughness ?? 0, min: 0, max: 1 },
   }), { collapsed: true })
 
   useEffect(() => {
-    window.__STATE_MATERIALS = { body, keycaps, landing }
-  }, [body, keycaps, landing])
+    onChange(group.id, values)
+  }, [group.id, values, onChange])
 
   useEffect(() => {
     const handler = (e) => {
-      const detail = e.detail
-      if (detail?.body) setBody(detail.body)
-      if (detail?.keycaps) setKeycaps(detail.keycaps)
-      if (detail?.landing) setLanding(detail.landing)
+      const detail = e.detail?.[group.id]
+      if (detail) setValues(detail)
     }
     window.addEventListener('app-load-materials', handler)
     return () => window.removeEventListener('app-load-materials', handler)
-  }, [setBody, setKeycaps, setLanding])
+  }, [group.id, setValues])
 
   useEffect(() => {
-    tuneSlotMaterial(finish.id, 'body', body)
-  }, [finish.id, body])
-  useEffect(() => {
-    tuneSlotMaterial(finish.id, 'keycaps', keycaps)
-  }, [finish.id, keycaps])
-  useEffect(() => {
-    tuneSlotMaterial(finish.id, 'landing', landing)
-  }, [finish.id, landing])
+    for (const material of materials) applyMaterialProps(material, values)
+  }, [materials, values])
+
   return null
 }
 
-export default function Scene({ modelUrl, finish, apiRef, explodeApiRef }) {
+/**
+ * Un folder Leva per gruppo di mesh, instanziato a runtime dall'elenco
+ * `groups` (default `DEFAULT_MESH_GROUPS`, vedi materials/meshGroups.js).
+ * Carica il GLB in proprio (stessa cache di drei condivisa con
+ * KeyboardModel.jsx/MeshController.jsx, nessun fetch aggiuntivo) e scopre i
+ * materiali via `prepareGroupMaterials` — idempotente, quindi indipendente
+ * dall'ordine in cui questo componente e KeyboardModel.jsx montano i propri
+ * effetti (sono fratelli sotto Scene.jsx, non genitore/figlio).
+ */
+function MaterialTuner({ modelUrl, groups = DEFAULT_MESH_GROUPS }) {
+  const { scene } = useGLTF(modelUrl, DRACO_PATH)
+  const materialsByGroup = useMemo(() => prepareGroupMaterials(scene, groups), [scene, groups])
+
+  const [materialState, setMaterialState] = useState({})
+  const handleGroupChange = useCallback((groupId, values) => {
+    setMaterialState((prev) => ({ ...prev, [groupId]: values }))
+  }, [])
+
+  useEffect(() => {
+    window.__STATE_MATERIALS = materialState
+  }, [materialState])
+
+  return groups.map((group) => (
+    <MaterialGroupTuner key={group.id} group={group} materials={materialsByGroup[group.id] ?? []} onChange={handleGroupChange} />
+  ))
+}
+
+export default function Scene({ modelUrl, apiRef, timelineApiRef, meshGroups = DEFAULT_MESH_GROUPS }) {
   const [modelSize, setModelSize] = useState(null)
   const [selectedMesh, setSelectedMesh] = useState(null)
 
@@ -98,22 +123,36 @@ export default function Scene({ modelUrl, finish, apiRef, explodeApiRef }) {
   // passato a KeyboardModel/LightRig/MeshController); il drag di rotazione
   // si disattiva solo in Mesh (in Luci serve poter cambiare posa per
   // configurare le luci vista per vista — vedi controlsDisabled sotto).
-  const { editMode } = useControls('⚙️ Editor · Modalità', {
+  const { editMode, lockedPose } = useControls('⚙️ Editor · Modalità', {
     editMode: {
-      options: { Nessuno: 'none', Luci: 'lights', Mesh: 'meshes' },
+      options: { Nessuno: 'none', Luci: 'lights', Mesh: 'meshes', Timeline: 'timeline' },
       value: 'none',
       label: 'Modalità',
     },
+    lockedPose: { options: LOCKED_POSE_OPTIONS, value: 'TL', label: 'Posa bloccata' },
   }, { collapsed: false })
 
-  // Entrando in modalità Mesh, snappa subito alla vista 3/4 FT ('TL') — non
-  // al selezionare una mesh (altrimenti risalterebbe lì ogni volta che si
-  // cambia mesh dal dropdown/click 3D dentro la stessa sessione di editing).
+  // Entrando in modalità Mesh o Timeline (o cambiando la posa bloccata mentre
+  // già ci si è dentro), snappa/ri-snappa alla posa bloccata configurabile
+  // (non più hardcoded a 'TL') — non al selezionare una mesh/gruppo,
+  // altrimenti risalterebbe lì ogni volta che si cambia selezione dentro la
+  // stessa sessione di editing.
   useEffect(() => {
-    if (editMode === 'meshes' && apiRef?.current) {
-      apiRef.current.goTo('TL')
+    if (!apiRef?.current) return
+    if (editMode === 'meshes' || editMode === 'timeline') {
+      apiRef.current.goTo?.(lockedPose)
     }
-  }, [editMode, apiRef])
+  }, [editMode, lockedPose, apiRef])
+
+  // Ponte verso Hud.jsx/Timeline.jsx (fuori dal Canvas): pubblica editMode e
+  // la posa bloccata sullo stesso apiRef.current condiviso con
+  // useComposerControls.js (dentro il Canvas) — Object.assign, mai
+  // riassegnazione, perché i due scrittori non hanno un ordine garantito fra
+  // loro (alberi React separati, uno dentro <Canvas>).
+  useEffect(() => {
+    if (!apiRef) return
+    Object.assign(apiRef.current, { editMode, lockedPoseKey: lockedPose })
+  }, [editMode, lockedPose, apiRef])
 
   return (
     <Canvas
@@ -140,33 +179,35 @@ export default function Scene({ modelUrl, finish, apiRef, explodeApiRef }) {
         <group position={[0, 0.1, 0]}>
           <KeyboardModel
             url={modelUrl}
-            finish={finish}
             apiRef={apiRef}
-            explodeApiRef={explodeApiRef}
             onSizeComputed={setModelSize}
             onSelectMesh={setSelectedMesh}
-            // Solo Mesh disattiva il drag: in Luci serve poter cambiare posa
-            // per configurare le luci vista per vista (vedi anche onWheel in
-            // useComposerControls.js, che resta sempre attivo — zoom mai
-            // disattivato da nessuna modalità).
-            controlsDisabled={editMode === 'meshes'}
+            // Mesh e Timeline disattivano il drag (posa bloccata, vedi sopra):
+            // in Luci serve poter cambiare posa per configurare le luci vista
+            // per vista (vedi anche onWheel in useComposerControls.js, che
+            // resta sempre attivo — zoom mai disattivato da nessuna modalità).
+            controlsDisabled={editMode === 'meshes' || editMode === 'timeline'}
             editMode={editMode}
+            lockedPoseKey={lockedPose}
+            meshGroups={meshGroups}
           />
         </group>
-        <MaterialTuner finish={finish} />
+        <MaterialTuner modelUrl={modelUrl} groups={meshGroups} />
 
         {/* Rig volumetrico: griglia di point light + rectAreaLight per faccia
             attorno al bounding box del modello, più le due luci-ombra
             (key/spot) con gizmo di editing. Sostituisce lo studio fotografico
             camera-solidale + Environment/Lightformer della vecchia versione:
             è l'unica sorgente di luce della scena. */}
-        <LightRig modelSize={modelSize} apiRef={apiRef} editMode={editMode} />
+        <LightRig modelSize={modelSize} apiRef={apiRef} editMode={editMode} modelUrl={modelUrl} />
         {/* AGGIUNGI IL CONTROLLER */}
         <MeshController
           modelUrl={modelUrl}
           selectedMesh={selectedMesh}
           onSelectMesh={setSelectedMesh}
           editMode={editMode}
+          meshGroups={meshGroups}
+          timelineApiRef={timelineApiRef}
         />
       </Suspense>
     </Canvas>

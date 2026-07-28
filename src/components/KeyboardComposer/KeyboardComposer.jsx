@@ -4,8 +4,9 @@ import { Leva } from 'leva'
 import styles from './KeyboardComposer.module.css'
 import Scene from './Scene'
 import Hud from './Hud'
+import Timeline from './Timeline'
 import { DEFAULT_MODEL_URL } from './KeyboardModel'
-import { finishes as defaultFinishes, getFinish } from './materials/registry'
+import { DEFAULT_MESH_GROUPS } from './materials/meshGroups'
 
 // Pannello di tuning (luci, materiali, resa) visibile solo con `?debug`
 // nell'URL: in produzione il canvas resta pulito, a tutto schermo.
@@ -82,10 +83,11 @@ function DebugPanel() {
  */
 export default function KeyboardComposer({
   modelUrl = DEFAULT_MODEL_URL,
-  finishes = defaultFinishes,
-  finishId,
+  // Elenco dei gruppi logici di mesh (classificazione per nome nodo, label,
+  // vedi materials/meshGroups.js). Chi integra il componente con un GLB
+  // dalle convenzioni di naming diverse può passare qui il proprio elenco.
+  meshGroups = DEFAULT_MESH_GROUPS,
 }) {
-  const finish = getFinish(finishes, finishId)
   const { progress } = useProgress()
   // Stato (non derivato al volo da `progress`): con l'asset già in cache
   // (visita successiva, mobile o desktop) `progress` può essere 100 già al
@@ -101,12 +103,17 @@ export default function KeyboardComposer({
   }, [progress])
 
   // Ponte fra la pulsantiera (DOM) e i controlli (dentro il Canvas): il ref
-  // viene popolato da useComposerControls con `{ goTo(poseKey), currentPoseKey() }`.
-  const poseApi = useRef(null)
-  // Ponte dedicato per il toggle "vista esplosa" (KeyboardModel.jsx): stesso
-  // pattern di poseApi ma ref separato, non un'estensione a posteriori
-  // dell'oggetto costruito da useComposerControls.
-  const explodeApi = useRef(null)
+  // viene popolato da useComposerControls con `{ goTo(poseKey), currentPoseKey() }`
+  // e da Scene.jsx con `{ editMode, lockedPoseKey }` — seedato a un oggetto
+  // vuoto (mai null) perché più scrittori indipendenti (alberi React diversi,
+  // uno dentro <Canvas>) fanno Object.assign su di esso senza un ordine
+  // garantito fra loro.
+  const poseApi = useRef({})
+  // Stesso ponte imperativo, per la timeline: popolato da MeshController.jsx
+  // con le azioni (addKeyframe/removeKeyframe/jumpToKeyframe/setPlayhead) e i
+  // campi di sola lettura (selectionLabel/keyframes/playhead/duration) che
+  // Timeline.jsx interroga nel proprio poll.
+  const timelineApiRef = useRef(null)
 
   return (
     <section className={styles.section}>
@@ -114,8 +121,9 @@ export default function KeyboardComposer({
       <div
         className={`${styles.canvasWrap} ${loaded ? styles.canvasWrapLoaded : ''}`}
       >
-        <Scene modelUrl={modelUrl} finish={finish} apiRef={poseApi} explodeApiRef={explodeApi} />
-        <Hud poseApi={poseApi} explodeApi={explodeApi} />
+        <Scene modelUrl={modelUrl} apiRef={poseApi} timelineApiRef={timelineApiRef} meshGroups={meshGroups} />
+        <Hud poseApi={poseApi} />
+        <Timeline poseApi={poseApi} timelineApiRef={timelineApiRef} />
       </div>
     </section>
   )
