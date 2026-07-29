@@ -7,6 +7,8 @@ import { KeyboardModel, DRACO_PATH } from './KeyboardModel'
 import LightRig from './LightRig'
 import MeshController from './MeshController'
 import AnimationDirector from './AnimationDirector'
+import VariantController from './VariantController'
+import { DEFAULT_MESH_VARIANTS } from './materials/meshVariants'
 import { prepareGroupMaterials, applyMaterialProps } from './materials/groupMaterials'
 import { DEFAULT_MESH_GROUPS } from './materials/meshGroups'
 import { POSE_COORD, POSE_HUD_LABEL } from './poseGraph'
@@ -172,7 +174,14 @@ function MaterialTuner({ modelUrl, groups = DEFAULT_MESH_GROUPS }) {
   ))
 }
 
-export default function Scene({ modelUrl, apiRef, meshGroups = DEFAULT_MESH_GROUPS, animations }) {
+export default function Scene({
+  modelUrl,
+  apiRef,
+  meshGroups = DEFAULT_MESH_GROUPS,
+  animations,
+  meshVariants = DEFAULT_MESH_VARIANTS,
+  variantSelection,
+}) {
   const [modelSize, setModelSize] = useState(null)
   const [selectedMesh, setSelectedMesh] = useState(null)
   // Inquadrature autorate dei gruppi (vedi FocusTuner): raccolte qui perché
@@ -289,6 +298,16 @@ export default function Scene({ modelUrl, apiRef, meshGroups = DEFAULT_MESH_GROU
           animations={animations}
           editMode={editMode}
           meshGroups={meshGroups}
+          meshVariants={meshVariants}
+        />
+        {/* Accende le mesh della variante scelta e spegne le alternative: nel
+            GLB convivono tutte (ISO e ANSI insieme), quindi senza questo si
+            compenetrano. */}
+        <VariantController
+          modelUrl={modelUrl}
+          apiRef={apiRef}
+          variants={meshVariants}
+          selection={variantSelection}
         />
       </Suspense>
     </Canvas>

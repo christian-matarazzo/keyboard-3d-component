@@ -7,7 +7,20 @@ import Hud from './Hud'
 import AnimationEditor from './AnimationEditor'
 import { DEFAULT_MODEL_URL } from './KeyboardModel'
 import { DEFAULT_MESH_GROUPS } from './materials/meshGroups'
+import { DEFAULT_MESH_VARIANTS, normalizeVariantSelection } from './materials/meshVariants'
 import { EMPTY_ANIMATIONS, normalizeAnimations } from './animation/animationSchema'
+
+// Scelta delle varianti ricordata per la SESSIONE della scheda: sopravvive a un
+// reload, si azzera chiudendo la scheda, che è dove riparte il default autorato.
+const VARIANT_STORAGE_KEY = 'keyboardComposer.variants'
+
+const readStoredVariants = () => {
+  try {
+    return JSON.parse(sessionStorage.getItem(VARIANT_STORAGE_KEY)) ?? null
+  } catch {
+    return null // sessionStorage può essere negato (Safari privato, iframe)
+  }
+}
 
 // Pannello di tuning (luci, materiali, resa) visibile solo con `?debug`
 // nell'URL: in produzione il canvas resta pulito, a tutto schermo.
@@ -88,6 +101,10 @@ export default function KeyboardComposer({
   // vedi materials/meshGroups.js). Chi integra il componente con un GLB
   // dalle convenzioni di naming diverse può passare qui il proprio elenco.
   meshGroups = DEFAULT_MESH_GROUPS,
+  // Insiemi di mesh alternative fra cui l'utente sceglie (layout ISO/ANSI e,
+  // in futuro, altro). Stessa logica di `meshGroups`: elenco dichiarativo
+  // sostituibile da chi integra il componente — vedi materials/meshVariants.js.
+  meshVariants = DEFAULT_MESH_VARIANTS,
 }) {
   const { progress } = useProgress()
   // Stato (non derivato al volo da `progress`): con l'asset già in cache
@@ -137,6 +154,57 @@ export default function KeyboardComposer({
     return () => window.removeEventListener('app-load-animations', handler)
   }, [])
 
+  // --- Varianti -----------------------------------------------------------
+  // Precedenza: scelta di sessione → default autorato nel JSON → default
+  // dichiarato nella config. Il seed legge sessionStorage una sola volta.
+  const [variantSelection, setVariantSelection] = useState(() =>
+    normalizeVariantSelection(readStoredVariants(), meshVariants),
+  )
+  // Binding variante → animazione di swap, autorato e salvato nel JSON.
+  const [variantAnimations, setVariantAnimations] = useState({})
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(VARIANT_STORAGE_KEY, JSON.stringify(variantSelection))
+    } catch {
+      /* storage negato: la scelta resta valida per il solo tempo di vita della pagina */
+    }
+    // Ciò che finisce nel JSON è la selezione ATTIVA nel momento del
+    // salvataggio: si sceglie il default autorandolo a video, come per tutto
+    // il resto dello stato tunabile di questo componente.
+    window.__STATE_VARIANTS = { selection: variantSelection, swapAnimations: variantAnimations }
+  }, [variantSelection, variantAnimations])
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (!e.detail) return
+      // Una scelta già fatta in questa sessione ha la precedenza sul default
+      // che arriva dal JSON: il caricamento della configurazione non deve
+      // ributtare l'utente sul layout di partenza.
+      const stored = readStoredVariants()
+      setVariantSelection(normalizeVariantSelection(stored ?? e.detail.selection, meshVariants))
+      setVariantAnimations(e.detail.swapAnimations ?? {})
+    }
+    window.addEventListener('app-load-variants', handler)
+    return () => window.removeEventListener('app-load-variants', handler)
+  }, [meshVariants])
+
+  // Comandi delle varianti sul ponte condiviso: li usano sia i toggle dell'HUD
+  // sia l'azione `setVariant` del sequencer, che vive dentro il Canvas.
+  useEffect(() => {
+    Object.assign(poseApi.current, {
+      currentVariants: () => variantSelection,
+      variantSwapAnimation: (variantId) =>
+        variantAnimations?.[variantId] ??
+        meshVariants.find((v) => v.id === variantId)?.swapAnimation ??
+        null,
+      setVariant: (variantId, optionId) =>
+        setVariantSelection((prev) =>
+          prev[variantId] === optionId ? prev : { ...prev, [variantId]: optionId },
+        ),
+    })
+  }, [variantSelection, variantAnimations, meshVariants])
+
   return (
     <section className={styles.section}>
       <DebugPanel />
@@ -148,14 +216,25 @@ export default function KeyboardComposer({
           apiRef={poseApi}
           meshGroups={meshGroups}
           animations={animations}
+          meshVariants={meshVariants}
+          variantSelection={variantSelection}
         />
-        <Hud poseApi={poseApi} meshGroups={meshGroups} animations={animations} />
+        <Hud
+          poseApi={poseApi}
+          meshGroups={meshGroups}
+          animations={animations}
+          meshVariants={meshVariants}
+          variantSelection={variantSelection}
+        />
         <AnimationEditor
           poseApi={poseApi}
           animations={animations}
           onChange={setAnimations}
           meshGroups={meshGroups}
           modelUrl={modelUrl}
+          meshVariants={meshVariants}
+          variantAnimations={variantAnimations}
+          onVariantAnimationsChange={setVariantAnimations}
         />
       </div>
     </section>

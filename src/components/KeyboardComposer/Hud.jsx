@@ -25,7 +25,13 @@ import { DEFAULT_MESH_GROUPS } from './materials/meshGroups'
  * Font/colori/spaziatura arrivano dallo style guide: Suisse Int'l Mono,
  * letter-spacing −2%, sempre CAPS-LOCK (text-transform sul contenitore).
  */
-export default function Hud({ poseApi, meshGroups = DEFAULT_MESH_GROUPS, animations }) {
+export default function Hud({
+  poseApi,
+  meshGroups = DEFAULT_MESH_GROUPS,
+  animations,
+  meshVariants = [],
+  variantSelection = {},
+}) {
   const [poseKey, setPoseKey] = useState(null)
   const [lockState, setLockState] = useState({ locked: false, lockedPoseKey: null })
   const [focusGroupId, setFocusGroupId] = useState(null)
@@ -166,6 +172,25 @@ export default function Hud({ poseApi, meshGroups = DEFAULT_MESH_GROUPS, animati
     if (api?.currentAnimation?.()) api.stopAnimation?.()
   }
 
+  // Commuta una variante di modello. Se per quella variante è stata autorata
+  // un'animazione di swap la si lancia (sarà il suo step `setVariant` a fare
+  // l'incrocio in dissolvenza); altrimenti si scambia di scatto, così una
+  // variante nuova è utilizzabile subito, prima ancora di averle disegnato
+  // un'animazione.
+  const chooseVariant = (variantId, optionId) => {
+    const api = poseApi.current
+    if (!api || variantSelection[variantId] === optionId) return
+    const animId = api.variantSwapAnimation?.(variantId)
+    if (animId && (animations?.items ?? []).some((a) => a.id === animId)) {
+      // L'intento va passato al runtime: lo step `setVariant` dell'animazione
+      // lascia l'opzione vuota e la prende da qui, così funziona in entrambi
+      // i versi.
+      api.playAnimation?.(animId, { variantTarget: { [variantId]: optionId } })
+    } else {
+      api.setVariant?.(variantId, optionId)
+    }
+  }
+
   return (
     <div className={styles.hud} aria-hidden="false">
       {/* ── Riga superiore ──────────────────────────────────────────────── */}
@@ -226,38 +251,53 @@ export default function Hud({ poseApi, meshGroups = DEFAULT_MESH_GROUPS, animati
         })}
       </nav>
 
-      {/* ── Zoom sui gruppi (unico zoom di prodotto) ───────────────────────
-          Un chip per gruppo logico di mesh: click = inquadra il gruppo, click
-          sul gruppo già attivo = torna all'insieme (come Escape). In
-          Mesh la posa è bloccata e la geometria può essere spostata
-          dall'editor: focusGroup() rifiuterebbe comunque (guard in
-          useComposerControls.js), i chip si disabilitano per renderlo
-          visibile — stesso trattamento della pulsantiera delle viste. */}
-      <nav className={styles.focusBar} aria-label="Zoom sui gruppi">
-        {meshGroups.map((group) => {
-          const active = group.id === focusGroupId
-          const disabled = lockState.locked
-          return (
-            <button
-              key={group.id}
-              type="button"
-              className={`${styles.focusChip} ${active ? styles.focusChipActive : ''} ${disabled ? styles.focusChipDisabled : ''}`}
-              aria-pressed={active}
-              aria-disabled={disabled || undefined}
-              disabled={disabled}
-              onClick={() => {
-                if (disabled) return
-                stopIfAnimating()
-                const api = poseApi.current
-                if (active) api?.clearFocus?.()
-                else api?.focusGroup?.(group.id)
-              }}
-            >
-              {group.label}
-            </button>
-          )
-        })}
-      </nav>
+      {/* ── Pila dei chip ──────────────────────────────────────────────────
+          Le tre righe stanno in UNA colonna flex, non a tre quote assolute
+          calcolate come multipli di --chip-h: con abbastanza gruppi (oggi 9)
+          la riga di focus va a capo e diventa alta due righe, e le quote fisse
+          facevano finire le varianti sopra le animazioni. Impilandole, ogni
+          riga occupa l'altezza che le serve e le altre si spostano da sole.
+          L'ordine nel DOM è quello visivo, dall'alto in basso. */}
+      <div className={styles.chipStack}>
+      {/* ── Varianti di modello ────────────────────────────────────────────
+          Un gruppo di pulsanti per variante (layout ISO/ANSI oggi, in futuro
+          il rialzo o altro): l'elenco viene dalla prop `meshVariants`, quindi
+          aggiungerne una non richiede toccare questo file. La scelta è
+          ricordata per la sessione della scheda ed è ciò che decide quali mesh
+          alternative del GLB sono accese — vedi materials/meshVariants.js. */}
+      {meshVariants.length > 0 && (
+        <nav className={styles.variantBar} aria-label="Varianti">
+          {meshVariants.map((variant) => (
+            <span key={variant.id} className={styles.variantGroup} role="group" aria-label={variant.label}>
+              <span className={styles.variantLabel}>{variant.label}</span>
+              {variant.options.map((option) => {
+                const active = variantSelection[variant.id] === option.id
+                // Disattivati in modalità Mesh come le altre due righe, ma per
+                // un motivo tutto loro: un'animazione di swap prenderebbe i
+                // pivot del registry sulle stesse mesh che l'editor tiene
+                // avvolte nel suo, e i due non devono MAI essere vivi insieme.
+                const disabled = lockState.locked
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    className={`${styles.variantChip} ${active ? styles.variantChipActive : ''} ${disabled ? styles.variantChipDisabled : ''}`}
+                    aria-pressed={active}
+                    aria-disabled={disabled || undefined}
+                    disabled={disabled}
+                    onClick={() => {
+                      if (disabled) return
+                      chooseVariant(variant.id, option.id)
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                )
+              })}
+            </span>
+          ))}
+        </nav>
+      )}
 
       {/* ── Animazioni autorate ────────────────────────────────────────────
           Riga di chip ACCANTO (non al posto) di quelli di focus: un chip per
@@ -300,6 +340,40 @@ export default function Hud({ poseApi, meshGroups = DEFAULT_MESH_GROUPS, animati
           )}
         </nav>
       )}
+
+      {/* ── Zoom sui gruppi (unico zoom di prodotto) ───────────────────────
+          Un chip per gruppo logico di mesh: click = inquadra il gruppo, click
+          sul gruppo già attivo = torna all'insieme (come Escape). In
+          Mesh la posa è bloccata e la geometria può essere spostata
+          dall'editor: focusGroup() rifiuterebbe comunque (guard in
+          useComposerControls.js), i chip si disabilitano per renderlo
+          visibile — stesso trattamento della pulsantiera delle viste. */}
+      <nav className={styles.focusBar} aria-label="Zoom sui gruppi">
+        {meshGroups.map((group) => {
+          const active = group.id === focusGroupId
+          const disabled = lockState.locked
+          return (
+            <button
+              key={group.id}
+              type="button"
+              className={`${styles.focusChip} ${active ? styles.focusChipActive : ''} ${disabled ? styles.focusChipDisabled : ''}`}
+              aria-pressed={active}
+              aria-disabled={disabled || undefined}
+              disabled={disabled}
+              onClick={() => {
+                if (disabled) return
+                stopIfAnimating()
+                const api = poseApi.current
+                if (active) api?.clearFocus?.()
+                else api?.focusGroup?.(group.id)
+              }}
+            >
+              {group.label}
+            </button>
+          )
+        })}
+      </nav>
+      </div>
 
       {/* ── Riga inferiore ──────────────────────────────────────────────── */}
       <footer className={styles.bottom}>

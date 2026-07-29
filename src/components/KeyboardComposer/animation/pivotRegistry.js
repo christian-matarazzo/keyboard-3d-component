@@ -10,11 +10,13 @@ import { wrapMeshInPivot, wrapGroupInPivot } from './pivot'
  * entrambe scriverebbero `pivot.quaternion` litigandoselo.
  *
  * Rimedio: un handle solo per bersaglio, con refcount, e la trasformata
- * composta da CANALI separati — uno per l'offset autorato, uno per lo spin.
- * L'ordine `base · offset · spin` significa "gira su se stessa DOPO essere
- * stata spostata", cioè il caso esploso-e-rotante. Due azioni sullo STESSO
- * bersaglio (stessa chiave) condividono l'handle e si compongono: è il caso
- * "esplodi i rotori e falli girare", entrambi con pivot per mesh.
+ * composta da CANALI separati — posizione, quaternion di collocazione autorata,
+ * e una MAPPA di contributi rotatori uno per step (spin continuo, rotazione
+ * finita, wobble). L'ordine `base · offset · rotazioni` significa "gira su se
+ * stessa DOPO essere stata spostata", cioè il caso esploso-e-rotante. Due
+ * azioni sullo STESSO bersaglio (stessa chiave) condividono l'handle e si
+ * compongono: è il caso "esplodi i rotori e falli girare", entrambi con pivot
+ * per mesh.
  *
  * ⚠️ Bersagli SOVRAPPOSTI ma non identici — tipicamente uno spin con pivot per
  * mesh più un offset rigido di gruppo sulle stesse mesh — non sono componibili:
@@ -51,24 +53,51 @@ export function createPivotRegistry(getScene) {
   }
 
   const makeHandle = (key, wrap) => {
+    // Orientamento MONDIALE del pivot a riposo (prima di qualunque contributo):
+    // Qparent · baseQuaternion. Serve a esprimere un asse di rotazione dato in
+    // un altro frame (quello del modello) dentro il frame locale del pivot —
+    // vedi `axisSpace` in actions.js. Per un pivot di mesh singola
+    // `baseQuaternion` è l'orientamento proprio della mesh, che nei GLB
+    // esportati da Maya è spesso inclinato rispetto al modello: è la ragione
+    // per cui "ruota attorno a Y" e "ruota attorno alla Y del modello" non
+    // sono la stessa cosa.
+    const restWorldQuat = new THREE.Quaternion()
+    wrap.pivot.parent?.getWorldQuaternion(restWorldQuat)
+    restWorldQuat.multiply(wrap.baseQuaternion)
+
     const handle = {
       key,
       pivot: wrap.pivot,
       basePosition: wrap.basePosition,
       baseQuaternion: wrap.baseQuaternion,
+      restWorldQuat,
       meshes: wrap.meshes,
       refs: 1,
       channels: {
         offsetPos: new THREE.Vector3(),
         offsetQuat: new THREE.Quaternion(),
-        spin: new THREE.Quaternion(),
+        // Contributi rotatori, uno per STEP (chiave = step.id): spin continuo,
+        // rotazione finita, wobble… Una mappa e non tre campi fissi, così due
+        // step dello stesso tipo sullo stesso bersaglio non si sovrascrivono a
+        // vicenda e aggiungere un'azione rotatoria non tocca questo file.
+        rot: new Map(),
+      },
+      /** Scrive/aggiorna il contributo rotatorio di uno step. */
+      setRot(stepId, quaternion) {
+        this.channels.rot.set(stepId, quaternion)
+      },
+      clearRot(stepId) {
+        this.channels.rot.delete(stepId)
       },
       compose() {
         this.pivot.position.copy(this.basePosition).add(this.channels.offsetPos)
-        this.pivot.quaternion
+        // base · offset · rotazioni: prima la collocazione autorata, poi i
+        // contributi rotatori NEL frame già spostato — cioè "gira su se stessa
+        // dopo essere stata portata fuori", il caso esploso-e-rotante.
+        const q = this.pivot.quaternion
           .copy(this.baseQuaternion)
-          .multiply(this.channels.offsetQuat) // prima la collocazione autorata…
-          .multiply(this.channels.spin)       // …poi lo spin, nel frame spostato
+          .multiply(this.channels.offsetQuat)
+        for (const r of this.channels.rot.values()) q.multiply(r)
       },
       release(opts) {
         if (this.refs <= 0) return

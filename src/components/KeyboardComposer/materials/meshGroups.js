@@ -34,14 +34,38 @@
  *   gerarchia Maya, quindi si confronta con includes()).
  */
 
-/** @type {MeshGroup[]} */
+/**
+ * ⚠️ L'ORDINE DI QUESTO ARRAY È SIGNIFICATIVO: `collectMeshGroups` usa
+ * `groups.find(...)`, quindi vince il PRIMO gruppo che matcha. È l'ordine, non
+ * i token, il modo previsto per disambiguare i casi in cui più regole
+ * potrebbero rivendicare la stessa mesh.
+ *
+ * Due dipendenze concrete da questo ordine:
+ *  - `patchesISO`/`patchesANSI` PRIMA di `body`: le mesh delle varianti si
+ *    chiamano `…S05_L_ISO…`, quindi il token `S0` di `body` le rivendicherebbe
+ *    per primo e i patch non avrebbero mai un gruppo proprio.
+ *  - `damping` prima di `landing`: `Damping_Foots_Rialzo` contiene entrambi i
+ *    token e appartiene al damping.
+ *
+ * ⚠️ I token vanno confrontati con i nomi che GLTFLoader produce A RUNTIME, non
+ * con quelli del file: il loader sostituisce gli spazi con underscore e
+ * aggiunge suffissi di deduplica (`L_ARRAY S05_L_ISO` → `L_ARRAY_S05_L_ISO_1`).
+ * Token come `S01_1` sembrano plausibili leggendo il GLB ma non matchano nulla
+ * a runtime, dove i nomi sono `L_ARRAY_S01`; le mesh finirebbero nel gruppo
+ * giusto solo per via del fallback, cioè per caso.
+ *
+ * @type {MeshGroup[]}
+ */
 export const DEFAULT_MESH_GROUPS = [
   { id: 'keycaps', label: 'Keycaps', nameTokens: ['Keycaps'] },
+  { id: 'patchesISO', label: 'PatchSystemISO', nameTokens: ['ISO'] },
+  { id: 'patchesANSI', label: 'PatchSystemANSI', nameTokens: ['ANSI'] },
   { id: 'body', label: 'Body', nameTokens: ['S0'] },
   { id: 'damping', label: 'Damping', nameTokens: ['Damping'] },
   { id: 'rotors', label: 'Rotors', nameTokens: ['Rotor'] },
   { id: 'tasselli', label: 'Tasselli', nameTokens: ['Tasselli'] },
   { id: 'landing', label: 'Rialzo', nameTokens: ['Rialzo'] },
+  { id: 'viti', label: 'Viti', nameTokens: ['M3_'] },
 ]
 
 // Id di fallback quando nessun nameTokens matcha — deve essere un id
@@ -65,6 +89,10 @@ export function collectMeshGroups(scene, groups = DEFAULT_MESH_GROUPS, fallbackG
     // gruppo (e nel dropdown mesh) a ogni ricalcolo che avvenga mentre una
     // selezione è attiva. Non sono geometria del prodotto: si saltano.
     if (obj.userData?.__editorHelper) return
+    // Variante non scelta (vedi materials/meshVariants.js): geometria vera ma
+    // spenta. Va saltata o l'ISO nascosto continuerebbe a contare
+    // nell'inquadratura di un gruppo, nelle dissolvenze e nel dropdown mesh.
+    if (obj.userData?.__variantHidden) return
     obj.castShadow = true
     obj.receiveShadow = true
 

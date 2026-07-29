@@ -153,11 +153,24 @@
    convenzioni della paginazione viste: contenitore fuori dal flusso,
    pointer-events riattivati solo qui. L'offset dal fondo tiene conto della
    riga del footer, che è alta una riga di testo. */
-.focusBar {
+/* Le tre righe di chip (varianti, animazioni, focus) impilate in una colonna
+   sola, ancorata in basso al centro. Prima ognuna era posizionata in assoluto a
+   `--chip-row-bottom + n * --chip-h`: bastava che una andasse a capo — e con 9
+   gruppi la riga di focus ci va — perché le altre le finissero sopra. */
+.chipStack {
   position: absolute;
   bottom: var(--chip-row-bottom);
   left: 50%;
   transform: translateX(-50%);
+  max-width: calc(100% - 2 * var(--hud-pad));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(6px, 0.7vw, 10px);
+  pointer-events: none; /* le singole righe se lo riaccendono */
+}
+
+.focusBar {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
@@ -216,10 +229,6 @@
    stop. Il chip .animChipTrigger compare solo quando uno step `waitTrigger`
    sta bloccando la sequenza. */
 .animBar {
-  position: absolute;
-  bottom: calc(var(--chip-row-bottom) + var(--chip-h) + clamp(6px, 0.7vw, 10px));
-  left: 50%;
-  transform: translateX(-50%);
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
@@ -236,6 +245,42 @@
 }
 
 .animChipDisabled {
+  composes: focusChipDisabled;
+}
+
+/* ── Varianti di modello ───────────────────────────────────────────────────
+   Terza riga di chip, sopra le animazioni. A differenza delle altre due qui i
+   pulsanti sono un SELETTORE (uno acceso sempre, mutuamente esclusivi), non
+   azioni: da qui l'etichetta della variante davanti al gruppo e il bordo
+   continuo che li lega. */
+.variantBar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: clamp(10px, 1.2vw, 18px);
+  pointer-events: auto;
+}
+
+.variantGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.variantLabel {
+  color: rgb(255 255 255 / 38%);
+  white-space: nowrap;
+}
+
+.variantChip {
+  composes: focusChip;
+}
+
+.variantChipActive {
+  composes: focusChipActive;
+}
+
+.variantChipDisabled {
   composes: focusChipDisabled;
 }
 

@@ -41,6 +41,9 @@ export default function AnimationEditor({
   animations,
   onChange,
   meshGroups = DEFAULT_MESH_GROUPS,
+  meshVariants = [],
+  variantAnimations = {},
+  onVariantAnimationsChange,
 }) {
   const [editMode, setEditMode] = useState(null)
   const [runState, setRunState] = useState(null)
@@ -229,6 +232,20 @@ export default function AnimationEditor({
   const playing = runState?.state === 'playing' || runState?.state === 'finished'
   const isCurrentPlaying = playing && runState?.id === current?.id
 
+  // Trappola verificata in browser: `play()` di un'animazione con `startFrom:
+  // 'reset'` smonta prima tutto, e il ripristino dell'opacità è SINCRONO (i
+  // materiali devono tornare al registry, o resterebbero posseduti da nessuno).
+  // Se quindi il primo blocco di quest'animazione è un "Torna all'insieme" con
+  // la dissolvenza attiva, quando parte non c'è più niente da dissolvere: si
+  // vede uno scatto. Va messo `continua da dov'è`, o lo stesso step dentro
+  // l'animazione che ha applicato l'opacità.
+  const fadeWontRun =
+    current &&
+    current.startFrom !== 'keep' &&
+    (waves[0] ?? []).some(
+      (s) => s.action === 'clearFocus' && s.params?.restoreOpacity !== false,
+    )
+
   const statusText = () => {
     if (!runState || runState.state === 'idle') return 'fermo'
     if (runState.waitingTrigger) return `in attesa · ${runState.waitingTrigger.label}`
@@ -397,6 +414,23 @@ export default function AnimationEditor({
                 />
               </>
             )}
+            {/* Concatenamento: è ciò che permette di premere play su una
+                seconda animazione senza che zoom, opacità e trasformazioni
+                della prima vengano smontati. */}
+            <label
+              className={styles.paramLabel}
+              title="Cosa fare, al play, di ciò che sta già girando"
+            >
+              al play
+              <select
+                className={styles.select}
+                value={current.startFrom ?? 'reset'}
+                onChange={(e) => patchAnimation({ startFrom: e.target.value })}
+              >
+                <option value="reset">azzera lo stato precedente</option>
+                <option value="keep">continua da dov’è</option>
+              </select>
+            </label>
             <label className={styles.paramLabel}>
               <input
                 type="checkbox"
@@ -405,15 +439,57 @@ export default function AnimationEditor({
               />{' '}
               nascosta nell’HUD
             </label>
-            <label className={styles.paramLabel}>
+            {/* Riguarda SOLO lo zoom: opacità e trasformazioni vengono comunque
+                ripristinate allo stop, o resterebbero materiali e pivot appesi
+                senza nessuno che li possieda. */}
+            <label
+              className={styles.paramLabel}
+              title="Solo lo zoom: opacità e trasformazioni sono sempre ripristinate allo stop"
+            >
               <input
                 type="checkbox"
                 checked={current.restoreOnStop !== false}
                 onChange={(e) => patchAnimation({ restoreOnStop: e.target.checked })}
               />{' '}
-              stop ripristina il focus
+              stop rilascia lo zoom
             </label>
           </div>
+
+          {/* Binding variante → animazione di swap. Sta qui e non fra le
+              opzioni dell'animazione perché è una proprietà della VARIANTE:
+              "quando l'utente tocca questo toggle, gioca questa". Finisce nel
+              JSON globale insieme alla selezione di default. */}
+          {meshVariants.length > 0 && onVariantAnimationsChange && (
+            <>
+              <span className={styles.sectionLabel}>swap delle varianti</span>
+              {meshVariants.map((v) => (
+                <div key={v.id} className={styles.header}>
+                  <span className={styles.paramLabel}>{v.label}</span>
+                  <select
+                    className={`${styles.select} ${styles.grow}`}
+                    value={variantAnimations?.[v.id] ?? ''}
+                    onChange={(e) =>
+                      onVariantAnimationsChange({ ...variantAnimations, [v.id]: e.target.value })
+                    }
+                  >
+                    <option value="">— scambio immediato —</option>
+                    {items.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </>
+          )}
+
+          {fadeWontRun && (
+            <span className={styles.warning}>
+              ⚠ il ripristino dell’opacità scatterà: metti “al play: continua da
+              dov’è”, o sposta questo blocco nell’animazione che ha opacizzato
+            </span>
+          )}
 
           <span className={styles.sectionLabel}>step</span>
           <div className={styles.steps}>
@@ -432,6 +508,7 @@ export default function AnimationEditor({
                 }
                 meshGroups={meshGroups}
                 meshCatalog={meshCatalog}
+                meshVariants={meshVariants}
                 onPatch={(patch) => patchStep(step.id, patch)}
                 onPatchParam={(key, value) => patchParam(step.id, key, value)}
                 onChangeAction={(key) => changeAction(step.id, key)}
@@ -500,6 +577,7 @@ function StepRow({
   running,
   meshGroups,
   meshCatalog,
+  meshVariants,
   onPatch,
   onPatchParam,
   onChangeAction,
@@ -609,8 +687,10 @@ function StepRow({
               key={schema.key}
               schema={schema}
               value={step.params?.[schema.key]}
+              allParams={step.params}
               meshGroups={meshGroups}
               meshCatalog={meshCatalog}
+              meshVariants={meshVariants}
               onChange={(v) => onPatchParam(schema.key, v)}
             />
           ))}
@@ -683,10 +763,54 @@ function StepRow({
 }
 
 /* ── Un campo parametro, disegnato dallo schema del registry ────────────── */
-function ParamField({ schema, value, meshGroups, meshCatalog, onChange }) {
+function ParamField({ schema, value, allParams, meshGroups, meshCatalog, meshVariants, onChange }) {
   const label = schema.label ?? schema.key
 
   switch (schema.type) {
+    case 'variant':
+      return (
+        <label className={styles.paramLabel}>
+          {label}{' '}
+          <select
+            className={styles.select}
+            value={value ?? ''}
+            onChange={(e) => onChange(e.target.value)}
+          >
+            <option value="">— nessuna —</option>
+            {(meshVariants ?? []).map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )
+
+    // Dipende dal parametro `variantId` dello STESSO step, da cui `allParams`.
+    // Il valore vuoto non è "non impostato" ma un vero comportamento: prende
+    // l'opzione richiesta da chi lancia l'animazione, così un solo swap
+    // autorato copre entrambi i versi.
+    case 'variantOption': {
+      const variant = (meshVariants ?? []).find((v) => v.id === allParams?.variantId)
+      return (
+        <label className={styles.paramLabel}>
+          {label}{' '}
+          <select
+            className={styles.select}
+            value={value ?? ''}
+            onChange={(e) => onChange(e.target.value)}
+            disabled={!variant}
+          >
+            <option value="">↔ quella scelta dal toggle</option>
+            {(variant?.options ?? []).map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )
+    }
     case 'boolean':
       return (
         <label className={styles.paramLabel}>

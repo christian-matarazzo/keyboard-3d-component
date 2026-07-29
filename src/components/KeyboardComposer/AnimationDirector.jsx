@@ -3,6 +3,7 @@ import { useFrame } from '@react-three/fiber'
 import { useGLTF } from '@react-three/drei'
 import { DRACO_PATH } from './KeyboardModel'
 import { collectMeshList, DEFAULT_MESH_GROUPS } from './materials/meshGroups'
+import { DEFAULT_MESH_VARIANTS } from './materials/meshVariants'
 import { createAnimationRuntime } from './animation/animationRuntime'
 import { createOpacityRegistry } from './animation/opacityRegistry'
 import { createPivotRegistry } from './animation/pivotRegistry'
@@ -35,6 +36,7 @@ export default function AnimationDirector({
   animations,
   editMode = 'none',
   meshGroups = DEFAULT_MESH_GROUPS,
+  meshVariants = DEFAULT_MESH_VARIANTS,
 }) {
   const { scene } = useGLTF(modelUrl, DRACO_PATH)
 
@@ -44,6 +46,8 @@ export default function AnimationDirector({
   animationsRef.current = animations
   const groupsRef = useRef(meshGroups)
   groupsRef.current = meshGroups
+  const variantsRef = useRef(meshVariants)
+  variantsRef.current = meshVariants
 
   // Runtime + registry creati UNA volta sola: sono stato mutabile per-frame,
   // non stato React. Il ctx legge tutto da ref, quindi non invecchia mai.
@@ -56,6 +60,9 @@ export default function AnimationDirector({
       getAnimations: () => animationsRef.current,
       get groups() {
         return groupsRef.current
+      },
+      get variants() {
+        return variantsRef.current
       },
       opacity: createOpacityRegistry(getScene),
       pivots: createPivotRegistry(getScene),

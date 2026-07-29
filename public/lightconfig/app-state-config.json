@@ -1997,14 +1997,6 @@
     }
   },
   "materials": {
-    "body": {
-      "color": "#797979",
-      "roughness": 0.66,
-      "metalness": 1,
-      "envMapIntensity": 0.55,
-      "clearcoat": 0.61,
-      "clearcoatRoughness": 0.2
-    },
     "keycaps": {
       "color": "#000000",
       "roughness": 0.6,
@@ -2013,6 +2005,38 @@
       "clearcoat": 0.07,
       "clearcoatRoughness": 0.3
     },
+    "body": {
+      "color": "#797979",
+      "roughness": 0.66,
+      "metalness": 1,
+      "envMapIntensity": 0.55,
+      "clearcoat": 0.61,
+      "clearcoatRoughness": 0.2
+    },
+    "damping": {
+      "color": "#141010",
+      "roughness": 1,
+      "metalness": 0,
+      "envMapIntensity": 0.92,
+      "clearcoat": 0.35000000000000003,
+      "clearcoatRoughness": 0.66
+    },
+    "rotors": {
+      "color": "#797979",
+      "roughness": 0.69,
+      "metalness": 1,
+      "envMapIntensity": 1,
+      "clearcoat": 0.59,
+      "clearcoatRoughness": 0.25
+    },
+    "tasselli": {
+      "color": "#252121",
+      "roughness": 1,
+      "metalness": 0,
+      "envMapIntensity": 0.84,
+      "clearcoat": 0.25,
+      "clearcoatRoughness": 0.42
+    },
     "landing": {
       "color": "#904c2f",
       "roughness": 0.45999999999999996,
@@ -2020,6 +2044,30 @@
       "envMapIntensity": 0.51,
       "clearcoat": 0,
       "clearcoatRoughness": 0
+    },
+    "patchesISO": {
+      "color": "#d20b0b",
+      "roughness": 0.79,
+      "metalness": 1,
+      "envMapIntensity": 1,
+      "clearcoat": 0.49,
+      "clearcoatRoughness": 0
+    },
+    "patchesANSI": {
+      "color": "#2108d8",
+      "roughness": 0.69,
+      "metalness": 1,
+      "envMapIntensity": 1,
+      "clearcoat": 0.22,
+      "clearcoatRoughness": 0.67
+    },
+    "viti": {
+      "color": "#797979",
+      "roughness": 0.6799999999999999,
+      "metalness": 1,
+      "envMapIntensity": 0.6,
+      "clearcoat": 0.7000000000000001,
+      "clearcoatRoughness": 0.24
     }
   },
   "rotation": {
@@ -2032,7 +2080,8 @@
     "rubberCapDeg": 0,
     "timeScale": 0.3,
     "fitMargin": 1.6,
-    "zoomOutMobile": 1.25
+    "zoomOutMobile": 1.25,
+    "focusDamp": 0.6
   },
   "keylight": {
     "enabled": false,
@@ -2056,5 +2105,400 @@
     "posZ": -0.08076384093844524,
     "bias": -0.00030000000000000003,
     "normalBias": 0.098
+  },
+  "focus": {
+    "keycaps": {
+      "radiusFactor": 1,
+      "offsetX": 0,
+      "offsetY": 0,
+      "offsetZ": 0
+    },
+    "body": {
+      "radiusFactor": 1,
+      "offsetX": 0,
+      "offsetY": 0,
+      "offsetZ": 0
+    },
+    "damping": {
+      "radiusFactor": 1,
+      "offsetX": 0,
+      "offsetY": 0,
+      "offsetZ": 0
+    },
+    "rotors": {
+      "radiusFactor": 1,
+      "offsetX": 0,
+      "offsetY": 0,
+      "offsetZ": 0
+    },
+    "tasselli": {
+      "radiusFactor": 1,
+      "offsetX": 0,
+      "offsetY": 0,
+      "offsetZ": 0
+    },
+    "landing": {
+      "radiusFactor": 1,
+      "offsetX": 0,
+      "offsetY": 0,
+      "offsetZ": 0
+    },
+    "patchesISO": {
+      "radiusFactor": 1,
+      "offsetX": 0,
+      "offsetY": 0,
+      "offsetZ": 0
+    },
+    "patchesANSI": {
+      "radiusFactor": 1,
+      "offsetX": 0,
+      "offsetY": 0,
+      "offsetZ": 0
+    },
+    "viti": {
+      "radiusFactor": 1,
+      "offsetX": 0,
+      "offsetY": 0,
+      "offsetZ": 0
+    }
+  },
+  "animations": {
+    "version": 1,
+    "items": [
+      {
+        "id": "anim_ms5z8skh8hv8s",
+        "label": "GoToRotors",
+        "hidden": false,
+        "loop": {
+          "mode": "none",
+          "times": 1,
+          "from": 0
+        },
+        "restoreOnStop": true,
+        "startFrom": "reset",
+        "interruptOn": "none",
+        "steps": [
+          {
+            "id": "s_ms5z9vlz69tt0",
+            "action": "goToPose",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "settle",
+            "duration": 0,
+            "maxWait": 8,
+            "easing": "linear",
+            "params": {
+              "poseKey": "TBR"
+            }
+          },
+          {
+            "id": "s_ms5zbx8acs36m",
+            "action": "setOpacity",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.5,
+            "wait": "duration",
+            "duration": 1.5,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "allExcept",
+                "groupIds": [
+                  "rotors"
+                ]
+              },
+              "opacity": 0.2,
+              "depthWrite": true
+            }
+          },
+          {
+            "id": "s_ms5zadt08y9to",
+            "action": "focusGroup",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.8,
+            "wait": "settle",
+            "duration": 0,
+            "maxWait": 8,
+            "easing": "linear",
+            "params": {
+              "groupId": "rotors",
+              "radiusFactor": 2,
+              "offsetX": null,
+              "offsetY": null,
+              "offsetZ": null
+            }
+          }
+        ]
+      },
+      {
+        "id": "anim_ms5za4ml0di7i",
+        "label": "RotorSPin",
+        "hidden": false,
+        "loop": {
+          "mode": "none",
+          "times": 1,
+          "from": 0
+        },
+        "restoreOnStop": true,
+        "startFrom": "keep",
+        "interruptOn": "none",
+        "steps": [
+          {
+            "id": "s_ms5zgvfn4owqc",
+            "action": "rotateBy",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "duration",
+            "duration": 1.5,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "group",
+                "groupId": "rotors"
+              },
+              "axis": "y",
+              "axisSpace": "model",
+              "angleDeg": 360,
+              "perMesh": true,
+              "alternate": true
+            }
+          }
+        ]
+      },
+      {
+        "id": "anim_ms5zlva66qnju",
+        "label": "GoIdle",
+        "hidden": false,
+        "loop": {
+          "mode": "none",
+          "times": 1,
+          "from": 0
+        },
+        "restoreOnStop": true,
+        "startFrom": "keep",
+        "interruptOn": "none",
+        "steps": [
+          {
+            "id": "s_ms5zsoa5ni8wr",
+            "action": "clearFocus",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0.1,
+            "wait": "duration",
+            "duration": 1.5,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "restoreOpacity": true
+            }
+          },
+          {
+            "id": "s_ms5ztp8gvoogs",
+            "action": "goToPose",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.5,
+            "wait": "settle",
+            "duration": 0,
+            "maxWait": 8,
+            "easing": "linear",
+            "params": {
+              "poseKey": "TL"
+            }
+          }
+        ]
+      },
+      {
+        "id": "anim_ms6045w4nd9do",
+        "label": "GoToPatches",
+        "hidden": false,
+        "loop": {
+          "mode": "none",
+          "times": 1,
+          "from": 0
+        },
+        "restoreOnStop": true,
+        "startFrom": "reset",
+        "interruptOn": "none",
+        "steps": [
+          {
+            "id": "s_ms604orke8sse",
+            "action": "goToPose",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "settle",
+            "duration": 0,
+            "maxWait": 8,
+            "easing": "linear",
+            "params": {
+              "poseKey": "CFT"
+            }
+          },
+          {
+            "id": "s_ms605972ujcqr",
+            "action": "focusGroup",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.5,
+            "wait": "settle",
+            "duration": 0,
+            "maxWait": 8,
+            "easing": "linear",
+            "params": {
+              "groupId": "keycaps",
+              "radiusFactor": null,
+              "offsetX": null,
+              "offsetY": null,
+              "offsetZ": null
+            }
+          },
+          {
+            "id": "s_ms608plduaf8l",
+            "action": "setOpacity",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.7,
+            "wait": "duration",
+            "duration": 1,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "meshes",
+                "names": [
+                  "L_ARRAY_S06",
+                  "L_ARRAY_S07",
+                  "L_ARRAY_S08"
+                ]
+              },
+              "opacity": 0,
+              "depthWrite": true
+            }
+          },
+          {
+            "id": "s_ms60b63f2pjko",
+            "action": "setOpacity",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.7,
+            "wait": "duration",
+            "duration": 1,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "group",
+                "groupId": "keycaps"
+              },
+              "opacity": 0,
+              "depthWrite": true
+            }
+          },
+          {
+            "id": "s_ms60cxp9qyu16",
+            "action": "setOpacity",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.7,
+            "wait": "duration",
+            "duration": 1,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "group",
+                "groupId": "rotors"
+              },
+              "opacity": 0,
+              "depthWrite": true
+            }
+          }
+        ]
+      },
+      {
+        "id": "anim_ms60szc2xklnd",
+        "label": "SwitchToISO",
+        "hidden": false,
+        "loop": {
+          "mode": "none",
+          "times": 1,
+          "from": 0
+        },
+        "restoreOnStop": true,
+        "startFrom": "keep",
+        "interruptOn": "none",
+        "steps": [
+          {
+            "id": "s_ms65jw8n5o7nk",
+            "action": "setVariant",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "duration",
+            "duration": 1,
+            "maxWait": 8,
+            "easing": "linear",
+            "params": {
+              "variantId": "layout",
+              "optionId": "iso",
+              "offsetIn": [
+                -50,
+                50,
+                0
+              ],
+              "offsetOut": [
+                50,
+                50,
+                0
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "anim_ms65u7z8c4xap",
+        "label": "SwitchToANSI",
+        "hidden": false,
+        "loop": {
+          "mode": "none"
+        },
+        "restoreOnStop": true,
+        "startFrom": "keep",
+        "interruptOn": "none",
+        "steps": [
+          {
+            "id": "s_ms65unw2zswe7",
+            "action": "setVariant",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "duration",
+            "duration": 1,
+            "maxWait": 8,
+            "easing": "linear",
+            "params": {
+              "variantId": "layout",
+              "optionId": "ansi",
+              "offsetIn": [
+                -50,
+                50,
+                0
+              ],
+              "offsetOut": [
+                50,
+                50,
+                0
+              ]
+            }
+          }
+        ]
+      }
+    ]
   }
 }

@@ -324,6 +324,16 @@
   tab-size: 2;
 }
 
+/* Avviso di configurazione incoerente (non un errore: l'animazione parte
+   comunque, solo non fa la dissolvenza che ci si aspetta). */
+.warning {
+  padding: 5px 6px;
+  border-left: 2px solid #ffd43b;
+  background: rgb(255 212 59 / 10%);
+  color: #ffd43b;
+  line-height: 1.35;
+}
+
 .jsonError {
   color: #ff8787;
   text-transform: none;

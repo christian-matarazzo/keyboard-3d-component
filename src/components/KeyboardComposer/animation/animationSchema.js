@@ -62,6 +62,9 @@ export function newAnimation(label = 'Nuova animazione') {
     hidden: false,
     loop: { mode: 'none' },
     restoreOnStop: true,
+    // 'reset' = al play smonta ciò che sta girando; 'keep' = ci si concatena
+    // sopra (vedi `play` in animationRuntime.js).
+    startFrom: 'reset',
     interruptOn: 'none',
     steps: [],
   }
@@ -116,6 +119,7 @@ function normalizeAnimation(raw) {
       from: clampNum(raw.loop?.from, 0, 999, 0),
     },
     restoreOnStop: raw.restoreOnStop !== false,
+    startFrom: raw.startFrom === 'keep' ? 'keep' : 'reset',
     interruptOn: raw.interruptOn === 'input' ? 'input' : 'none',
     steps,
   }

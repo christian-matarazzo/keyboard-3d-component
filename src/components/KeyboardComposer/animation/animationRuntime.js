@@ -40,6 +40,7 @@ export function createAnimationRuntime(ctx) {
   let instances = [] // TUTTE le istanze vive, in ordine di start
   let waveInstances = [] // sottoinsieme che fa da gate alla wave corrente
   let loopsLeft = 0
+  let variantTargets = {}
   const pendingTriggers = new Set()
 
   const isStepDone = (inst) => {
@@ -68,6 +69,11 @@ export function createAnimationRuntime(ctx) {
     return {
       step,
       action,
+      // Animazione di provenienza: serve al concatenamento (vedi `play`), dove
+      // in `instances` convivono istanze EREDITATE da un'animazione precedente
+      // e quelle di quella corrente. Senza, due step con lo stesso id in
+      // animazioni diverse (JSON copiato a mano) si scambierebbero l'istanza.
+      animId: anim?.id ?? null,
       params: step.params ?? {},
       elapsed: 0,
       delayLeft: step.delay ?? 0,
@@ -81,7 +87,7 @@ export function createAnimationRuntime(ctx) {
     // UNA sola istanza viva per step.id: al secondo giro di loop un'azione
     // persistente non deve ri-acquisire pivot/materiali, o il refcount non
     // tornerebbe mai a zero. Si riavvia quella che c'è già.
-    const existing = instances.find((i) => i.step.id === step.id)
+    const existing = instances.find((i) => i.step.id === step.id && i.animId === anim?.id)
     if (existing) {
       existing.elapsed = 0
       existing.done = false
@@ -164,14 +170,40 @@ export function createAnimationRuntime(ctx) {
     if (restore) ctx.getApi()?.clearFocus?.()
   }
 
-  const play = (id, { fromWave = 0 } = {}) => {
+  /**
+   * Avvia un'animazione.
+   *
+   * `startFrom` (per animazione, sovrascrivibile con `opts.keep`) decide cosa
+   * fare di ciò che sta già girando:
+   *  - `'reset'` (default) — si smonta tutto prima: opacità ripristinata, pivot
+   *    disfatti, focus rilasciato se `restoreOnStop` dell'animazione USCENTE lo
+   *    consente. È il comportamento di sempre.
+   *  - `'keep'` — CONCATENAMENTO: le istanze precedenti restano vive e
+   *    continuano a essere ticchettate, e questa animazione parte sopra lo
+   *    stato che trova. È ciò che permette di autorare "porta la vista sui
+   *    rotori e falli diventare radiografici" e poi, con un secondo play,
+   *    "adesso falli girare" senza che zoom e opacità tornino da capo.
+   *    Le istanze ereditate restano comunque a carico di `stop()`.
+   */
+  const play = (id, { fromWave = 0, keep, variantTarget } = {}) => {
     const next = ctx.getAnimations()?.items?.find((a) => a.id === id)
     if (!next) {
       if (ctx.debug) console.warn('[anim] animazione inesistente:', id)
       return false
     }
-    // I play sono esclusivi: si smonta sempre quello in corso prima.
-    stop()
+    const chain = keep ?? next.startFrom === 'keep'
+    if (chain) {
+      // Il cursore riparte da capo ma NIENTE viene smontato: si azzera solo
+      // ciò che descrive la sequenza in corso, non i suoi effetti.
+      pendingTriggers.clear()
+    } else {
+      stop()
+    }
+    // Intento di swap passato dal toggle dell'HUD: un'animazione di scambio
+    // autorata lascia vuoto l'`optionId` del proprio step `setVariant` e
+    // funziona così in ENTRAMBI i versi (ISO→ANSI e ANSI→ISO) invece che nel
+    // solo verso cablato a mano.
+    variantTargets = variantTarget ?? {}
     anim = next
     waves = buildWaves(next)
     if (waves.length === 0) return false
@@ -220,5 +252,8 @@ export function createAnimationRuntime(ctx) {
 
   const currentId = () => anim?.id ?? null
 
-  return { tick, play, stop, trigger, consumeTrigger, getState, currentId }
+  /** Opzione richiesta dal chiamante per una variante, se l'ha indicata. */
+  const variantTargetFor = (variantId) => variantTargets?.[variantId] ?? null
+
+  return { tick, play, stop, trigger, consumeTrigger, getState, currentId, variantTargetFor }
 }

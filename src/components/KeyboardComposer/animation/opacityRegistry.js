@@ -34,6 +34,50 @@
  * ricompilazione degli shader in CLAUDE.md).
  */
 
+/**
+ * Sopra questa opacità un materiale in dissolvenza continua a scrivere nel
+ * depth buffer, sotto smette.
+ *
+ * ⚠️ **Il valore è un compromesso misurato, non una costante arbitraria: se lo
+ * tocchi, sappi cosa stai scambiando.** Il cambio di modalità è per forza una
+ * discontinuità — non esiste un'opacità in cui le due immagini coincidano, anzi
+ * divergono di PIÙ verso l'opaco (a opacità 1 differiscono di 76 di delta medio
+ * su 13.597 pixel, a 0.5 di 41). Alzare la soglia rende il salto più visibile,
+ * abbassarla lo rimpicciolisce ma lascia più dissolvenza al regime che produce
+ * lo sfarfallio. Misurato su questa scena, contro il ~4 di delta medio di un
+ * normale passo di dissolvenza a 60 fps:
+ *
+ *     soglia   0.95   0.5   0.3   0.2   0.06
+ *     salto      69    41    31    23      9
+ *
+ * A 0.95 il salto valeva ~17 passi di dissolvenza in un frame solo e si vedeva
+ * come uno scatto; a 0.2 ne vale ~5. Sotto 0.1 diventa impercettibile ma il
+ * depth write resta acceso per oltre il 90% della dissolvenza, cioè si torna
+ * di fatto al comportamento che aveva l'artefatto.
+ *
+ * Vicoli ciechi già esplorati, per non ripercorrerli: `alphaHash` (transizione
+ * continua per costruzione — a opacità 1 è pixel-identico all'opaco — e
+ * indipendente dall'ordine, ma la grana stocastica senza accumulazione
+ * temporale è troppo evidente su questo prodotto), e spegnere il depth write
+ * già all'acquire (stesso salto, solo spostato all'inizio: 76 invece di 23).
+ *
+ * ⚠️ Non è una rifinitura: `depthWrite: true` su un insieme di mesh che si
+ * compenetrano è ESATTAMENTE il caso in cui il disegno dipende dall'ordine.
+ * Le trasparenti vengono ordinate per distanza a ogni frame, quindi la prima
+ * disegnata scrive depth e ritaglia le altre — e l'ordine cambia mentre la
+ * camera si muove, che durante un'animazione succede sempre. Risultato: pezzi
+ * che sfarfallano l'uno dentro l'altro. Misurato sugli 80 keycap (un solo
+ * materiale condiviso) a metà dissolvenza: spegnere depthWrite cambia 28.076
+ * pixel, il 2,7% del frame, con delta medio 72/765.
+ *
+ * Perché una soglia e non `false` e basta: a opacità quasi piena l'oggetto è a
+ * tutti gli effetti solido, e NON scrivere depth si vede altrettanto (facce
+ * interne e posteriori che traspaiono attraverso quelle davanti). La soglia
+ * tiene il comportamento da opaco finché è indistinguibile e passa a quello da
+ * trasparente appena la trasparenza è percepibile.
+ */
+const DEPTH_WRITE_MIN = 0.2
+
 export function createOpacityRegistry(getScene) {
   // Materiale (oggetto) -> stato posseduto. La chiave è l'oggetto su cui si
   // scrive davvero: o quello condiviso (fast path) o il clone per-mesh.
@@ -74,12 +118,33 @@ export function createOpacityRegistry(getScene) {
       prevOpacity: material.opacity,
       prevTransparent: material.transparent,
       prevDepthWrite: material.depthWrite,
+      // Ciò che il chiamante CHIEDE. Quello che il materiale fa davvero è
+      // questo AND la soglia di opacità — vedi syncDepthWrite.
+      wantDepthWrite: depthWrite,
       refs: 1,
     })
     material.transparent = true
     material.depthWrite = depthWrite
     material.needsUpdate = true
     return material
+  }
+
+  /**
+   * Riallinea `depthWrite` all'opacità corrente. Va chiamata da ogni percorso
+   * che scrive opacità.
+   *
+   * ⚠️ È l'UNICA eccezione alla disciplina "durante il fade si scrive solo
+   * opacity", ed è sicura: `depthWrite` è uno stato del renderer letto al
+   * momento del disegno, non un define dello shader — cambiarlo non ricompila
+   * nulla. Ciò che ricompila è `needsUpdate`, che qui infatti non si tocca. E
+   * si scrive solo quando il valore cambia davvero, cioè un paio di volte per
+   * dissolvenza, non a ogni frame.
+   */
+  const syncDepthWrite = (material) => {
+    const rec = owned.get(material)
+    if (!rec) return
+    const want = rec.wantDepthWrite && material.opacity >= DEPTH_WRITE_MIN
+    if (material.depthWrite !== want) material.depthWrite = want
   }
 
   const cloneFor = (mesh) => {
@@ -156,14 +221,18 @@ export function createOpacityRegistry(getScene) {
       readCurrent() {
         return targets.map((m) => m.opacity)
       },
-      /** Scrive solo `opacity` — nessun needsUpdate, vedi la nota in testa. */
+      /** Scrive `opacity` (+ il riallineamento di depthWrite) — mai needsUpdate. */
       set(value) {
-        for (const m of targets) m.opacity = value
+        for (const m of targets) {
+          m.opacity = value
+          syncDepthWrite(m)
+        }
       },
       lerpTo(from, to, k) {
         for (let i = 0; i < targets.length; i++) {
           const a = from?.[i] ?? targets[i].opacity
           targets[i].opacity = a + (to - a) * k
+          syncDepthWrite(targets[i])
         }
       },
       release() {
@@ -185,7 +254,44 @@ export function createOpacityRegistry(getScene) {
     releaseClones([...cloned.keys()])
   }
 
+  /**
+   * Ripristino GRADUALE di tutto ciò che è sotto override, per l'azione
+   * "Torna all'insieme": riporta ogni materiale dal valore che ha adesso a
+   * quello fotografato all'acquire (in pratica 1 per questo asset, ma si usa lo
+   * snapshot e non un 1 letterale, così un materiale autorato semi-trasparente
+   * nel GLB non viene "riparato" per sbaglio).
+   *
+   * Il rilascio vero avviene solo a interpolazione finita (`finish()`):
+   * rilasciare subito farebbe scattare il valore di partenza in un frame,
+   * che è esattamente ciò che si vuole evitare.
+   */
+  const beginRestoreAll = () => {
+    const targets = [...owned.keys()]
+    const from = targets.map((m) => m.opacity)
+    const to = targets.map((m) => owned.get(m).prevOpacity)
+    let finished = false
+    return {
+      empty: targets.length === 0,
+      get done() {
+        return finished
+      },
+      lerp(k) {
+        if (finished) return
+        for (let i = 0; i < targets.length; i++) {
+          targets[i].opacity = from[i] + (to[i] - from[i]) * k
+          // Risalendo verso l'opaco il depth write torna da sé alla soglia.
+          syncDepthWrite(targets[i])
+        }
+      },
+      finish() {
+        if (finished) return
+        finished = true
+        releaseAll()
+      },
+    }
+  }
+
   const stats = () => ({ ownedMaterials: owned.size, clonedMeshes: cloned.size })
 
-  return { acquire, releaseAll, stats }
+  return { acquire, releaseAll, beginRestoreAll, stats }
 }

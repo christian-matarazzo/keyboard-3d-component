@@ -75,7 +75,10 @@ const _corner = new THREE.Vector3()
  * Bounding box del modello espressa nello spazio LOCALE del rig.
  * Ignora le mesh di servizio dell'editor (halo di selezione, marcate con
  * `userData.__editorHelper`): sono gusci ingranditi del 4% attorno alla mesh
- * selezionata e falserebbero il box mentre si edita.
+ * selezionata e falserebbero il box mentre si edita. Ignora anche le varianti
+ * non scelte (`userData.__variantHidden`, vedi materials/meshVariants.js): sono
+ * geometria vera ma spenta, e dimensionerebbero le luci su un layout che non si
+ * sta guardando.
  * Ritorna null se non c'è nulla da misurare.
  */
 function measureModelBox(root, rig) {
@@ -83,7 +86,7 @@ function measureModelBox(root, rig) {
   root.updateWorldMatrix(true, true)
   _worldBox.makeEmpty()
   root.traverse((node) => {
-    if (!node.isMesh || node.userData?.__editorHelper) return
+    if (!node.isMesh || node.userData?.__editorHelper || node.userData?.__variantHidden) return
     const geo = node.geometry
     if (!geo) return
     if (!geo.boundingBox) geo.computeBoundingBox()
@@ -473,6 +476,7 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
             if (parsed.spotlight) window.dispatchEvent(new CustomEvent('app-load-spotlight', { detail: parsed.spotlight }))
             if (parsed.focus) window.dispatchEvent(new CustomEvent('app-load-focus', { detail: parsed.focus }))
             if (parsed.animations) window.dispatchEvent(new CustomEvent('app-load-animations', { detail: parsed.animations }))
+            if (parsed.variants) window.dispatchEvent(new CustomEvent('app-load-variants', { detail: parsed.variants }))
           }
         })
         .catch((err) => {
@@ -861,7 +865,11 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
       // Animazioni autorate (AnimationEditor, stato in KeyboardComposer.jsx).
       // Stessa ragione del `focus` qui sopra: non c'entrano con le luci, ma
       // questo è l'unico punto di salvataggio/caricamento globale.
-      animations: window.__STATE_ANIMATIONS || { version: 1, items: [] }
+      animations: window.__STATE_ANIMATIONS || { version: 1, items: [] },
+      // Varianti di modello: la selezione ATTIVA al momento del salvataggio
+      // diventa il default di produzione, più i binding variante→animazione di
+      // swap. Vedi materials/meshVariants.js.
+      variants: window.__STATE_VARIANTS || {}
     }
 
     const json = JSON.stringify(fullData, null, 2)
@@ -911,6 +919,7 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
             if (parsed.spotlight) window.dispatchEvent(new CustomEvent('app-load-spotlight', { detail: parsed.spotlight }))
             if (parsed.focus) window.dispatchEvent(new CustomEvent('app-load-focus', { detail: parsed.focus }))
             if (parsed.animations) window.dispatchEvent(new CustomEvent('app-load-animations', { detail: parsed.animations }))
+            if (parsed.variants) window.dispatchEvent(new CustomEvent('app-load-variants', { detail: parsed.variants }))
           }
 
           setSelectedLight(null)

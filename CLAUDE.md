@@ -123,7 +123,7 @@ of `useControls(folderName, schema, settings)`): the `Ombra: Directional
 `LightRig.jsx`) all pass `render: (get) => get('⚙️ Editor · Modalità.editMode')
 === 'lights'`; `MeshController.jsx`'s `⚙️ Editor Mesh (Debug)` folder passes
 `render: (get) => get('⚙️ Editor · Modalità.editMode') === 'meshes'`;
-the six `Focus · <gruppo>` folders (`FocusGroupTuner` in
+the `Focus · <gruppo>` folders, one per mesh group (`FocusGroupTuner` in
 `Scene.jsx`) gate on `=== 'focus'`. The animation editor deliberately owns
 **no Leva folder at all** — it's a plain DOM overlay
 (`AnimationEditor.jsx`), because Leva can't take a per-step dynamic schema
@@ -529,8 +529,9 @@ have (or gain later, once high-def textures land) survive untouched.
 **`materials/meshGroups.js`** is the single source of truth for what
 logical groups the model is split into — nothing else hardcodes group
 names. `DEFAULT_MESH_GROUPS` is an array of `{ id, label, nameTokens }`
-(6 groups matching this GLB: `keycaps`, `body`, `damping`, `rotors`,
-`tasselli`, `landing`). `meshGroups` is a prop threaded
+(9 groups matching this GLB: `keycaps`, `patchesISO`, `patchesANSI`,
+`body`, `damping`, `rotors`, `tasselli`, `landing`, `viti`). `meshGroups`
+is a prop threaded
 `KeyboardComposer.jsx` → `Scene.jsx` →
 `KeyboardModel.jsx`/`MeshController.jsx`, defaulting to
 `DEFAULT_MESH_GROUPS` everywhere — an integrator embedding this component
@@ -546,6 +547,20 @@ touching any of the consumers below.
   but wrong by node name (`L_ARRAY_Tasselli_Retopo` has `damping`'s
   material but is a `tasselli` mesh) — pure node-name classification both
   removes that failure mode and the disambiguation machinery it required.
+- ⚠️ **The array's ORDER is significant** — `collectMeshGroups` uses
+  `groups.find(...)`, so the first group that matches wins, and the order
+  (not the tokens) is the intended way to disambiguate meshes two rules
+  could both claim. Two live dependencies on it: `patchesISO`/`patchesANSI`
+  must come **before** `body`, whose `'S0'` token would otherwise claim
+  `…S05_L_ISO…` first and leave the patches without a group of their own;
+  and `damping` must come before `landing`, since `Damping_Foots_Rialzo`
+  carries both tokens and belongs to damping.
+- ⚠️ **Tokens must match the names `GLTFLoader` produces at RUNTIME**, not
+  the ones you read in the GLB: the loader turns spaces into underscores
+  and appends dedup suffixes (`L_ARRAY S05_L_ISO` → `L_ARRAY_S05_L_ISO_1`).
+  A token like `S01_1` looks plausible in the file and matches nothing at
+  runtime, where the name is `L_ARRAY_S01` — those meshes then land in the
+  right group only via the fallback, i.e. by luck.
 - `collectMeshGroups(scene, groups, fallbackGroupId)` walks the loaded GLTF
   once, assigning every mesh to the first group whose `nameTokens` matches
   a substring of the node name, defaulting to `fallbackGroupId` (`'body'`)
@@ -553,8 +568,10 @@ touching any of the consumers below.
   selection halos `MeshController.jsx` parents under real meshes) are
   skipped — they are not product geometry and would otherwise land in a
   group, and in the mesh dropdown, on any recompute happening while a
-  selection is live. It also flips on `castShadow`/`receiveShadow` for
-  every mesh here. Returns `{ [groupId]: THREE.Mesh[] }`, one array per
+  selection is live. Meshes tagged `userData.__variantHidden` (the
+  unselected option of a variant — see "Model variants") are skipped for
+  the same class of reason. It also flips on `castShadow`/`receiveShadow`
+  for every mesh here. Returns `{ [groupId]: THREE.Mesh[] }`, one array per
   group in `groups` (even if empty).
 - `collectMeshList(scene, groups, fallbackGroupId)` flattens that into the
   sorted, labelled, dedup-suffixed list `MeshController.jsx`'s Mesh
@@ -605,6 +622,82 @@ throwing. `window.__STATE_MATERIALS`'s shape (keyed by group id) and the
 `app-load-materials` event contract are unaffected by which groups a
 particular saved JSON does or doesn't cover — a group id missing from an
 older save just keeps its GLB-seeded live default.
+
+### Model variants (`materials/meshVariants.js`, `VariantController.jsx`)
+
+Sets of **alternative meshes** the end user picks between — today the ISO/ANSI
+layout, later the landing or anything else. Same shape and same rules as
+`meshGroups.js`, deliberately: a declarative exported default, classification by
+**node-name substring**, and the list threaded as a `meshVariants` prop through
+the whole tree so an integrator can describe their own without touching a single
+consumer.
+
+⚠️ **This also fixes a pre-existing defect.** The GLB contains all four of
+`L_ARRAY S05_{L,R}_{ISO,ANSI}` and, before this, drew them **all at once**,
+interpenetrating. Applying a selection is what makes the model correct, not just
+a feature.
+
+Hidden meshes are tagged `userData.__variantHidden = true`, and **that tag —
+not `.visible` — is what other traversals must check**, exactly like
+`__editorHelper`: `.visible` can be turned off by anyone for their own reasons,
+the tag says *why*. Two sites consume it, and both are required: 
+`collectMeshGroups` (or a hidden ISO keeps counting in a group's focus framing,
+in fades and in the mesh dropdown) and `LightRig`'s `measureModelBox` (or the
+light box is sized on a layout nobody is looking at).
+
+**Where the choice lives.** Precedence is *session choice → default authored in
+the JSON → default declared in the config*. The session choice is
+`sessionStorage` (survives a reload, resets when the tab closes), wrapped in
+try/catch because storage can be denied. `window.__STATE_VARIANTS` carries
+`{ selection, swapAnimations }` into the global blob, and **what gets saved is
+whatever is active at save time** — you pick the shipped default by selecting it
+on screen and pressing Salva, the same way every other tunable in this component
+is authored. On `app-load-variants`, an existing session choice **wins over** the
+JSON default: loading a config must not throw the user back to the starting
+layout.
+
+**`VariantController.jsx`** (inside the Canvas, own `useGLTF`, renders `null`)
+applies visibility. `KeyboardComposer.jsx` owns the selection state and
+contributes `currentVariants()`/`setVariant()`/`variantSwapAnimation()` onto the
+shared `apiRef` — it can, because `apiRef.current` is a plain object and the
+component sits outside the Canvas.
+
+**Transition hold.** During an animated swap both options must stay visible to
+cross-fade, but the choice is committed at the *start* so the HUD toggle
+responds instantly. Without a deroga the controller's effect would switch the
+outgoing mesh off in the very frame it starts fading. Hence
+`holdVariant(id)` / `releaseVariantHold(id)`: while a hold is set,
+`applyVariantVisibility` skips that variant entirely and the animation owns its
+visibility.
+
+**The `setVariant` action** cross-fades incoming against outgoing over its
+`duration`. ⚠️ It breaks the teardown symmetry every other action obeys, and
+deliberately: **`stop()` does not revert the choice.** Opacity and transforms
+always go back; a variant selection is *user state*, so stopping a swap
+mid-flight must leave the layout the user asked for. Its `optionId` param
+left **empty** means "whichever option the caller requested" — the HUD passes
+`playAnimation(id, { variantTarget })`, which is what lets one authored swap
+animation serve **both** directions instead of a hard-wired one.
+
+⚠️ **`setVariant` is also the only action whose `restart()` must re-run
+`start()`.** Every other persistent action holds its materials/pivots until
+`stop()`, so restarting only needs the "from" values recomputed. `setVariant`
+releases its handles at the *end of the fade* while staying a live instance —
+so on a replay (which is what the toggle does on every click, and with
+`startFrom: 'keep'` there is no `stop()` in between) the runtime would reuse the
+old instance: released handles, previous direction, no hold. Caught in the
+browser: the **second** swap silently didn't happen and left the outgoing meshes
+at `opacity 0` while hidden — i.e. invisible even once switched back on.
+
+**The HUD toggle** (a third chip row, above the animation chips) plays the
+variant's bound swap animation if there is one, and otherwise swaps instantly —
+so a newly declared variant is usable immediately, before you have authored
+anything for it. The binding (variant → animation id) is edited in
+`AnimationEditor` under "swap delle varianti" and ships in the same JSON. Like
+the pager and the focus/animation chips, these buttons **disable themselves in
+`editMode 'meshes'`**, but for a reason of their own: a swap animation would
+have `pivotRegistry` acquire pivots on the very meshes `MeshController` is
+holding wrapped in its own, and those two must never be live together.
 
 ### Lighting (`LightRig.jsx`)
 
@@ -1090,9 +1183,28 @@ rotori" means as a product state. Only `stopAnimation()` unwinds, in **reverse
 order of start** (a pivot acquired last must be released first), then
 `clearFocus()` if `restoreOnStop !== false`.
 
-**One live instance per `step.id`.** On a loop iteration a persistent action
-must not re-acquire pivots/materials, or the refcount never returns to zero —
-the existing instance is restarted via `action.restart?.()` instead.
+**One live instance per `(animId, step.id)`.** On a loop iteration a persistent
+action must not re-acquire pivots/materials, or the refcount never returns to
+zero — the existing instance is restarted via `action.restart?.()` instead. The
+animation id is part of the key because chaining (below) puts instances from
+*different* animations in the same list, and step ids are only unique within an
+animation.
+
+**Chaining — `startFrom: 'reset' | 'keep'`.** `play()` used to always `stop()`
+first, which tore down *everything*: opacity handles released (so the isolate
+snapped back), pivots released, focus cleared. That made "play A to frame and
+x-ray the rotors, then play B to spin them" impossible — B reset A's work. With
+`startFrom: 'keep'` (or `playAnimation(id, { keep: true })`) nothing is torn
+down: the previous instances stay in `instances`, keep being ticked, and remain
+`stop()`'s responsibility. Only the wave cursor and the pending triggers are
+reset. Default stays `'reset'`, so existing behaviour is unchanged.
+
+Note what `restoreOnStop` does and doesn't cover: it gates **only the camera
+focus release**. Opacity and transforms are *always* restored on `stop()`,
+because their handles have to go back to the registries — leaving them would
+leak owned materials and orphan pivots. If the goal is "don't undo the previous
+animation", the control to reach for is `startFrom`, not `restoreOnStop`; the
+editor labels them accordingly ("al play…" vs "stop rilascia lo zoom").
 
 **What stops an animation**: `stopAnimation()` (HUD chip re-clicked, `Escape`,
 the editor's ■), `playAnimation(other)` (plays are exclusive — `stop()` then
@@ -1117,7 +1229,8 @@ counters the teardown assertions check).
 makes it appear in the editor with no UI code.
 
 ```js
-{ label, group,               // 'camera' | 'materiali' | 'trasformazioni' | 'flusso'
+{ label, group,               // 'camera' | 'materiali' | 'trasformazioni' |
+                              // 'varianti' | 'flusso'
   persistent, durationDriven,
   defaults: { wait, duration, easing, maxWait },
   params: [ { key, type, label, default, … } ],   // type: number|boolean|string|
@@ -1127,8 +1240,86 @@ makes it appear in the editor with no UI code.
 ```
 
 Shipped set: `goToPose`, `focusGroup`, `clearFocus`, `setOpacity` (fade-in and
-fade-out are the same action with `opacity` 1 or 0), `spinGroup`,
-`transformOffset`, `waitTime`, `waitTrigger`.
+fade-out are the same action with `opacity` 1 or 0), `spinGroup`, `rotateBy`,
+`wobble`, `transformOffset`, `setVariant` (see "Model variants"), `waitTime`,
+`waitTrigger`.
+
+**`clearFocus` is not just the inverse of `focusGroup`** — it is the full "put
+it back", so it also **restores opacity**, interpolated over its own `duration`
+rather than snapped. Without it, leaving an isolate required a hand-authored
+inverse `setOpacity`, and on *which* selector? The opacity may have been taken
+by several different steps. The restore therefore goes through
+`opacityRegistry.beginRestoreAll()`, the only thing that knows which materials
+are under override and what value each started from — it interpolates toward
+the **snapshot**, not a literal `1`, so a GLB material authored semi-transparent
+isn't silently "fixed". The handles are released only once the interpolation
+completes; releasing earlier would snap. A `restoreOpacity` param turns it off.
+
+⚠️ **The fade only happens if the opacity handles are still owned when the step
+starts.** `stop()` restores opacity *synchronously* (the materials have to go
+back to the registry, or they stay owned by nobody), so a `clearFocus` in the
+first wave of an animation with `startFrom: 'reset'` finds nothing left to fade
+and snaps. Put it in the animation that applied the opacity, or set that
+animation to `startFrom: 'keep'`. Verified in the browser both ways: same
+animation `0.2 → 0.234 → 0.398 → 0.562 → 0.725 → 0.887 → 1`, chained
+`0.2 → 0.329 → 0.467 → 0.605 → 0.742 → 0.881 → 1`, `'reset'` snaps to 1 in one
+frame. `AnimationEditor` detects that exact configuration and warns.
+
+⚠️ `clearFocus` is marked `persistent` even though it leaves nothing running:
+the runtime stops ticking non-persistent instances the moment they are `done`,
+so with any `wait` other than `'settle'` the fade would freeze half-way.
+
+**Three rotation actions, deliberately distinct**: `spinGroup` never ends (it
+is the "keep turning" state), `rotateBy` turns by a finite angle and stops, and
+`wobble` oscillates with an exponential decay envelope (`decay` is a time
+constant in seconds; `0` never dies down). `rotateBy` exists as a preset rather
+than as a case of `transformOffset` because a single-axis + angle UI is a very
+different authoring act from a rotation vec3 — and because "show me the other
+side of this part" is a thing you want one control for.
+
+⚠️ **All three take an `axisSpace` (`'model'` by default, `'local'`), and it
+is not a nicety.** A *single-mesh* pivot inherits the mesh's own world
+orientation (see `wrapMeshInPivot`), which in this Maya-exported GLB is often
+tilted with respect to the model — so "rotate about Y" in the pivot's local
+frame is not the model's vertical, and parts visibly tip over and
+interpenetrate their neighbours as they turn (observed on `rotors` vs the
+plate). `axisInPivotFrame` conjugates the requested axis into the pivot's
+frame:
+
+```
+a_pivot = (Qparent · baseQuat)⁻¹ · Qscene · a
+```
+
+using `handle.restWorldQuat` (the pivot's world orientation at rest, captured
+once in `pivotRegistry`). Computed once at `start()` — the rest orientation
+doesn't change mid-run. Group pivots have an identity `baseQuaternion`, so the
+two spaces coincide there.
+
+Measured on this asset: every mesh node carries an **identity** quaternion (the
+GLB bakes placement into vertices), and `scene.getWorldQuaternion()` is identity
+too — the model genuinely never rotates, only the camera orbits. So on *this*
+GLB `'model'` and `'local'` produce the same axis and `axisSpace` is a no-op;
+it exists for assets whose nodes carry real rotations.
+
+⚠️ **`perMesh` is the parameter that actually bites, and it is not a nuance.**
+With it off, N meshes rotate as one rigid body about their *common* centre — so
+they orbit and translate. Verified with the two rotor knobs: a 90° group
+rotation slides each one 0.1296 world units, ~90 % of its own diameter,
+lifting it out of its socket and into the neighbouring keycaps, while its own
+vertical axis stays exactly `(0,1,0)`. It reads as "the rotors tilt and clip
+through the plate", but nothing tilts — measured world quaternion is a pure Y
+rotation at every sampled angle, and the world AABB's `minY` never moves. With
+`perMesh` on, the same rotation leaves each knob's centre displaced by exactly
+`0`. `rotateBy` and `wobble` therefore default to `perMesh: true`;
+`transformOffset` keeps `false`, because a rigid group translation *is* the
+normal intent there and per-mesh is the explode case you ask for explicitly.
+
+**Duration-driven persistent actions stop writing once complete**
+(`inst.data.settled`). They hold pivots/materials so the runtime keeps ticking
+them; without the guard they would recompose N pivots every frame forever to
+rewrite the same quaternion — and, worse, `setOpacity` would fight
+`clearFocus`'s gradual restore over the same materials, with the frame's last
+writer winning.
 
 **No action adds a fourth writer to `cameraRadius`** — `focusGroup` goes
 through the existing `focusZoom` ref. What it did need is the `extra` argument
@@ -1165,16 +1356,56 @@ a second fade would capture the first fade's value as "original" and the
 restore would be wrong. This is exactly the bug `MeshController`'s
 identity-`Set` dedup prevents *between meshes*, generalized *across time*.
 
-⚠️ **Anti-recompile discipline**: `transparent`/`depthWrite`/`needsUpdate` are
-touched only at acquire and release. During the fade **only `material.opacity`
-is written** (a uniform). `MeshController`'s slider sets `needsUpdate = true`
-on every change — harmless at mouse cadence, disastrous per-frame with ~34
-forward-rendered lights. Do not copy that line into the per-frame path.
+⚠️ **Anti-recompile discipline**: `transparent` and `needsUpdate` are touched
+only at acquire and release. During the fade the writes are `material.opacity`
+(a uniform) and — see below — `material.depthWrite`, which is renderer state
+read at draw time, not a shader define, and therefore free. `MeshController`'s
+slider sets `needsUpdate = true` on every change — harmless at mouse cadence,
+disastrous per-frame with ~34 forward-rendered lights. Do not copy that line
+into the per-frame path.
 
-`depthWrite: true` by default (exposed as a param): turning ~250 meshes
-transparent already moves them into the depth-sorted transparent pass; also
-disabling depth writes produces visible sorting artifacts on interpenetrating
-keycaps.
+**`depthWrite` is gated by an opacity threshold (`DEPTH_WRITE_MIN`, 0.2), not
+a flat `true`.** The `depthWrite` param is still there and still defaults to
+`true`, but it now means "write depth *while essentially opaque*": every path
+that writes opacity (`set`, `lerpTo`, `beginRestoreAll().lerp`) calls
+`syncDepthWrite`, which ANDs the request with `opacity >= DEPTH_WRITE_MIN`.
+
+The reason is the artifact this caused, found by driving the app: a set of
+interpenetrating meshes that all write depth is exactly the case where the
+image depends on **draw order**, and the transparent pass re-sorts by distance
+every frame — so the first one drawn punches the others out, and the set flips
+as the camera moves, which during an animation it always is. Measured on the
+80 keycaps (one shared material) mid-fade at `opacity 0.55`: turning
+`depthWrite` off changes **28 076 pixels**, 2.7 % of the frame, average delta
+72/765. It reads as parts flickering inside each other.
+
+⚠️ **The threshold's value is a measured compromise and the flip is inherently
+a discontinuity — there is no opacity at which the two modes agree.** They
+diverge *most* toward opaque (at `opacity 1` they differ by avg 76 over 13 597
+px; at 0.5, by 41), because there each mode is wrong in the opposite direction:
+with depth writing the front face correctly hides what's behind, without it a
+mis-sorted far mesh overwrites a near one. Against the ~4 avg delta of a normal
+60 fps fade step on this scene:
+
+    threshold   0.95   0.5   0.3   0.2   0.06
+    jump          69    41    31    23      9
+
+The first version of this fix shipped at 0.95 and the jump — ~17 fade steps in
+a single frame — was immediately reported as the fade having become "steppy".
+0.2 costs ~5. Below 0.1 the flip is imperceptible but depth writing then covers
+over 90 % of the fade, i.e. the artifact is back. **Moving this constant trades
+one defect for the other; it does not remove either.**
+
+Dead ends already explored, so nobody re-walks them: `alphaHash` (continuous by
+construction — at `opacity 1` it is pixel-identical to opaque — and fully
+order-independent, but the stochastic grain without temporal accumulation is
+far too visible on this product; revisit only once the planned progressive
+accumulation exists), and turning depth writing off at acquire instead (same
+jump, merely moved to the first frame of the fade: 76 instead of 23).
+
+Turning ~250 meshes transparent already moves them into the depth-sorted
+transparent pass; this only decides what they do once there. The perf
+difference is negligible either way (measured 14.95 vs 15.57 ms/frame).
 
 #### Pivots (`animation/pivot.js`, `animation/pivotRegistry.js`)
 
@@ -1197,14 +1428,22 @@ handle and compose:
 ```js
 compose() {
   this.pivot.position.copy(this.basePosition).add(this.channels.offsetPos)
-  this.pivot.quaternion.copy(this.baseQuaternion)
-    .multiply(this.channels.offsetQuat)   // authored placement first…
-    .multiply(this.channels.spin)         // …then spin, in the displaced frame
+  const q = this.pivot.quaternion.copy(this.baseQuaternion)
+    .multiply(this.channels.offsetQuat)          // authored placement first…
+  for (const r of this.channels.rot.values()) q.multiply(r)   // …then rotations
 }
 ```
 
-That order means "spin on its own axis *after* being moved out" — the
+That order means "rotate on its own axis *after* being moved out" — the
 explode-and-rotate case.
+
+`channels.rot` is a **`Map` keyed by `step.id`**, not a fixed `spin` field:
+three actions rotate (`spinGroup`, `rotateBy`, `wobble`) and two steps of the
+same kind can legitimately target the same meshes, so named fields would have
+them silently overwrite each other. Rotating actions all go through the shared
+`acquireRotHandles`/`releaseRotHandles` helpers in `actions.js`, which register
+one quaternion per step under that key and `clearRot(stepId)` + recompose on
+teardown. Adding a fourth rotating action needs no change to `pivotRegistry.js`.
 
 `spinGroup` uses **one pivot per mesh** (`acquireMesh`), never the group pivot:
 "rotate about its own center" is the single-mesh branch applied N times, while
@@ -1243,8 +1482,11 @@ fetch (both dispatch `app-load-animations`). Backward compatibility is free —
 the `isNewFormat = !!parsed.lights` gate is untouched and each dispatch is
 `if (parsed.X)`-guarded. The shipped
 `public/lightconfig/app-state-config.json` currently carries only
-`lights/materials/rotation/keylight/spotlight`: like `focus`, `animations` is a
-section the editor writes but the committed file does not yet contain.
+`lights/materials/rotation/keylight/spotlight`: like `focus` and `variants`,
+`animations` is a section the editor writes but the committed file does not yet
+contain. Consequence for variants specifically: production starts on
+`defaultOption` from `meshVariants.js` (`iso`) until someone selects the
+intended layout in `?debug` and presses "Salva Configurazione".
 
 `normalizeAnimations(raw)` fills defaults, drops steps with unknown actions
 (with a warn), generates missing ids, dedups animation ids, and rebuilds each
@@ -1361,9 +1603,15 @@ derive-from-the-imperative-source rule as the focus chips. When a
 step's authored label and calling `triggerAnimation(name)` — that chip is the
 product surface for "optionally, an event makes the rotors spin."
 
-Both rows position off two CSS custom properties on `.hud` (`--chip-h`,
-`--chip-row-bottom`), so the mobile breakpoint moves them together by
-overriding the variables instead of re-stating each bar's `bottom`.
+⚠️ **The three rows (variants, animations, focus) live in ONE flex column,
+`.chipStack`**, anchored bottom-centre at `--chip-row-bottom`; the individual
+bars carry no positioning of their own. They used to be three absolutely
+positioned rows at `--chip-row-bottom + n * --chip-h`, which silently assumed
+every row is exactly one chip tall — the moment a row wraps (and with 9 mesh
+groups the focus row does) the rows above it overlapped it. Only the stack's
+`bottom` needs the custom property now, so the mobile breakpoint still moves
+everything by overriding `--chip-row-bottom` alone. Any fourth row goes inside
+the stack, never next to it.
 
 Clicking a pager button or a focus chip **stops a running animation first**
 (`stopIfAnimating()`), or the two would fight over the same pose/zoom targets.
