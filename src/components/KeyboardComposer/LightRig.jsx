@@ -19,7 +19,7 @@ const DEBUG = new URLSearchParams(window.location.search).has('debug')
 // Erano oggetti inline ripetuti quasi identici (i due <select>, i due bottoni
 // salva/carica): qui una sola volta, con le sole differenze come override sul
 // posto. Sono overlay dell'editor `?debug`, non UI di prodotto — per quella
-// valgono i CSS module (Hud.module.css / Timeline.module.css).
+// valgono i CSS module (Hud.module.css).
 const SELECT_STYLE = {
   background: 'rgba(20, 20, 20, 0.85)',
   border: '1px solid rgba(255, 255, 255, 0.2)',
@@ -55,7 +55,7 @@ const PANEL_BTN_STYLE = {
 // calcolata una volta sola in KeyboardModel.jsx e simmetrica attorno
 // all'origine): viene misurata dal vivo sull'albero di scena reale, quindi
 // segue qualunque traslazione/rotazione applicata a mesh o gruppi
-// dall'editor Mesh/Timeline. Se la mesh più alta sale di m, il piano `top`
+// dall'editor Mesh. Se la mesh più alta sale di m, il piano `top`
 // (e le luci della fascia top) salgono con lei e restano a distanza
 // `margin` dalla superficie: la scatola si ALLUNGA sull'asse, non trasla in
 // blocco — ogni faccia è ancorata al proprio estremo del box.
@@ -471,6 +471,8 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
             if (parsed.rotation) window.dispatchEvent(new CustomEvent('app-load-rotation', { detail: parsed.rotation }))
             if (parsed.keylight) window.dispatchEvent(new CustomEvent('app-load-keylight', { detail: parsed.keylight }))
             if (parsed.spotlight) window.dispatchEvent(new CustomEvent('app-load-spotlight', { detail: parsed.spotlight }))
+            if (parsed.focus) window.dispatchEvent(new CustomEvent('app-load-focus', { detail: parsed.focus }))
+            if (parsed.animations) window.dispatchEvent(new CustomEvent('app-load-animations', { detail: parsed.animations }))
           }
         })
         .catch((err) => {
@@ -851,7 +853,15 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
       materials: window.__STATE_MATERIALS || {},
       rotation: window.__STATE_ROTATION || {},
       keylight: window.__STATE_KEYLIGHT || {},
-      spotlight: window.__STATE_SPOTLIGHT || {}
+      spotlight: window.__STATE_SPOTLIGHT || {},
+      // Inquadrature autorate dello zoom sui gruppi (FocusTuner in Scene.jsx).
+      // Non c'entra con le luci: sta qui perché questo è l'unico punto di
+      // salvataggio/caricamento di TUTTO lo stato tunabile dell'app.
+      focus: window.__STATE_FOCUS || {},
+      // Animazioni autorate (AnimationEditor, stato in KeyboardComposer.jsx).
+      // Stessa ragione del `focus` qui sopra: non c'entrano con le luci, ma
+      // questo è l'unico punto di salvataggio/caricamento globale.
+      animations: window.__STATE_ANIMATIONS || { version: 1, items: [] }
     }
 
     const json = JSON.stringify(fullData, null, 2)
@@ -899,6 +909,8 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
             if (parsed.rotation) window.dispatchEvent(new CustomEvent('app-load-rotation', { detail: parsed.rotation }))
             if (parsed.keylight) window.dispatchEvent(new CustomEvent('app-load-keylight', { detail: parsed.keylight }))
             if (parsed.spotlight) window.dispatchEvent(new CustomEvent('app-load-spotlight', { detail: parsed.spotlight }))
+            if (parsed.focus) window.dispatchEvent(new CustomEvent('app-load-focus', { detail: parsed.focus }))
+            if (parsed.animations) window.dispatchEvent(new CustomEvent('app-load-animations', { detail: parsed.animations }))
           }
 
           setSelectedLight(null)

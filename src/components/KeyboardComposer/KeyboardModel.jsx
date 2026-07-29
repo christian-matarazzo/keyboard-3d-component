@@ -21,7 +21,7 @@ const DEBUG = new URLSearchParams(window.location.search).has('debug')
 // del file sorgente (l'OBJ è in centimetri).
 const TARGET_WIDTH = 3.2
 
-export function KeyboardModel({ url = DEFAULT_MODEL_URL, apiRef, onSizeComputed, onSelectMesh, controlsDisabled, editMode = 'none', lockedPoseKey = null, meshGroups = DEFAULT_MESH_GROUPS }) {
+export function KeyboardModel({ url = DEFAULT_MODEL_URL, apiRef, onSizeComputed, onSelectMesh, controlsDisabled, editMode = 'none', lockedPoseKey = null, meshGroups = DEFAULT_MESH_GROUPS, focusOverrides = null }) {
   const { scene } = useGLTF(url, DRACO_PATH)
 
   // Auto-fit: centra il modello e lo scala a TARGET_WIDTH, così camera e
@@ -66,6 +66,10 @@ export function KeyboardModel({ url = DEFAULT_MODEL_URL, apiRef, onSizeComputed,
     editMode,
     lockedPoseKey,
     scene, // per il fit dinamico in Luci sulla posa bloccata (vedi useComposerControls.js)
+    // Zoom sui gruppi: `meshGroups` classifica le mesh da misurare,
+    // `focusOverrides` porta le inquadrature autorate (Scene.jsx/FocusTuner).
+    meshGroups,
+    focusOverrides,
   })
 
   // Un solo <group>, quello della scala: la camera orbita da sola, quindi non
@@ -79,7 +83,7 @@ export function KeyboardModel({ url = DEFAULT_MODEL_URL, apiRef, onSizeComputed,
         position={offset}
         // INTERCETTAMENTO CLICK (solo ?debug, modalità Mesh):
         onPointerDown={(e) => {
-          if (!DEBUG || (editMode !== 'meshes' && editMode !== 'timeline')) return
+          if (!DEBUG || editMode !== 'meshes') return
           // Previene che il click si propaghi ad altre mesh sottostanti
           e.stopPropagation()
           if (onSelectMesh) onSelectMesh(e.object)

@@ -8,6 +8,11 @@
   --logo-h: clamp(44px, 4.84vw, 68px);
   --hud-fs: clamp(11.5px, 0.99vw, 15px);
   --hud-pad: clamp(18px, 2.64vw, 37px);
+  /* Altezza di un chip e distanza dal fondo della PRIMA riga di chip (quella
+     dei gruppi). La riga delle animazioni si impila sopra derivando da queste
+     due, così basta correggerle nel breakpoint mobile una volta sola. */
+  --chip-h: clamp(26px, 2.2vw, 32px);
+  --chip-row-bottom: calc(var(--hud-pad) + 2.4em);
 
   position: absolute;
   inset: 0;
@@ -127,7 +132,7 @@
   background: rgb(255 255 255 / 6%);
 }
 
-/* Posa bloccata (Mesh/Timeline, vedi Scene.jsx): i pulsanti diversi dalla
+/* Posa bloccata (Mesh, vedi Scene.jsx): i pulsanti diversi dalla
    posa bloccata restano visibili ma inerti — mai co-presente con
    .pageActive (la posa attiva È sempre la posa bloccata mentre si è
    bloccati), quindi nessun conflitto d'ordine con la regola sopra. */
@@ -140,6 +145,111 @@
 .page:focus-visible {
   outline: 2px solid rgb(255 255 255 / 60%);
   outline-offset: 2px;
+}
+
+/* ── Zoom sui gruppi ───────────────────────────────────────────────────────
+   Barra di chip centrata sopra il footer: è l'unico zoom disponibile in
+   produzione (la rotella è authoring, vedi useComposerControls.js). Stesse
+   convenzioni della paginazione viste: contenitore fuori dal flusso,
+   pointer-events riattivati solo qui. L'offset dal fondo tiene conto della
+   riga del footer, che è alta una riga di testo. */
+.focusBar {
+  position: absolute;
+  bottom: var(--chip-row-bottom);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: clamp(6px, 0.7vw, 10px);
+  pointer-events: auto;
+}
+
+.focusChip {
+  height: var(--chip-h);
+  display: grid;
+  place-items: center;
+  padding: 0 clamp(9px, 0.9vw, 14px);
+  border: 1px solid rgb(255 255 255 / 22%);
+  border-radius: 0;
+  background: transparent;
+  color: rgb(255 255 255 / 46%);
+  font: inherit;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    color 0.16s ease,
+    border-color 0.16s ease,
+    background 0.16s ease;
+}
+
+.focusChip:hover {
+  color: rgb(255 255 255 / 85%);
+  border-color: rgb(255 255 255 / 45%);
+}
+
+.focusChipActive {
+  color: #fff;
+  border-color: #fff;
+  background: rgb(255 255 255 / 6%);
+}
+
+/* Posa bloccata (Mesh): il focus è rifiutato dal hook, i chip
+   diventano inerti — stessa logica di .pageDisabled. */
+.focusChipDisabled {
+  color: rgb(255 255 255 / 14%);
+  border-color: rgb(255 255 255 / 8%);
+  cursor: default;
+  pointer-events: none;
+}
+
+.focusChip:focus-visible {
+  outline: 2px solid rgb(255 255 255 / 60%);
+  outline-offset: 2px;
+}
+
+/* ── Animazioni autorate ───────────────────────────────────────────────────
+   Seconda riga di chip, impilata SOPRA quella dei gruppi (non al posto): lo
+   zoom nudo resta disponibile. Click = playAnimation, click sull'attiva =
+   stop. Il chip .animChipTrigger compare solo quando uno step `waitTrigger`
+   sta bloccando la sequenza. */
+.animBar {
+  position: absolute;
+  bottom: calc(var(--chip-row-bottom) + var(--chip-h) + clamp(6px, 0.7vw, 10px));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: clamp(6px, 0.7vw, 10px);
+  pointer-events: auto;
+}
+
+.animChip {
+  composes: focusChip;
+}
+
+.animChipActive {
+  composes: focusChipActive;
+}
+
+.animChipDisabled {
+  composes: focusChipDisabled;
+}
+
+/* Evento atteso: è l'unica cosa nell'HUD che chiede un'azione all'utente,
+   quindi si distingue dai chip di stato. */
+.animChipTrigger {
+  color: #0b0b0b;
+  border-color: #fff;
+  background: #fff;
+}
+
+.animChipTrigger:hover {
+  color: #0b0b0b;
+  background: rgb(255 255 255 / 85%);
 }
 
 /* ── Riga inferiore: locale · disclaimer · claim ───────────────────────── */
@@ -184,6 +294,11 @@
     --logo-h: 29px;
     --hud-fs: 11.5px;
     --hud-pad: clamp(13px, 4.4vw, 20px);
+    /* Il footer qui è impilato su 3 righe (vedi .bottom sotto): le barre di
+       chip vanno alzate di conseguenza, o ci finiscono sopra. Correggendo la
+       variabile si spostano insieme sia i gruppi sia le animazioni. */
+    --chip-h: 28px;
+    --chip-row-bottom: calc(var(--hud-pad) + 5.6em);
   }
 
   /* Due colonne: logo a sinistra, telemetria a destra. La versione (stringa
@@ -214,6 +329,16 @@
     height: 33px;
   }
 
+  .focusBar,
+  .animBar {
+    gap: 6px;
+    max-width: calc(100% - 2 * var(--hud-pad));
+  }
+
+  .focusChip {
+    padding: 0 9px;
+  }
+
   /* Footer impilato e centrato: le tre stringhe non entrano affiancate. */
   .bottom {
     grid-template-columns: 1fr;
@@ -230,7 +355,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .page {
+  .page,
+  .focusChip,
+  .animChip {
     transition: none;
   }
 }

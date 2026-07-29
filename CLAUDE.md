@@ -15,18 +15,29 @@ going forward:
    tool for finding numbers, not something end users see.
 2. **The actual deliverable component**: a `KeyboardComposer` capable of (a)
    navigating the model between fixed product poses, (b) driving lighting
-   for those poses, and (c) producing zoomed/framed views of the model. (a)
-   and (b) exist today. **(c) doesn't exist yet**: the only zoom is the
-   `wheel` handler in `useComposerControls.js` — a free-form camera-distance
-   multiplier (see "Zoom" under "Interaction + animation": it's now a
-   `userZoom` factor that no fit path can reset, but that's a *robustness*
-   fix, not the product feature). A product zoom would be named, authored,
-   per-pose framings — treat it as still to build, not something to go
-   looking for. (An exploded-view feature was built and then deleted outright in
+   for those poses, (c) producing zoomed/framed views of the model, and (d)
+   **playing authored animations** that compose (a)–(c) plus opacity and
+   transforms into named, saved sequences. All four exist today.
+   **(c) is the group focus** — named, authorable
+   framings on the logical mesh groups (`focusGroup`/`clearFocus`, HUD chips,
+   see "Zoom" under "Interaction + animation"), not the free-form wheel
+   multiplier. The wheel is now **authoring-only**: its listener isn't
+   registered outside `?debug`, so in production the group focus is the only
+   zoom there is. Not built (and not planned as of this writing):
+   *per-pose* framings — the focus is currently one framing per group,
+   deliberately pose-independent. (An exploded-view feature was built and then deleted outright in
    favor of the more general group/mesh selection-and-transform mechanism
-   in `MeshController.jsx` — see "Mesh editor" below — which can reproduce
-   "explode" as an authored pose instead of a hardcoded animation. There is
-   currently no shipped exploded-view UI.)
+   in `MeshController.jsx` — see "Mesh editor" below. It is now reachable as
+   an *authored animation step* (`transformOffset` with `perMesh: true`, see
+   "Animations"), not as a hardcoded feature. There is still no hardcoded
+   exploded-view UI.)
+   **(d) is the animation system** (`animation/`, `AnimationDirector.jsx`,
+   `AnimationEditor.jsx`) — a step sequencer, authored in `?debug`, saved into
+   the same JSON blob as everything else, played in production from a row of
+   HUD chips or `apiRef.current.playAnimation(id)`. It **replaced the
+   keyframe Timeline**, which was deleted outright: don't go looking for
+   `Timeline.jsx`, `timelineApiRef`, `editMode 'timeline'` or
+   `keyframesBySelection`, and don't reintroduce them.
 
 Planned render-quality work (anti-aliasing, inter-mesh contact shadows) is
 **designed but not implemented** — see "Planned work: anti-aliasing and
@@ -44,9 +55,17 @@ its gizmo) outside `?debug`.
 
 Within `?debug`, the mesh editor and the light editor (`LightRig.jsx`'s
 per-pose volumetric rig, see below) are further gated by an exclusive
-**`editMode`** (`'none' | 'lights' | 'meshes' | 'timeline'`, a Leva select
-in `Scene.jsx`, threaded as a prop into `KeyboardModel`/`LightRig`/
-`MeshController`). The mesh editor and the light editor used to be
+**`editMode`** (`'none' | 'lights' | 'meshes' | 'anim' | 'focus'`, a Leva
+select in `Scene.jsx`, threaded as a prop into `KeyboardModel`/`LightRig`/
+`MeshController`/`AnimationDirector`). `'focus'` is the group-framing
+authoring mode and behaves
+like `'lights'`, not like `'meshes'`: no clicks, no gizmo, **navigation stays
+live** (framings are tuned while stepping through poses), and it only gates
+the visibility of its own Leva folders. `'anim'` (the animation editor) is in
+that same family for the same reasons — animations are previewed while
+navigating, and they drive pose/focus themselves — with the extra rule that
+entering `'meshes'` **stops any running animation** (see "Animations").
+The mesh editor and the light editor used to be
 simultaneously live any time their own toggle was on (mesh clicks always
 active in debug; light helpers active whenever `showHelpers`/
 `showSurfaces` was checked), which meant a single click on the model could
@@ -62,28 +81,25 @@ shadowing `THREE.Mesh.prototype.raycast` with `undefined`, and three.js's
 raycaster crashes trying to call it; always assign a real function, e.g.
 `THREE.Mesh.prototype.raycast` to restore default behavior.)
 
-`'timeline'` is `'meshes'`'s sibling, not a separate tool — see "Mesh
-editor" and "Timeline" below. It reuses `MeshController.jsx`'s
-selection/pivot/gizmo machinery wholesale (`active = editMode === 'meshes'
-|| editMode === 'timeline'` everywhere the file used to check only
-`'meshes'`) and adds a keyframe scrubber on top.
-
-`Scene.jsx` sets `controlsDisabled={editMode === 'meshes' || editMode ===
-'timeline'}` — canvas drag/arrow-nav is suspended in Mesh **and** Timeline
-mode, not Lights: pose navigation has to keep working in Lights mode since
-the volumetric rig's config is per-pose, so tuning lights for a view
+`Scene.jsx` sets `controlsDisabled={editMode === 'meshes'}` — canvas
+drag/arrow-nav is suspended **only** in Mesh mode, not Lights, not Focus, not
+Anim: pose navigation has to keep working in the other three, since the
+volumetric rig's config is per-pose, the group framings are checked pose by
+pose, and animations are previewed while orbiting — tuning any of them
 requires being able to still step through views. Mouse-wheel zoom is a
 separate flag entirely — `useComposerControls.js`'s `onWheel` handler has
-no `disabled` check at all, so it stays live in every `editMode` including
-Mesh/Timeline, unlike drag/arrow-keys which do check it.
+no `disabled` check at all, so *within `?debug`* it stays live in every
+`editMode` including Mesh, unlike drag/arrow-keys which do check
+it. Outside `?debug` the wheel listener is never registered in the first
+place (see "Zoom" below).
 
-**Pose lock (Mesh/Timeline)**: `Scene.jsx` also owns a second Leva control,
+**Pose lock (Mesh)**: `Scene.jsx` also owns a second Leva control,
 `lockedPose` (default `'TL'`, options built once at module load from
 `POSE_COORD`/`POSE_HUD_LABEL` — `POSE_HUD_LABEL` has intentionally
 duplicate short labels across poses, e.g. `'TL'`/`'TR'`/`'CFB'` all read
 `'3/4 FT'`, so the Leva `options` keys append the raw pose key to stay
-unique: `` `${label} · ${key}` ``). Entering Mesh or Timeline mode (or
-changing `lockedPose` while already in one of them) calls
+unique: `` `${label} · ${key}` ``). Entering Mesh mode (or changing
+`lockedPose` while already in it) calls
 `apiRef.current.goTo(lockedPose)`. The lock is enforced at two layers, not
 just the trigger:
 - **Mechanism**: `useComposerControls.js`'s `goTo(key)` itself checks
@@ -106,10 +122,13 @@ of `useControls(folderName, schema, settings)`): the `Ombra: Directional
 `ShadowKeyLight`/`ShadowSpotLight`) and `Impostazioni Globali Vista` (also
 `LightRig.jsx`) all pass `render: (get) => get('⚙️ Editor · Modalità.editMode')
 === 'lights'`; `MeshController.jsx`'s `⚙️ Editor Mesh (Debug)` folder passes
-`render: (get) => ['meshes', 'timeline'].includes(get('⚙️ Editor ·
-Modalità.editMode'))` — visible (and interactive) in **either** mode, since
-Timeline reuses this exact panel for its Gruppo/Mesh selection and
-gizmo/sliders. Critically, `render` only hides the row
+`render: (get) => get('⚙️ Editor · Modalità.editMode') === 'meshes'`;
+the six `Focus · <gruppo>` folders (`FocusGroupTuner` in
+`Scene.jsx`) gate on `=== 'focus'`. The animation editor deliberately owns
+**no Leva folder at all** — it's a plain DOM overlay
+(`AnimationEditor.jsx`), because Leva can't take a per-step dynamic schema
+without the component-per-item trick and the step list changes length
+constantly. Critically, `render` only hides the row
 in the Leva UI — it does **not** unmount the `useControls` call, so tuned
 values survive switching away and back (an actual unmount/remount would
 reset them to the schema's hardcoded `value:` defaults, since Leva's store
@@ -121,22 +140,32 @@ import (same reasoning as the `DEBUG` flag below), so if `Scene.jsx`'s
 folder name or key ever changes, grep for that path string everywhere.
 
 `Scene.jsx` snaps to `lockedPose` (see "Pose lock" above) the moment
-`editMode` becomes `'meshes'`/`'timeline'` (or `lockedPose` itself changes
-while already in one of them) — not on each mesh/group selection like an
+`editMode` becomes `'meshes'` (or `lockedPose` itself changes
+while already in it) — not on each mesh/group selection like an
 earlier version did, which would re-snap every time you picked a different
 one from the dropdown mid-session.
 
 **`apiRef.current` is a multi-writer bridge, seeded once as `useRef({})`
-(never `null`) in `KeyboardComposer.jsx`.** `useComposerControls.js` (inside
-`<Canvas>`) and `Scene.jsx` (outside it, a separate React subtree with no
-commit-ordering guarantee relative to the Canvas's own effects) both write
-onto the *same* object via `Object.assign(apiRef.current, {...})` rather
-than replacing it wholesale — `useComposerControls.js` contributes
-`goTo`/`currentPoseKey` (cleanup `delete`s just those two keys), `Scene.jsx`
-contributes `editMode`/`lockedPoseKey` (plain fields, no cleanup needed).
+(never `null`) in `KeyboardComposer.jsx`.** Three writers, in different React
+subtrees with no commit-ordering guarantee between them, all write onto the
+*same* object via `Object.assign(apiRef.current, {...})` rather than
+replacing it wholesale:
+- `useComposerControls.js` (inside `<Canvas>`) — `goTo`, `currentPoseKey`,
+  `focusGroup`, `clearFocus`, `currentFocus`, `isPoseSettled`,
+  `isFocusSettled`; its cleanup `delete`s exactly those seven keys.
+- `AnimationDirector.jsx` (also inside `<Canvas>`) — `playAnimation`,
+  `stopAnimation`, `currentAnimation`, `animationState`, `triggerAnimation`,
+  `meshCatalog`; same `delete`-only cleanup.
+- `Scene.jsx` (outside the Canvas) — `editMode`, `lockedPoseKey` (plain
+  fields, no cleanup needed).
+
 Object.assign-only, never `apiRef.current = {...}`, is the rule any future
-writer onto this bridge must follow, or it risks clobbering fields the
-other writer just added.
+writer onto this bridge must follow, or it risks clobbering fields another
+writer just added. There is **one** bridge now: the second one
+(`timelineApiRef`) died with the Timeline and was not replaced — the
+animation system needed no data bridge because `KeyboardComposer.jsx`
+renders both the Canvas subtree and the DOM overlays, so the animation list
+travels as an ordinary prop and only *commands* go through `apiRef`.
 
 The dead code this file used to warn about has been **removed**, not just
 documented — don't go looking for it and don't reintroduce it: `Backdrop.jsx`
@@ -144,9 +173,13 @@ documented — don't go looking for it and don't reintroduce it: `Backdrop.jsx`
 `.viewPad`/`.viewBtn`/`.up`/`.left`/`.right`/`.down` and the whole
 `.capturePanel*` family (leftovers of a `ViewPad` and a `LightCapturePanel`
 that predated `Hud.jsx` and `LightRig.jsx`'s save/load buttons), and
-`poseGraph.js`'s `VIEW_SHORTCUTS` (the ViewPad's direction→pose map). That CSS
+`poseGraph.js`'s `VIEW_SHORTCUTS` (the ViewPad's direction→pose map), and —
+most recently — the whole keyframe Timeline (`Timeline.jsx`,
+`Timeline.module.css`, `timelineApiRef`, `interpolateKeyframes`,
+`keyframesBySelection`/`playhead`, `editMode 'timeline'`). That CSS
 module is now only `.section`, `.canvasWrap`, `.canvasWrapLoaded` and
-`.debugResize`; `Hud.module.css` and `Timeline.module.css` are used in full.
+`.debugResize`; `Hud.module.css` and `AnimationEditor.module.css` are used
+in full.
 
 ## Commands
 
@@ -240,35 +273,58 @@ KeyboardComposer.jsx        DOM shell: canvas fade-in, Leva panel host (DebugPan
 ├─ Scene.jsx                 <Canvas> — camera, tone mapping, Suspense/Loader
 │  ├─ KeyboardModel.jsx       loads GLB, auto-fits scale, owns useComposerControls
 │  ├─ MaterialTuner (in Scene.jsx)   one Leva folder per mesh group, from meshGroups config
+│  ├─ FocusTuner (in Scene.jsx)      one Leva folder per mesh group: authored
+│                              framing (radiusFactor + offset) for the product
+│                              zoom; collected into window.__STATE_FOCUS and
+│                              passed down to useComposerControls
 │  ├─ LightRig.jsx            all scene lighting (production + debug editor);
 │                              own useGLTF (shared cache) to measure the live
 │                              model bbox for the adaptive light box
-│  └─ MeshController.jsx      mesh inspector: TransformControls + halo on a runtime
-│                              pivot at a group's cumulative center or a single
-│                              mesh's own center (dual Gruppo/Mesh selectors, own
-│                              useGLTF, shares KeyboardModel's cache); also owns
-│                              the Timeline keyframe data model, active in both
-│                              editMode 'meshes' and 'timeline'
-├─ Hud.jsx                    DOM overlay outside the canvas: logo, telemetry, pager
-└─ Timeline.jsx                DOM overlay outside the canvas: keyframe scrubber,
-                                visible only in ?debug + editMode 'timeline'
+│  ├─ MeshController.jsx      mesh inspector: TransformControls + halo on a runtime
+│  │                           pivot at a group's cumulative center or a single
+│  │                           mesh's own center (dual Gruppo/Mesh selectors, own
+│  │                           useGLTF, shares KeyboardModel's cache); the pivot
+│  │                           machinery itself lives in animation/pivot.js
+│  └─ AnimationDirector.jsx   runs the authored animations: one useFrame, renders
+│                              null, owns the opacity/pivot registries, publishes
+│                              play/stop/state onto apiRef (own useGLTF, shared cache)
+├─ Hud.jsx                    DOM overlay outside the canvas: logo, telemetry, pager,
+│                              group-focus chips (the only zoom in production),
+│                              animation chips + the wait-for-trigger chip
+└─ AnimationEditor.jsx        DOM overlay outside the canvas: block editor + JSON
+                                view, visible only in ?debug + editMode 'anim'
+
+animation/                     (no React except the two components above)
+├─ animationSchema.js          data shape, defaults, normalize/migrate, buildWaves
+├─ actions.js                  ACTIONS — param schema + runtime impl, one source of truth
+├─ animationRuntime.js         the wave sequencer (pure JS, ticked by the Director)
+├─ selectors.js                resolveSelector: all / group / allExcept / meshes
+├─ easings.js                  named curves for duration-driven steps
+├─ opacityRegistry.js          runtime-only opacity ownership (fast path + clone-on-write)
+├─ pivot.js                    wrapMeshInPivot / wrapGroupInPivot (shared with MeshController)
+└─ pivotRegistry.js            refcounted pivots, composed channels, restore-not-bake unwind
 ```
 
-`Hud.jsx`/`Timeline.jsx` (DOM) and the pose/lighting logic (inside
-`<Canvas>`) can't share React state directly, so they're bridged with an
-imperative ref:
+`Hud.jsx`/`AnimationEditor.jsx` (DOM) and the pose/lighting/animation logic
+(inside `<Canvas>`) can't share React state directly, so **commands** are
+bridged with an imperative ref:
 `KeyboardComposer.jsx` creates `poseApi = useRef({})` (seeded to an empty
 object, never `null` or reassigned — see "Pose lock" further down for why
-that matters), passes it down as `apiRef` to `useComposerControls` (which
-`Object.assign`s `goTo(poseKey)`/`currentPoseKey()` onto it) and to
-`Scene.jsx` (which `Object.assign`s `editMode`/`lockedPoseKey` onto the
-*same* object). `Hud.jsx` polls `currentPoseKey()`/`editMode`/
-`lockedPoseKey` on a 150ms interval (not reactive) and calls `goTo()` from
-its pager buttons. `LightRig.jsx` reads the same `apiRef` every `useFrame`
-to know which per-pose lighting config is active. `Timeline.jsx` reads
-`editMode` off this same bridge to decide its own visibility, and a
-*second*, sibling ref (`timelineApiRef`, populated by `MeshController.jsx`
-— see "Timeline" further down) carries the keyframe actions/data it needs.
+that matters), passes it down as `apiRef` to `useComposerControls`, to
+`AnimationDirector` and to `Scene.jsx`; all three `Object.assign` onto the
+*same* object (full field list under "`apiRef.current` is a multi-writer
+bridge" above). `Hud.jsx` polls `currentPoseKey()`/`currentFocus()`/
+`animationState()`/`editMode`/`lockedPoseKey` on a 150ms interval (not
+reactive) and calls `goTo()`/`focusGroup()`/`playAnimation()` from its
+buttons. `LightRig.jsx` reads the same `apiRef` every `useFrame` to know
+which per-pose lighting config is active. `AnimationEditor.jsx` reads
+`editMode` off this same bridge to decide its own visibility.
+
+**Data**, by contrast, needs no bridge: `KeyboardComposer.jsx` renders both
+the Canvas subtree and the DOM overlays, so the `animations` list is plain
+React state there, passed down as an ordinary prop to `Scene` (→
+`AnimationDirector`), `Hud` and `AnimationEditor`. This is why the Timeline's
+second bridge (`timelineApiRef`) has no successor.
 
 ### Pose graph (`poseGraph.js`)
 
@@ -323,21 +379,92 @@ Single hook, attached to the model's outer `<group>` ref, that owns:
   identity-transform wrapper `<group>`s it fed in `KeyboardModel.jsx` (which
   now renders just `<group scale={scale}><primitive object={scene} …/></group>`).
 - **Zoom (invariante: non si resetta MAI)**: the camera distance is a
-  *product of two independent refs*, never a single writable value —
-  `cameraRadius.current = clamp(baseRadius.current * userZoom.current,
-  RADIUS_MIN, RADIUS_MAX)`, recomposed by the local `applyRadius()` helper.
+  *product of three independent refs*, never a single writable value —
+  `cameraRadius.current = clamp(baseRadius.current * userZoom.current *
+  focusZoom.current.value, RADIUS_MIN, RADIUS_MAX)`, recomposed by the local
+  `applyRadius()` helper.
   **Nothing ever assigns `cameraRadius` directly.** `baseRadius` is the
   framing distance and belongs to the fit paths; `userZoom` is a pure
   multiplier (clamped `ZOOM_MIN`…`ZOOM_MAX`) and belongs solely to
-  `onWheel`. That split is the whole mechanism behind "zoom survives every
-  view/mode/selection change": a fit recompute rewrites the base and
-  `applyRadius()` re-multiplies the user's factor back on top, so a resize,
-  a `fitMargin`/`zoomOutMobile` change (including one arriving from a
+  `onWheel`; `focusZoom` is the group-framing factor and belongs solely to
+  the focus path below. That split is the whole mechanism behind "zoom
+  survives every view/mode/selection change": a fit recompute rewrites the
+  base and `applyRadius()` re-multiplies the other factors back on top, so a
+  resize, a `fitMargin`/`zoomOutMobile` change (including one arriving from a
   loaded JSON via `app-load-rotation`), or a mode switch can no longer
   erase it. Before this, `onWheel` wrote `cameraRadius` itself and the next
-  fit to run silently overwrote it. If you add a third writer, give it a
+  fit to run silently overwrote it. If you add a **fourth** writer, give it a
   ref of its own and fold it into `applyRadius()` — do not assign
   `cameraRadius`.
+- **The wheel is authoring-only.** `onWheel` is registered
+  **only under `?debug`** — not early-returned, *not registered*: with
+  `{ passive: false }` + `preventDefault()` an early return would still eat
+  the host page's scroll. In production the group focus below is the only
+  zoom that exists. Inside `?debug` the handler still ignores `disabledRef`,
+  so it stays live in every `editMode`.
+- **Group focus — lo zoom di prodotto** (`focusGroup(groupId)` /
+  `clearFocus()` / `currentFocus()` on the shared `apiRef` bridge; HUD chips
+  and `Escape` drive it, plus `window.__focusGroup`/`__clearFocus` in
+  `?debug`). Framing a group is **two** motions, not one — getting closer
+  alone would push an off-axis group (rotors to one side, `landing`
+  underneath) out of frame as the camera approaches:
+  - the **orbit pivot** moves from the historical constant `(0, PIVOT_Y, 0)`
+    to the group's world-space center. `PIVOT_Y` is no longer applied as a
+    literal `camera.position.y += PIVOT_Y`; it's the default value of the
+    `pivotCur`/`pivotTarget` refs, and the last line of the frame is
+    `camera.position.add(pivotCur.current)`. With no focus active this is
+    bit-identical to the old behaviour.
+  - `focusZoom` shrinks the radius. It is a **factor, not an absolute
+    radius**, and that is load-bearing: the distance framing an object of
+    half-extent *R* over the distance framing one of `FIT_HALF_WIDTH` is
+    `R/FIT_HALF_WIDTH` **regardless of fov, aspect, `fitMargin` and
+    `zoomOutMobile`** — every camera term cancels. So a resize rewrites
+    `baseRadius` and the focus stays exactly as framed, with no
+    reconciliation code (verified: distance to the group center unchanged
+    across a `resize`).
+
+  Both are targets, damped every frame with `maath` (`easing.damp3` on the
+  pivot, `easing.damp` on the factor) against the `focusDamp` Leva knob in
+  the `Rotazione` folder — hence saved into `__STATE_ROTATION` for free. The
+  damping runs on the **raw** `delta`, deliberately not on `scaledDelta`: the
+  dolly is not the pose spring and must not change speed when `timeScale` is
+  tuned. Reusing the pose spring was rejected — it integrates angles with
+  `stepAmp`'s amplitude compensation, which means nothing for a dolly.
+- **The measurement is a bounding sphere, and that's a design decision.**
+  `focusFraming.js`'s `measureGroupFraming` returns the group's world-space
+  center and the half-diagonal of its bounding box — *not* the extent
+  projected onto the camera axes. Consequence: the framing is
+  **pose-independent**, so orbiting while focused needs no recompute and
+  never clips from any angle (verified: stepping poses while focused leaves
+  the group's NDC at `(0, 0)` and the distance unchanged). The price is a
+  generous framing — a group whose bounding sphere approaches the model's
+  own barely zooms at all. That is what the authored `radiusFactor` is for;
+  it is not a bug to "fix" by switching to projected extents. Measurement is
+  **edge-triggered** (entering focus, changing group, changing the authored
+  values), never per-frame: it is a full scene traverse, like `LightRig`'s
+  adaptive box, and it skips `__editorHelper` meshes for the same reason.
+- **`RADIUS_MIN` was lowered `2.5 → 0.8`** for this feature and
+  `FIT_RADIUS_MIN` (5.2) must **never** be applied to the focus path. With a
+  200mm lens `baseRadius` is ~36 scene units and a small group frames at
+  ~1.7–3.5; the old floor was an invisible ceiling on how close the product
+  zoom could get. `FIT_RADIUS_MIN` is the floor of the *whole-model fit*
+  only.
+- `focusGroup(groupId, extra)` takes an optional second argument: per-call
+  overrides of the authored framing (`radiusFactor`/`offsetX/Y/Z`), merged
+  *over* the `FocusTuner` values. It's how an animation's `focusGroup` step
+  gets its own distance without touching the group's global framing. ⚠️ The
+  last `extra` is remembered in `focusExtraRef` **and re-passed by the
+  re-apply effect** (deps `[focusOverrides, scene]`) — without that, moving a
+  `Focus · <gruppo>` Leva slider or an incoming `app-load-focus` would
+  silently discard an animation's framing. `clearFocus()` resets it.
+- `focusGroup()` **no-ops in `editMode` `'meshes'`** (same guard
+  shape as `goTo`'s pose lock) and an effect **clears an active focus** when
+  entering that mode: there the pose is locked and the geometry can be
+  moved by the editor, so a stale center would frame nothing. The HUD chips
+  disable themselves in that mode for the same reason. One accepted
+  nuance: in Lights mode the expand-only dynamic fit can still grow
+  `baseRadius`, which scales an active focus proportionally — correct
+  behaviour (a deformed model wants a wider framing), not a bug.
   Two paths write `baseRadius`:
   - a **static** fit `useEffect` (deps `[size, camera, focalLength,
     feel.fitMargin, feel.zoomOutMobile]`) using the constant
@@ -350,7 +477,7 @@ Single hook, attached to the model's outer `<group>` ref, that owns:
     `false→true` transition — `Box3` over the whole scene graph is not
     something to run every frame), and **returns without touching anything
     if the needed radius isn't larger than the current base**. It exists to
-    keep a model *deformed* in Mesh/Timeline (a translated group that no
+    keep a model *deformed* in Mesh (a translated group that no
     longer fits the pristine framing) from being clipped — not to reframe
     the pristine model, which is what used to make every entry into Lights
     mode snap the camera and wipe the user's zoom. A second `useEffect`
@@ -365,16 +492,23 @@ Single hook, attached to the model's outer `<group>` ref, that owns:
   double-scale and collapse the fit almost to zero — a real bug hit and
   fixed while building this, don't reintroduce it. `onWheel` itself never
   checks `disabledRef`, so zoom stays live in every `editMode` (including
-  Mesh/Timeline, where drag is otherwise suspended); neither fit path can
-  fire while `editMode` is `'meshes'`/`'timeline'` (the dynamic path is
+  Mesh, where drag is otherwise suspended); neither fit path can
+  fire while `editMode` is `'meshes'` (the dynamic path is
   gated on `'lights'`, the static path doesn't care about `editMode` at
   all).
-- **Imperative API**: contributes `goTo(key)`/`currentPoseKey()` onto the
+- **Imperative API**: contributes `goTo(key)`/`currentPoseKey()`,
+  `focusGroup(groupId, extra)`/`clearFocus()`/`currentFocus()`, and the two
+  "movement finished" probes `isPoseSettled()`/`isFocusSettled()` onto the
   shared `apiRef.current` bridge (see "Pose lock" above for the
-  `Object.assign`-only contract and why). `goTo` now opens with a lock
+  `Object.assign`-only contract and why). The three focus methods are thin
+  wrappers over `focusImplRef.current` — the implementations close over
+  `scene`/`meshGroups` props and are rebuilt each render, while the API
+  effect runs once (`deps: [apiRef]`), so calling them through a
+  per-render-updated ref is what keeps them from freezing on the first
+  mount's values. Same idiom as `disabledRef`/`feelRef`. `goTo` now opens with a lock
   check (refs `editModeRef`/`lockedPoseKeyRef`, kept fresh by plain
   per-render assignment next to the pre-existing `disabledRef`): while
-  `editMode` is `'meshes'`/`'timeline'`, a request for any pose other than
+  `editMode` is `'meshes'`, a request for any pose other than
   `lockedPoseKey` is silently ignored. Also, only when `?debug` is present:
   `window.__setPose(pitchDeg, yawDeg)` (hard teleport, bypasses the spring
   **and** the lock — a debug/console-only escape hatch, not reachable from
@@ -572,14 +706,22 @@ mode gating — they stay visible for the whole `DEBUG` session regardless of
 `editMode`, since they serialize/deserialize **all** tunable state at once,
 not just this rig's `configsRef`: also `window.__STATE_MATERIALS`,
 `window.__STATE_ROTATION`, `window.__STATE_KEYLIGHT`,
-`window.__STATE_SPOTLIGHT`, into one JSON blob.
+`window.__STATE_SPOTLIGHT` and `window.__STATE_FOCUS` (the authored group
+framings — nothing to do with lighting, they live here because this is the
+single save/load point for *all* tunable state), into one JSON blob.
 
 **Production light loading**: outside `?debug`, `LightRig` fetches
 `/lightconfig/app-state-config.json` once on mount and applies it via the
 same code paths (`configsRef.current = lightsData`, then
 `CustomEvent`s — `app-load-materials`, `app-load-rotation`,
-`app-load-keylight`, `app-load-spotlight` — that `MaterialTuner` and
-`useComposerControls` listen for). In other words: **the lighting/material/
+`app-load-keylight`, `app-load-spotlight`, `app-load-focus` — that
+`MaterialTuner`, `FocusTuner` and `useComposerControls` listen for). Note the
+route the focus values take: the event is handled by `FocusGroupTuner`'s Leva
+`setValues`, which bubbles up through `FocusTuner`'s `onChange` into
+`Scene.jsx` state, down as the `focusOverrides` prop to `KeyboardModel`, into
+the hook — which re-applies an *already active* focus on change, so the
+sliders are usable live rather than blind. A group id missing from an older
+JSON just keeps the computed framing. In other words: **the lighting/material/
 rotation-feel values actually shipped to production are whatever's baked
 into `public/lightconfig/app-state-config.json`**, authored via the
 `?debug` panel and exported with "Salva Configurazione," not hardcoded
@@ -604,16 +746,14 @@ for (const [p,c] of Object.entries(L)) console.log(p, Object.entries(c).filter((
 
 ### Mesh editor (`MeshController.jsx`)
 
-Active in **both** `'meshes'` and `'timeline'` `editMode` (`const active =
-editMode === 'meshes' || editMode === 'timeline'`) — Timeline (see below)
-is this file's selection/pivot/gizmo machinery plus a keyframe scrubber
-layered on top, not a separate implementation.
+Active in `editMode === 'meshes'` only (`const active = editMode ===
+'meshes'`).
 
 Two **mutually exclusive** Leva selectors — **Gruppo** (a `meshGroups`
 entry) and **Mesh** (`collectMeshList`'s flattened dropdown, same as
 before) — pick either a whole logical group or a single mesh; a 3D click
-in `KeyboardModel.jsx` (gated on `editMode === 'meshes' || editMode ===
-'timeline'`, same as `active` above) calls `onSelectMesh(e.object)`,
+in `KeyboardModel.jsx` (gated on `editMode === 'meshes'`,
+same as `active` above) calls `onSelectMesh(e.object)`,
 setting `Scene.jsx`'s `selectedMesh` state, which **always** populates
 `meshName` (never `groupId`, there is no "click to select a whole group"
 UI) via a dedicated sync effect (deps `[selectedMesh]`, deliberately
@@ -665,13 +805,19 @@ jumps on wrap/unwrap; per its own doc comment it doesn't support non-
 uniformly-scaled ancestors, fine today since the only ancestor scale in
 this scene is `KeyboardModel.jsx`'s single uniform `scale={scale}`, but a
 landmine if that ever changes). On deselect / mesh switch / leaving Mesh
-mode, the effect's cleanup does the reverse — `parent.attach(mesh)` bakes
+mode, the effect's cleanup does the reverse — `restore({ bake: true })`,
+i.e. `parent.attach(mesh)`, bakes
 whatever the pivot ended up representing back into the mesh's own local
 transform (edits persist across reselection/mode changes) and the pivot
-group is removed from the scene. This branch is unchanged from before the
-dual-selector rework — kept as a fully separate code path from the group
-branch below rather than unified, specifically so it stays byte-for-byte
-identical.
+group is removed from the scene.
+
+**This machinery now lives in `animation/pivot.js`** (`wrapMeshInPivot` /
+`wrapGroupInPivot`), shared with the animation system, which needed exactly
+the same wrap in production. `MeshController.jsx` was refactored onto the
+extracted module *before* any animation code depended on it, so the
+extraction was validated against the existing proven behaviour. The wrap is
+identical for both callers; the **unwind is not** — see the `bake` flag in
+"Animations" below, and don't "simplify" the two into one.
 
 **Group — pivot at the union bounding box's center, parented under
 `scene` (the GLTF root) rather than any one mesh's original parent** (a
@@ -694,7 +840,11 @@ parent/child composition still rigidly carries every mesh along when the
 pivot rotates, regardless of the pivot's own starting orientation. Every
 group member is `pivot.attach()`-ed in, and the cleanup re-`attach()`s
 each one back to its own original parent (tracked per-mesh, since members
-can differ) and removes the pivot.
+can differ) and removes the pivot. A group pivot stays a group pivot even
+with a single member (identity quaternion, under `scene`), never collapsing
+into the oriented single-mesh branch — otherwise the same authored rotation
+would turn around different axes depending on how many meshes the group
+happens to contain.
 
 In both branches the **Pos X/Y/Z (`±100`, step `0.05`) / Rot X/Y/Z°
 (`±180`, step `1`) sliders are a relative offset from that center**
@@ -705,11 +855,7 @@ not absolute values, since the GLB's native coordinate space is large
 was too narrow to reach the model's own scale) while `rotX/Y/Z` stayed
 `±180`, a full turn being the natural bound for a relative rotation
 regardless of model scale. Reset to `0` the instant a new selection is
-wrapped — **except in Timeline mode with existing keyframes for that
-selection**, where the reset instead applies the value interpolated at the
-current playhead position (see "Timeline" below); in Mesh mode this branch
-is unreachable (`editMode !== 'timeline'`), so behavior there is
-unchanged. That reset is issued by the **pivot effect itself**, in the
+wrapped. That reset is issued by the **pivot effect itself**, in the
 same effect body (hence the same React commit and the same batched state
 update) that creates the pivot and calls `setPivotInfo` — it used to be a
 separate `useEffect` keyed on `[pivotInfo]`, which necessarily ran one
@@ -736,8 +882,8 @@ are recomputed — which used to unwrap and rewrap the pivot with no
 deliberate selection change behind it, and in that window an offset could
 be re-applied or zeroed against the wrong pivot (the previously documented
 "group transform doesn't persist" symptom). A string key changes only when
-the user actually picks something else. `active` (`editMode` is
-`'meshes'`/`'timeline'`) is in those deps too: leaving Mesh/Timeline mode
+the user actually picks something else. `active` (`editMode === 'meshes'`)
+is in those deps too: leaving Mesh mode
 now *unwraps* the pivot (cleanup's `attach()` bakes the current transform
 into the meshes, so the edit persists) and removes the halos/restores
 opacity, instead of leaving blue outlines, a faded material and an orphan
@@ -816,92 +962,421 @@ Verified in the browser: with a group translated in Mesh mode, its meshes'
 world position is bit-identical across Mesh → Lights → Mesh, halos
 (80 for `keycaps`) and opacity are torn down and rebuilt on the mode edge,
 and exactly one `__meshEditorPivot` exists at a time (zero outside
-Mesh/Timeline).
+Mesh mode).
 
-### Timeline (`Timeline.jsx`, `editMode === 'timeline'`)
+### Animations (`animation/`, `AnimationDirector.jsx`, `AnimationEditor.jsx`)
 
-First pass at a Maya-style keyframe timeline — explicitly scoped to **data
-model + minimal scrub UI only** for now: no Play/Pause autoplay, no JSON
-save/load (both deferred). Groundwork motivation: the group/mesh dual
-selector's "selection → pivot → `posX..rotZ` offsets" shape (see "Mesh
-editor" above) is exactly what a keyframe needs to capture, so Timeline
-mode adds *no* new selection/pivot/gizmo logic of its own — it just reuses
-`MeshController.jsx`'s wholesale (same `active`, same Leva panel, same
-gizmo) and layers keyframes on top of the same `posX..rotZ` fields.
+**This replaced the keyframe Timeline, which was deleted outright.** The
+Timeline was a per-selection keyframer of `posX..rotZ` offsets: it knew
+nothing about poses, focus or opacity, and was never persisted. What was
+actually wanted was a way to *compose* the imperative primitives this
+component already has into named, saved, replayable sequences — so the
+keyframe track was removed rather than extended.
 
-**State, owned by `MeshController.jsx`** (not a separate component/file —
-it already owns everything a keyframe needs):
-- `selectionKey` — `` `group:${groupId}` `` or `` `mesh:${uuid}` ``,
-  derived from `selection` each render; keyframes are tracked **per
-  selection**, since `posX..rotZ` are offsets relative to a
-  selection-specific center and don't mean anything shared across
-  different selections.
-- `keyframesBySelection` (React state, `{ [selectionKey]:
-  [{id, time, posX, posY, posZ, rotX, rotY, rotZ}] }`, kept sorted by
-  `time`) and `playhead` (React state, seconds, `0..TIMELINE_DURATION` —
-  a fixed 5s for this pass, no duration UI yet).
-- **Scrub effect** (deps `[playhead, selectionKey, keyframesBySelection,
-  editMode]`): when `editMode === 'timeline'` and the current selection
-  has keyframes, linearly interpolates between the two keyframes
-  bracketing `playhead` (module-level `interpolateKeyframes(kfs, t)` —
-  clamps to the first/last keyframe outside their range) and calls the
-  same `setMeshCtrl(...)` the gizmo/sliders already use — the existing
-  "apply offset to pivot" effect does the rest, no duplicated transform
-  logic.
-- **A real race was caught and fixed here**: the pre-existing "reset
-  sliders to 0 on new pivot" effect (deps `[pivotInfo]`) fires *after* the
-  scrub effect on a selection swap, because `pivotInfo` (state) lags
-  `selection`/`selectionKey` by one render — so it would stomp the just-
-  applied interpolated keyframe values back to `0` on every selection
-  change while in Timeline mode. Fixed by making that effect
-  timeline-aware: it reads `playheadRef` (a ref mirror of `playhead`,
-  updated by plain per-render assignment so the effect's own deps can stay
-  narrowly `[pivotInfo]`) and, only when `editMode === 'timeline'` and
-  keyframes exist for the new selection, applies the interpolated patch
-  instead of zeros. Unreachable in Mesh mode, so no behavior change there.
+Motivating case, in the user's words: "configurazione rotori" — from the 3/4
+front pose go to 3/4 back, frame the `rotors` group, fade everything except
+the rotors to 20%, and then, *optionally*, a trigger makes the rotors spin on
+their own axes with alternating sign.
 
-**`timelineApiRef`** — a second imperative DOM↔Canvas bridge (new ref,
-`KeyboardComposer.jsx` → `Scene.jsx` → `MeshController.jsx`, same pattern
-as `apiRef`/`poseApi`), populated by two *separate* effects to avoid stale
-closures:
-- An actions effect (deps `[timelineApiRef]`, runs once) assigns
-  `addKeyframe()`/`removeKeyframe(id)`/`jumpToKeyframe(id)`/`setPlayhead(t)`
-  onto `timelineApiRef.current` — each reads its inputs (`selectionKey`,
-  the live `meshCtrl` values, `playhead`, `keyframesBySelection`) through
-  refs mirrored every render (`selectionKeyRef`/`meshCtrlRef`/
-  `keyframesRef`, same "ref updated unconditionally each render, read
-  inside a stable closure" idiom as `useComposerControls.js`'s
-  `disabledRef`/`feelRef`) rather than closing over the render-time
-  values directly — otherwise, since this effect only runs once, the
-  action closures would permanently capture whatever those values were on
-  first mount (e.g. "Add Keyframe" would snapshot `posX..rotZ` from
-  *before* a gizmo drag that didn't itself change `selection`/`playhead`).
-- A display-fields effect (deps on everything Timeline's UI needs to show:
-  `[timelineApiRef, selection, selectionKey, keyframesBySelection,
-  playhead, meshGroups]`) writes `selectionLabel`/`keyframes`/`playhead`/
-  `duration` as plain fields on the same object — "eventually correct" is
-  fine here since `Timeline.jsx` only polls it.
+#### Data model (`animation/animationSchema.js`)
 
-**`Timeline.jsx`** — DOM overlay outside the Canvas, same idioms as
-`Hud.jsx`: `DEBUG` recomputed locally, a 150ms poll (reading `editMode`
-off the *same* `poseApi.current` bridge `Hud.jsx` uses, plus
-`timelineApiRef.current`'s fields), renders `null` unless `DEBUG &&
-editMode === 'timeline'`. Shows the current selection's label, an
-"+ Keyframe @ Ns" button (disabled with nothing selected), and a
-scrubbable track (`pointerdown`+`pointermove` maps `clientX` to
-`[0, duration]`, calling `setPlayhead`) with a playhead marker and
-per-keyframe diamond markers (click to jump via `jumpToKeyframe`, a small
-"×" to `removeKeyframe`). `Timeline.module.css` mirrors `Hud.module.css`'s
-conventions (`pointer-events: none` on the container, `auto` on
-interactive children, monospace/caps styling).
+One new top-level key in the global JSON blob. `{version, items}` rather than
+a bare array, so a format bump has somewhere to live and `!!parsed.animations`
+stays a clean presence check:
+
+```jsonc
+"animations": { "version": 1, "items": [ /* Animation[] */ ] }
+
+// Animation
+{ "id": "rotors", "label": "Rotori", "hidden": false,
+  "loop": { "mode": "none" },     // "none" | "forever" | "count" (+ times, from)
+  "restoreOnStop": true, "steps": [ /* Step[] */ ] }
+
+// Step
+{ "id": "s3", "action": "setOpacity", "enabled": true,
+  "parallel": false,              // true = joins the PREVIOUS step's wave
+  "delay": 0,                     // s, from the start of its own wave
+  "wait": "duration",             // "settle" | "duration" | "none"
+  "duration": 0.6, "maxWait": 8, "easing": "easeInOutCubic",
+  "params": { "selector": { "kind": "allExcept", "groupIds": ["rotors"] },
+              "opacity": 0.2 } }
+```
+
+**Waves are the whole sequencing model.** `buildWaves(animation)` partitions
+the *enabled* steps once: `parallel: false` opens a new wave, `parallel: true`
+joins the previous one (the first enabled step always opens a wave — there is
+nothing to join). The runtime starts every step of a wave together and
+advances only when all of them report `done`. One integer cursor, and the
+editor indents parallel rows under their leader by reusing the same function —
+so the two can't diverge.
+
+`wait` and `duration` are **orthogonal**: `duration` is the *action's own*
+animated length (for `durationDriven` actions like fade and offset), `wait`
+decides whether the wave blocks on it. `wait:'none'` + `duration:0.6` means
+"start a 0.6 s fade and move on immediately." `delay` exists from day one
+because it costs nothing and recovers most of what a real timeline gives
+("start the fade 0.2 s into the dolly") — without it, parallelism is
+all-or-nothing at wave granularity.
+
+**`maxWait` is not polish.** `goTo` silently no-ops on an unknown key or under
+the pose lock, and `isFocusSettled` is a threshold on asymptotic damping whose
+time constant is `feel.focusDamp` — *a user-facing Leva slider that also ships
+in the JSON*. Without a watchdog a mistuned value wedges an animation forever
+with no error. `0` disables it, which is what `waitTrigger` does (it waits for
+a human).
+
+⚠️ **Mesh selectors store node NAMES, never `uuid`.** `THREE.Object3D.uuid` is
+regenerated on every GLTF parse, so a persisted uuid points at nothing on the
+next load. `MeshController`'s dropdown may use uuids (they live and die inside
+one session); anything written to the JSON may not. The price is that GLB node
+names can repeat and a name selects *every* mesh carrying it — the editor shows
+`collectMeshList`'s dedup-suffixed label but saves the raw name. This makes the
+asset pipeline's "exported node names must keep their distinguishing
+substrings" constraint protect animations too, not just group classification.
+
+`resolveSelector` (`animation/selectors.js`) handles `all` / `group` /
+`allExcept` / `meshes`, all built on `collectMeshGroups`, so `__editorHelper`
+exclusion and the group classification come for free.
+
+#### Runtime (`animation/animationRuntime.js`, ticked by `AnimationDirector.jsx`)
+
+Pure JS, no React — it mutates every frame. `AnimationDirector.jsx` is a
+sibling under `<Suspense>` in `Scene.jsx` with its own `useGLTF` (shared drei
+cache, like `MaterialTuner`/`MeshController`/`LightRig`), renders `null`, and
+owns the single `useFrame` that drives it. It is **always mounted, not
+`?debug`-gated**: in production it is what plays the animations launched from
+the HUD chips.
+
+⚠️ **No `priority` on that `useFrame`** — a priority > 0 disables R3F's
+automatic render loop.
+
+⚠️ **The tick order and the `return` after `start()` are load-bearing:**
+
+```js
+const tick = (rawDelta) => {
+  const dt = Math.min(rawDelta, 1/20)              // a refocused tab must not skip a step
+  for (const inst of instances) tickInstance(inst, dt)          // (1) update everything…
+  if (state === 'playing' && waveInstances.every(i => i.done)) advanceWave()  // (2) …then advance
+}
+// inside tickInstance, right after action.start(...):
+inst.started = true
+return   // ⚠️ NEVER evaluate isDone in the same tick as start()
+```
+
+`goTo` writes the spring's target synchronously but the spring integrates on
+the *next* frame: evaluating `isDone` immediately would have `isPoseSettled()`
+read "current === old target, velocity 0" and every pose step would fall
+through instantly. Same class of bug for the focus dolly. With (1)-then-(2)
+plus that `return`, a step started at tick *n* is first judged at tick *n+1*,
+and the `useFrame` callback order between the director and
+`useComposerControls` becomes irrelevant.
+
+**How each action reports "done"** — there are no completion callbacks
+anywhere in this codebase, so every one of these is a polled predicate:
+
+| class | done when |
+| --- | --- |
+| `goToPose` | `api.isPoseSettled()` — exact equality (the spring snaps to target and zeroes velocity), no threshold to tune |
+| `focusGroup` / `clearFocus` | `api.isFocusSettled()` — thresholds on damped values: absolute on the pivot, **relative** on the zoom factor (its targets span 0.02–4, a fixed epsilon would be 0.05% at one end and 10% at the other) |
+| duration-driven (`setOpacity`, `transformOffset`, `waitTime`) | `elapsed >= duration` |
+| persistent (`spinGroup`) | `wait:'none'` → immediately; the effect keeps living |
+| `waitTrigger` | a matching `trigger(name)` arrived |
+| anything, worst case | `elapsed >= maxWait` |
+
+**Finishing is not teardown.** When the waves run out the state becomes
+`'finished'`: persistent instances keep ticking (the rotors keep spinning, the
+isolate stays at 20%) but nothing new starts. That *is* what "configurazione
+rotori" means as a product state. Only `stopAnimation()` unwinds, in **reverse
+order of start** (a pivot acquired last must be released first), then
+`clearFocus()` if `restoreOnStop !== false`.
+
+**One live instance per `step.id`.** On a loop iteration a persistent action
+must not re-acquire pivots/materials, or the refcount never returns to zero —
+the existing instance is restarted via `action.restart?.()` instead.
+
+**What stops an animation**: `stopAnimation()` (HUD chip re-clicked, `Escape`,
+the editor's ■), `playAnimation(other)` (plays are exclusive — `stop()` then
+`play()`), **entering `editMode 'meshes'`** (mandatory: `MeshController`'s
+pivot and the registry's pivots reparent the same meshes and must never both
+be live), and director unmount. What does *not* stop it: drag, arrow keys, the
+HUD pager — you must be able to keep orbiting the isolated, spinning rotors.
+Clicking a pager button or a focus chip *does* stop it first
+(`stopIfAnimating()` in `Hud.jsx`), since otherwise two writers would fight
+over pose and zoom targets.
+
+`?debug` console handles, same idiom as `window.__focusGroup`:
+`__playAnimation(id, opts)`, `__stopAnimation()`, `__animTrigger(name)`,
+`__animState()`, `__animStats()` (owned materials / clones / pivots — the
+counters the teardown assertions check).
+
+#### Action registry (`animation/actions.js`)
+
+**One `ACTIONS` object is the single source of truth**, holding the parameter
+*schema* (from which `AnimationEditor` generates its fields) and the runtime
+*implementation* side by side, so the two can't drift. Adding an action there
+makes it appear in the editor with no UI code.
+
+```js
+{ label, group,               // 'camera' | 'materiali' | 'trasformazioni' | 'flusso'
+  persistent, durationDriven,
+  defaults: { wait, duration, easing, maxWait },
+  params: [ { key, type, label, default, … } ],   // type: number|boolean|string|
+                                                  // select|vec3|selector|group|pose|easing
+  start(inst, ctx), update(inst, ctx, dt), isSettled(inst, ctx),
+  restart(inst, ctx), stop(inst, ctx) }
+```
+
+Shipped set: `goToPose`, `focusGroup`, `clearFocus`, `setOpacity` (fade-in and
+fade-out are the same action with `opacity` 1 or 0), `spinGroup`,
+`transformOffset`, `waitTime`, `waitTrigger`.
+
+**No action adds a fourth writer to `cameraRadius`** — `focusGroup` goes
+through the existing `focusZoom` ref. What it did need is the `extra` argument
+on `applyFocus` and the `focusExtraRef` fix documented under "Zoom".
+
+#### Opacity (`animation/opacityRegistry.js`)
+
+**`applyMaterialProps` deliberately does NOT gain `opacity`/`transparent`.**
+Adding them would put a static opacity in every `Materiale · <gruppo>` Leva
+folder, in `window.__STATE_MATERIALS` and in every saved JSON — and
+`MaterialGroupTuner`'s apply effect re-runs on every `values` change, so the
+tuner and the animation would be two owners of one property with the tuner
+winning at unpredictable moments. Opacity stays a **runtime-only override
+layer**. The happy consequence: `applyMaterialProps` writes only
+color/roughness/metalness/envMapIntensity/clearcoat/clearcoatRoughness, so
+moving a material slider mid-animation *cannot* clobber a fade. Orthogonal by
+construction, not by discipline.
+
+The hard part is that `prepareGroupMaterials` clones **one material per
+group**, so a group's meshes share one object — right for "fade the whole
+group", wrong for "fade 3 keycaps". Two paths:
+
+- **Fast path**: if the selection contains *all* users of a material (the
+  common case — `allExcept('rotors')` is 5 whole group materials), write
+  straight to the shared material. Zero clones, zero extra shader compiles.
+- **Clone-on-write per mesh**: a partial subset of a shared material gives
+  each selected mesh its own clone (`__groupMaterialFor` copied onto the clone
+  so `prepareGroupMaterials` stays idempotent), restored and disposed on
+  release.
+
+`own(material)` snapshots `prevOpacity/prevTransparent/prevDepthWrite`
+**once**; a second acquire bumps `refs` and does *not* re-snapshot — otherwise
+a second fade would capture the first fade's value as "original" and the
+restore would be wrong. This is exactly the bug `MeshController`'s
+identity-`Set` dedup prevents *between meshes*, generalized *across time*.
+
+⚠️ **Anti-recompile discipline**: `transparent`/`depthWrite`/`needsUpdate` are
+touched only at acquire and release. During the fade **only `material.opacity`
+is written** (a uniform). `MeshController`'s slider sets `needsUpdate = true`
+on every change — harmless at mouse cadence, disastrous per-frame with ~34
+forward-rendered lights. Do not copy that line into the per-frame path.
+
+`depthWrite: true` by default (exposed as a param): turning ~250 meshes
+transparent already moves them into the depth-sorted transparent pass; also
+disabling depth writes produces visible sorting artifacts on interpenetrating
+keycaps.
+
+#### Pivots (`animation/pivot.js`, `animation/pivotRegistry.js`)
+
+`pivot.js` is `MeshController`'s wrap machinery, extracted verbatim and now
+used by both (see "Mesh editor"). The registry adds shared ownership.
+
+⚠️ **The teardown semantics differ, and this is the single biggest trap in the
+whole system.** `MeshController` unwinds with `restore({ bake: true })` —
+`parent.attach(mesh)`, which *bakes* the current transform into the mesh. Right
+for an editor: the user's edit persists. **Catastrophic for an animation**:
+`stopAnimation()` after a `transformOffset` would bake the explosion into the
+in-memory GLB permanently. The animation path therefore **restores rather than
+bakes**: every mesh's `{parent, position, quaternion, scale}` is snapshotted at
+wrap time and rewritten at unwind with `parent.add(mesh)` — not `attach()`,
+which would be a matrix round-trip, i.e. float drift.
+
+**Refcount + composed channels.** Two actions on the same target share one
+handle and compose:
+
+```js
+compose() {
+  this.pivot.position.copy(this.basePosition).add(this.channels.offsetPos)
+  this.pivot.quaternion.copy(this.baseQuaternion)
+    .multiply(this.channels.offsetQuat)   // authored placement first…
+    .multiply(this.channels.spin)         // …then spin, in the displaced frame
+}
+```
+
+That order means "spin on its own axis *after* being moved out" — the
+explode-and-rotate case.
+
+`spinGroup` uses **one pivot per mesh** (`acquireMesh`), never the group pivot:
+"rotate about its own center" is the single-mesh branch applied N times, while
+a group pivot would swing the rotors around their common barycenter.
+
+⚠️ **Partially-overlapping targets are refused, not merged.** A per-mesh spin
+plus a rigid *group* offset over the same meshes would be two pivots fighting
+for the same children, and whichever unwinds first would reparent meshes that
+now live under the other. The registry keeps a `meshOwner` map and **rejects
+(with a `console.warn`) an acquire that partially overlaps an existing one**
+rather than silently corrupting the hierarchy. To get that effect, author both
+steps at the same granularity (`perMesh`), which then share one handle.
+
+Animation pivots are named `__animPivot`, distinct from `__meshEditorPivot`, so
+the "exactly one editor pivot at a time" browser assertion still holds and gains
+a sibling. No `__editorHelper` tag is needed — a pivot is a `Group`, and both
+`collectMeshGroups` and `measureModelBox` filter on `isMesh`.
+
+#### Persistence
+
+The source of truth is **React state lifted to `KeyboardComposer.jsx`**, which
+renders both the Canvas subtree and the DOM overlays — so the list travels as
+an ordinary prop and needs no imperative bridge (see "Architecture"). It is
+mirrored to `window.__STATE_ANIMATIONS` for the save, and an
+`app-load-animations` listener there feeds it back through
+`normalizeAnimations`.
+
+`AnimationDirector` mirrors the prop into a ref and resolves ids through it, so
+editor keystrokes re-render one component that returns `null`, and
+`playAnimation(id)` always plays the *current* editor state — no separate
+"preview unsaved" API.
+
+Three sites in `LightRig.jsx` must stay in sync, as for every other section:
+`handleSaveJSON` (adds `animations`), `handleLoadJSON` and the production
+fetch (both dispatch `app-load-animations`). Backward compatibility is free —
+the `isNewFormat = !!parsed.lights` gate is untouched and each dispatch is
+`if (parsed.X)`-guarded. The shipped
+`public/lightconfig/app-state-config.json` currently carries only
+`lights/materials/rotation/keylight/spotlight`: like `focus`, `animations` is a
+section the editor writes but the committed file does not yet contain.
+
+`normalizeAnimations(raw)` fills defaults, drops steps with unknown actions
+(with a warn), generates missing ids, dedups animation ids, and rebuilds each
+step's `params` from the action's schema — so a JSON missing a parameter added
+later gets its default instead of `undefined`, and parameters since removed
+don't survive the round trip. It also accepts a bare array, so pasting just the
+list into the JSON view works.
+
+#### Editor (`AnimationEditor.jsx`, `editMode === 'anim'`)
+
+DOM overlay outside the Canvas, same idioms as `Hud.jsx`: `DEBUG` recomputed
+locally, a 150 ms poll on `poseApi.current` for `editMode` plus the runtime
+state, `null` unless `DEBUG && editMode === 'anim'`.
+
+Deliberately **plain DOM, not Leva**: `useControls` can't take a per-step
+dynamic schema without the component-per-item trick, and the step list changes
+length constantly. Two views on the same data — a block list whose parameter
+fields are *generated* from `ACTIONS[type].params` via one `<ParamField>`
+switch, and a JSON textarea whose text lives in **local** state (so half-typed
+JSON can't destroy the model) applied only via a button that runs it through
+`normalizeAnimations`.
+
+**Layout: a column docked LEFT, not a bar centred at the bottom.** The model
+sits in the middle of the canvas and the HUD chips sit bottom-centre; a wide
+bar there covered both. The column starts below the logo lockup and stops above
+the footer (the HUD derives that point from `--hud-pad`/`--logo-h`; the editor
+reproduces it with equivalent `clamp()`s, since those custom properties live on
+`.hud`). Leva is anchored right, so the two never meet. A `—` button collapses
+the panel to its title + play/stop row, for looking at the model without
+leaving debug mode.
+
+⚠️ **`color-scheme: dark` on every `<select>`/`<input>` is not cosmetic.** A
+native select's *popup* is drawn by the OS, not by the document's CSS: without
+it the option list renders white-on-white on Chrome/Windows and is legible only
+under the cursor. The `option`/`optgroup` background rules alongside it are the
+belt-and-braces for browsers that do honour them.
+
+A step is a **card of three lines** (identity + commands / parameters / timing),
+not a single row — ten controls in a row would wrap arbitrarily in a narrow
+column. Reordering uses `↑`/`↓` buttons, not HTML5 drag-and-drop: more reliable
+and keyboard-accessible. The `∥` toggle is disabled on the first step. `▶` on a
+card is "play from this wave".
+
+Two parameter types get real UI:
+- `selector` — a `kind` select, plus group toggle chips, plus (for
+  `kind: 'meshes'`) a **scrollable checkbox list with a text filter**, a
+  select-all/none pair and a live count. Not a `<select multiple>`: that needed
+  ctrl/shift for multi-selection and one stray click wiped the whole set. It is
+  fed by `apiRef.current.meshCatalog()`, since the editor lives outside the
+  Canvas and has no access to the scene; it displays `collectMeshList`'s
+  dedup-suffixed labels but stores node **names**.
+- `pose` — `label · key` disambiguation, because `POSE_HUD_LABEL` has
+  intentional duplicates (same reason as `LOCKED_POSE_OPTIONS` in `Scene.jsx`).
+
+**`↑ importa` / `↓ esporta`** move *only* the `animations` block, as an
+`animations.json` in exactly the shape of the global blob's `animations` key —
+so the two are interchangeable. This is deliberately separate from `LightRig`'s
+"Salva Configurazione"/"Carica JSON", which serialize *all* tunable state at
+once: animations are the one section you'd want to hand to someone, diff, or
+keep in version control on its own. Import replaces the whole set (like "Carica
+JSON" does), behind a `window.confirm` when there is existing work to lose.
+
+#### Known strains
+
+- **Every "done" is a policy, not a fact.** Half the steps end when a physics
+  predicate happens to converge, so the same animation genuinely takes
+  different wall-clock time on different machines, at different `focusDamp`
+  values, and after a user drag lands mid-step. Fine for a configurator; not
+  fine if anything ever has to sync to audio or scroll.
+- **`feel.focusDamp` and `feel.timeScale` both ship in the JSON.** The first
+  silently changes how long every `wait:'settle'` focus step blocks; the second
+  scales the pose spring but *not* the focus damping (deliberately), so
+  settle-based and duration-based steps drift relative to each other when it
+  changes.
+- **No scrubbing.** "What does it look like 2.3 s in" means replaying from the
+  top; `playAnimation(id, {fromWave: n})` softens it but the state at wave *n*
+  depends on all prior side effects. This is the real ergonomic cost of the
+  sequencer over the thing it replaced, and it is felt while authoring, not in
+  production.
+- **Not reversible by construction.** A timeline plays backwards for free; a
+  sequencer doesn't. The way back is either `stopAnimation()`'s teardown
+  (all at once, no easing) or hand-authored inverse steps — which is why
+  `stop()` must stay exhaustive and the restore-not-bake unwind is not
+  negotiable.
+- **`LightRig`'s `measureModelBox` will see the spinning rotors.** It
+  re-measures every `BOX_REFRESH_FRAMES` and damps the result, so a group whose
+  AABB changes shape as it rotates can make the adaptive light box slowly
+  breathe. If it turns out to matter, the skip flag belongs on **spin only** —
+  a `transformOffset` *should* stretch the box, that's the point of it.
+- A partial-subset fade clones N materials and flips `transparent`; with ~34
+  lights the first frame can hitch on shader compilation. The fast path avoids
+  it for whole-group selections, which is the common case.
 
 ### HUD (`Hud.jsx`)
 
 Real, always-mounted product UI (not debug-gated), DOM overlay with
-`pointer-events: none` except the `01–05` pose pager. The pager buttons
+`pointer-events: none` except the `01–05` pose pager, the **group-focus
+chips** and the **animation chips** (two stacked rows, bottom-centre).
+
+A focus chip calls `focusGroup(group.id)`; clicking the active one calls
+`clearFocus()`. The active chip is derived from `currentFocus()` in the same
+150 ms poll — not from local state — so it stays honest when the focus is
+changed from outside (the `?debug` console helpers, or the automatic clear on
+entering Mesh mode).
+
+The **animation row** (`.animBar`/`.animChip`, one row *above* the focus
+chips — added to, not replacing them, so the bare zoom stays available) is
+built from the `animations` prop, which reaches `Hud.jsx` as ordinary React
+state from `KeyboardComposer.jsx` and needs no poll. Only items with
+`hidden !== true` get a chip. Click plays, clicking the active one stops; the
+active id comes from `animationState()` in the same poll, same
+derive-from-the-imperative-source rule as the focus chips. When a
+`waitTrigger` step is blocking, one **extra chip** appears carrying that
+step's authored label and calling `triggerAnimation(name)` — that chip is the
+product surface for "optionally, an event makes the rotors spin."
+
+Both rows position off two CSS custom properties on `.hud` (`--chip-h`,
+`--chip-row-bottom`), so the mobile breakpoint moves them together by
+overriding the variables instead of re-stating each bar's `bottom`.
+
+Clicking a pager button or a focus chip **stops a running animation first**
+(`stopIfAnimating()`), or the two would fight over the same pose/zoom targets.
+`Escape` cascades most-specific-first: stop the animation if one is running,
+otherwise `clearFocus()`. Its listener is on `window`, not the canvas:
+clicking a chip takes focus off the canvas, so a canvas-scoped listener would
+never see the key.
+
+The pager buttons
 are `disabled` (and visually dimmed via `.pageDisabled`) for every pose
-except `lockedPoseKey` while `editMode` is `'meshes'`/`'timeline'` (see
-"Pose lock" above) — `Hud.jsx` learns `editMode`/`lockedPoseKey` from the
+except `lockedPoseKey` while `editMode` is `'meshes'` (see
+"Pose lock" above); the focus and animation chips disable wholesale in that
+mode for the same reason. `Hud.jsx` learns `editMode`/`lockedPoseKey` from the
 same 150ms poll it already runs for the active-pose readout, reading them
 off `poseApi.current` (the fields `Scene.jsx` publishes onto the shared
 `apiRef`/`poseApi` bridge). All four telemetry readouts are measured
@@ -919,17 +1394,24 @@ directly rather than derived from R3F/React state:
 
 `DEBUG` is independently recomputed from
 `new URLSearchParams(window.location.search).has('debug')` in
-`KeyboardComposer.jsx`, `KeyboardModel.jsx`, `LightRig.jsx`, and
-`Timeline.jsx` (not shared via context/prop) — if you add a new
-debug-gated file, follow the same pattern rather than threading a prop
-through. `editMode` (`'none' | 'lights' | 'meshes' | 'timeline'`), by
+`KeyboardComposer.jsx`, `KeyboardModel.jsx`, `LightRig.jsx`,
+`AnimationDirector.jsx`, `AnimationEditor.jsx` and
+`useComposerControls.js` (not shared via context/prop) —
+if you add a new debug-gated file, follow the same pattern rather than
+threading a prop through. In `useComposerControls.js` it gates exactly one
+thing: whether the `wheel` listener is registered at all; in
+`AnimationDirector.jsx` it gates only the `window.__playAnimation`-family
+console handles — **the director itself runs in production**, since that's
+what plays the animations the HUD chips launch.
+`editMode` (`'none' | 'lights' | 'meshes' | 'anim' | 'focus'`), by
 contrast, *is* threaded as a plain prop from a single `useControls` call
-in `Scene.jsx` down into `KeyboardModel`, `LightRig`, and
-`MeshController` — it needs one shared source of truth (mutual exclusion
+in `Scene.jsx` down into `KeyboardModel`, `LightRig`,
+`MeshController` and `AnimationDirector` — it needs one shared source of
+truth (mutual exclusion
 doesn't work if each file has its own idea of the current mode), whereas
 `DEBUG` is a static, page-load-time flag safe to recompute anywhere.
-`Timeline.jsx` is the one exception that reads `editMode` a different way
-(off the `poseApi`/`apiRef` bridge rather than as a direct prop) since it
+`AnimationEditor.jsx` is the one exception that reads `editMode` a different
+way (off the `poseApi`/`apiRef` bridge rather than as a direct prop) since it
 lives outside the Canvas, like `Hud.jsx` — see "Pose lock" above. `Leva`
 itself is always mounted
 (`KeyboardComposer.jsx`'s `DebugPanel`) even in production, with
@@ -987,7 +1469,7 @@ Hence a two-tier scheme tied to motion state:
 
 | State | Technique | Cost |
 | --- | --- | --- |
-| Moving (drag, spring, timeline scrub) | MSAA 4× on the render target + SMAA | ≈ today's |
+| Moving (drag, spring, a running animation) | MSAA 4× on the render target + SMAA | ≈ today's |
 | At rest (spring settled, no input) | Progressive accumulation: sub-pixel Halton jitter on the projection matrix, averaged into an HDR buffer at weight `1/n` over ~16–32 frames, then **stop rendering** | Zero at steady state |
 
 Conceptually `TAARenderPass`/`SSAARenderPass` in unbiased/progressive mode.
@@ -1025,7 +1507,7 @@ Two separate contributions:
 
 1. **Half-resolution screen-space AO** (GTAO/N8AO class) with a
    depth-guided bilateral upsample. It responds to any transform, so it
-   keeps working under the mesh editor and the Timeline. Use an
+   keeps working under the mesh editor and under a running animation. Use an
    implementation that can **reconstruct normals from depth** — that removes
    the normal prepass, i.e. 264 draw calls, which is worth the marginal
    quality loss on this cost profile. Physically AO should modulate only
@@ -1074,8 +1556,12 @@ Two invalidation sources that are not obvious and would bite:
   averages genuinely different images and yields a dirty result. A
   convergence threshold on the damping is needed, not just the camera
   spring's signal.
-- **In `?debug`**, gizmo drags and timeline scrubbing must invalidate like a
-  normal drag.
+- **A running animation is never at rest**, and not only while the camera
+  moves: a `spinGroup` step keeps rotating geometry forever and a
+  `setOpacity` fade changes shading without moving the camera at all. The
+  "at rest" signal must therefore consult
+  `apiRef.current.animationState()`, not just the pose spring.
+- **In `?debug`**, gizmo drags must invalidate like a normal drag.
 
 ### Codebase-specific traps
 
@@ -1088,8 +1574,9 @@ Two invalidation sources that are not obvious and would bite:
 - **`__editorHelper` meshes must be excluded from depth passes.** The
   selection halos are 4%-inflated shells; in the depth buffer they'd
   generate an AO halo around every selected object. This is the same class
-  of bug already handled in `collectMeshGroups` and `measureModelBox` —
-  same tag, a third site to cover.
+  of bug already handled in `collectMeshGroups`, `measureModelBox` and the
+  animation system's `opacityRegistry`/`resolveSelector` — same tag, one more
+  site to cover.
 - **Shader recompilation is real stutter.** With 34 lights the permutation
   count is large and a mid-interaction compile is visible. The rig already
   does the right thing by animating light *intensities* and never light

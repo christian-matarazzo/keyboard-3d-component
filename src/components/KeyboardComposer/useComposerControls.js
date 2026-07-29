@@ -12,6 +12,14 @@ import {
   ENTRY_LANDSCAPE,
   PORTRAIT_YAW_OFFSET,
 } from './poseGraph'
+import { measureGroupFraming } from './focusFraming'
+import { DEFAULT_MESH_GROUPS } from './materials/meshGroups'
+
+// La rotella è uno STRUMENTO DI AUTHORING, non un'interazione di prodotto: in
+// produzione lo zoom è solo quello autorato sui gruppi (vedi focusGroup). Il
+// flag è ricalcolato qui come negli altri file (mai threadato come prop) —
+// vedi la sezione "Debug flag" in CLAUDE.md.
+const DEBUG = new URLSearchParams(window.location.search).has('debug')
 
 // Mezza larghezza del modello + margine: usata per il fit responsive.
 const FIT_HALF_WIDTH = 2.0
@@ -32,10 +40,38 @@ const EPS = 1e-6
 // il primo fit che passava lo cancellava.
 const ZOOM_MIN = 0.2
 const ZOOM_MAX = 4
-const RADIUS_MIN = 2.5
+// Pavimento del raggio COMPOSTO. Abbassato da 2.5 per lo zoom sui gruppi: con
+// focale 200mm (fov ≈ 5.6° in landscape) baseRadius vale ~36 unità-scena e
+// inquadrare un gruppo piccolo (rotori, tasselli) chiede raggi di pochi unità
+// — il vecchio 2.5 sarebbe stato un tetto invisibile sull'avvicinamento. Resta
+// comunque sopra il near plane di default (0.1).
+const RADIUS_MIN = 0.8
 const RADIUS_MAX = 200
-// Raggio minimo che il FIT (non lo zoom manuale) può produrre.
+// Raggio minimo che il FIT (non lo zoom manuale) può produrre. ATTENZIONE:
+// riguarda SOLO i due percorsi di fit sul modello intero — non va mai applicato
+// al focus sui gruppi, che per definizione deve poter scendere sotto
+// l'inquadratura d'insieme.
 const FIT_RADIUS_MIN = 5.2
+
+// ZOOM DI PRODOTTO SUI GRUPPI ("focus"): terzo fattore moltiplicativo sopra il
+// fit, con ref propria, esattamente come userZoom (vedi applyRadius). Espresso
+// come FATTORE e non come raggio assoluto perché così è invariante ai
+// ricalcoli del fit: il rapporto fra la distanza che inquadra un oggetto di
+// mezza-estensione R e quella che ne inquadra uno di FIT_HALF_WIDTH vale
+// R/FIT_HALF_WIDTH qualunque siano fov, aspect, fitMargin e zoomOutMobile —
+// tutti termini che si semplificano fra numeratore e denominatore. Un resize o
+// un cambio di margine riscrive quindi solo baseRadius e il focus resta valido
+// senza alcuna riconciliazione.
+const FOCUS_ZOOM_MIN = 0.02
+const FOCUS_ZOOM_MAX = 4
+
+// Soglie di "focus assestato" interrogate dal sequencer delle animazioni
+// (isFocusSettled sotto). Il pivot è in unità-scena, quindi una soglia assoluta
+// va bene; il fattore di zoom no — i suoi target vanno da 0.02 a 4, un epsilon
+// fisso sarebbe lo 0.05% a un estremo e il 10% all'altro. Da qui la soglia
+// RELATIVA.
+const FOCUS_SETTLE_DIST_SQ = 1e-6
+const FOCUS_SETTLE_REL = 5e-3
 
 // Stima della "velocità di interazione" da tastiera, dalla cadenza dei
 // commit sullo stesso asse (il drag ha già una velocità reale misurata dal
@@ -134,8 +170,13 @@ const softClamp = (raw, lo, hi, factor, cap) => {
  *    in gradi). Un 90° quindi dura il doppio di un 45° e rimbalza uguale.
  *  - zoom a rotella come FATTORE sopra il fit responsive (vedi userZoom): il
  *    fit detta l'inquadratura, lo zoom dell'utente la moltiplica e non viene
- *    mai azzerato. Focale tele (200mm) per la prospettiva compressa
- *    "commercial".
+ *    mai azzerato. SOLO in ?debug — è uno strumento di authoring, in
+ *    produzione il listener non viene registrato. Focale tele (200mm) per la
+ *    prospettiva compressa "commercial".
+ *  - zoom di PRODOTTO sui gruppi di mesh (focusGroup/clearFocus): sposta il
+ *    pivot dell'orbita sul centro del gruppo e stringe il raggio con un terzo
+ *    fattore moltiplicativo (focusZoom). La navigazione resta viva: si
+ *    continua a girare attorno al dettaglio con drag/frecce/pulsantiera.
  *  - il modello non viene mai ruotato: è la camera a orbitare (vedi useFrame),
  *    quindi l'hook NON riceve alcun ref al <group> del modello.
  *  - mobile portrait: ingresso nella posa top verticale (pitch 90° + yaw 90°,
@@ -153,13 +194,20 @@ export function useComposerControls(
     // quindi raggiungere questi ref altrimenti.
     apiRef,
     disabled = false,
-    // NUOVO: stato editor, per il lock-guard di goTo (posa bloccata in Mesh/
-    // Timeline) e per il fit dinamico in Luci (vedi sotto). `scene` serve SOLO
+    // NUOVO: stato editor, per il lock-guard di goTo (posa bloccata in Mesh)
+    // e per il fit dinamico in Luci (vedi sotto). `scene` serve SOLO
     // al Box3 live del fit dinamico — già disponibile in KeyboardModel.jsx
     // (useGLTF), nessun fetch nuovo.
     editMode = 'none',
     lockedPoseKey = null,
     scene,
+    // Zoom di prodotto sui gruppi: `meshGroups` serve a classificare le mesh
+    // da misurare (stessa fonte di verità del resto, vedi
+    // materials/meshGroups.js), `focusOverrides` sono le inquadrature autorate
+    // in ?debug e ricaricate dal JSON di produzione
+    // (`{ [groupId]: { radiusFactor, offsetX, offsetY, offsetZ } }`).
+    meshGroups = DEFAULT_MESH_GROUPS,
+    focusOverrides = null,
   } = {},
 ) {
   const gl = useThree((s) => s.gl)
@@ -179,19 +227,53 @@ export function useComposerControls(
   editModeRef.current = editMode
   const lockedPoseKeyRef = useRef(lockedPoseKey)
   lockedPoseKeyRef.current = lockedPoseKey
+  const meshGroupsRef = useRef(meshGroups)
+  meshGroupsRef.current = meshGroups
+  const focusOverridesRef = useRef(focusOverrides)
+  focusOverridesRef.current = focusOverrides
 
   // NUOVO: Svincoliamo l'interpolazione dal group 3D
   const curAngles = useRef({ pitch: initialRotation.x, yaw: initialRotation.y })
-  // Distanza camera EFFETTIVA = baseRadius (fit) * userZoom (rotella).
+  // Distanza camera EFFETTIVA = baseRadius (fit) * userZoom (rotella, solo
+  // ?debug) * focusZoom (gruppo inquadrato).
   // Nessun percorso scrive mai cameraRadius direttamente: il fit scrive
-  // baseRadius, la rotella scrive userZoom, e applyRadius() ricompone. Così
-  // lo zoom manuale sopravvive a ogni ricalcolo dell'inquadratura.
+  // baseRadius, la rotella scrive userZoom, il focus scrive focusZoom, e
+  // applyRadius() ricompone. Così ogni fattore sopravvive ai ricalcoli degli
+  // altri. Un eventuale QUARTO scrittore deve avere una ref propria ed essere
+  // foldato qui dentro — mai un'assegnazione diretta a cameraRadius.
   const cameraRadius = useRef(5.2)
   const baseRadius = useRef(5.2)
   const userZoom = useRef(1)
+  // Terzo fattore: lo zoom sul gruppo inquadrato. `value` è il valore ANIMATO
+  // (smorzato ogni frame verso focusZoomTarget) — è quello che entra nella
+  // composizione, così la transizione passa dal solito punto unico invece che
+  // da qualcuno che scrive cameraRadius.
+  const focusZoom = useRef({ value: 1 })
+  const focusZoomTarget = useRef(1)
   const applyRadius = () => {
-    cameraRadius.current = clamp(baseRadius.current * userZoom.current, RADIUS_MIN, RADIUS_MAX)
+    cameraRadius.current = clamp(
+      baseRadius.current * userZoom.current * focusZoom.current.value,
+      RADIUS_MIN,
+      RADIUS_MAX,
+    )
   }
+
+  // Pivot dell'orbita: la camera guarda SEMPRE questo punto. Di default è
+  // l'altezza del modello sull'asse (comportamento storico, prima era il
+  // letterale `camera.position.y += PIVOT_Y`); inquadrando un gruppo si sposta
+  // sul suo centro, perché avvicinarsi soltanto non basta — un gruppo non
+  // centrato sull'origine (rotori di lato, rialzo sotto) uscirebbe dal frame
+  // man mano che ci si avvicina. `cur` è il valore animato, `target` quello
+  // richiesto.
+  const pivotCur = useRef(new THREE.Vector3(0, PIVOT_Y, 0))
+  const pivotTarget = useRef(new THREE.Vector3(0, PIVOT_Y, 0))
+  // Gruppo attualmente inquadrato (o null): letto da currentFocus() per l'HUD
+  // e usato per ri-applicare il focus quando cambiano le inquadrature autorate.
+  const focusGroupRef = useRef(null)
+  // Override puntuali dell'ULTIMA applyFocus (oggi: quelle autorate in uno step
+  // di animazione). Vanno ricordate perché la ri-applicazione al cambio delle
+  // inquadrature del FocusTuner deve ripassarle — vedi applyFocus.
+  const focusExtraRef = useRef(null)
 
   // Parametri "feel" regolabili dal pannello (?debug): i default sono i
   // valori di produzione.
@@ -207,6 +289,13 @@ export function useComposerControls(
     timeScale: { value: 0.3, min: 0.3, max: 1.5, step: 0.05, label: 'velocità animazione' },
     fitMargin: { value: 1.6, min: 1, max: 2.5, step: 0.05, label: 'margine inquadratura' },
     zoomOutMobile: { value: 1.25, min: 1, max: 1.8, step: 0.05, label: 'zoom-out mobile' },
+    // Transizione dello zoom sui gruppi (dolly + spostamento del pivot).
+    // Volutamente NON la molla delle pose: quella integra angoli con la
+    // compensazione d'ampiezza di stepAmp, semanticamente scorrelata da una
+    // carrellata. Smorzamento maath sul delta GREZZO (non scalato da
+    // timeScale), così questo numero è leggibile come "tempo di assestamento
+    // in secondi" e resta l'unica manopola del focus.
+    focusDamp: { value: 0.6, min: 0.1, max: 2, step: 0.05, label: 'transizione focus' },
   }), { collapsed: true })
 
   // 1. Salva lo stato corrente
@@ -264,6 +353,82 @@ export function useComposerControls(
   // ricava dalla cadenza delle pressioni.
   const keyCommitAt = useRef({ pitch: 0, yaw: 0 })
 
+  // --- Zoom di prodotto sui gruppi ("focus") ----------------------------
+  // Inquadra un gruppo logico di mesh: sposta il pivot dell'orbita sul suo
+  // centro e riduce il raggio quel tanto che serve a contenerne l'estensione.
+  // Entrambe le grandezze sono TARGET, smorzati nel useFrame — qui non si
+  // scrive mai direttamente la posizione della camera.
+  //
+  // La misura è EDGE-TRIGGERED (una volta all'ingresso nel focus, al cambio
+  // gruppo e al cambio delle inquadrature autorate), mai per-frame: è un
+  // traverse completo della scena, come la scatola adattiva del LightRig.
+  //
+  // `extra` sono override PUNTUALI del chiamante (oggi: uno step `focusGroup`
+  // di un'animazione che vuole la propria inquadratura, diversa da quella
+  // autorata nel FocusTuner). Si sovrappongono alle override per-gruppo e
+  // vengono ricordate in `focusExtraRef`, perché la ri-applicazione qui sotto
+  // deve poterle ripassare: senza, muovere uno slider Leva di focus (o un
+  // evento `app-load-focus` in arrivo) le scarterebbe in silenzio.
+  const applyFocus = (groupId, extra = null) => {
+    if (!groupId) return false
+    // Stesso guard di goTo: in Mesh la posa è bloccata e il modello può
+    // essere deformato dall'editor — non è il momento di re-inquadrare.
+    if (editModeRef.current === 'meshes') return false
+
+    const framing = measureGroupFraming(scene, meshGroupsRef.current, groupId)
+    if (!framing) return false
+
+    focusExtraRef.current = extra
+    const override = { ...(focusOverridesRef.current?.[groupId] ?? {}), ...(extra ?? {}) }
+    pivotTarget.current.set(
+      framing.center.x + (override.offsetX ?? 0),
+      framing.center.y + (override.offsetY ?? 0),
+      framing.center.z + (override.offsetZ ?? 0),
+    )
+    // radius/FIT_HALF_WIDTH = "quanto è più piccolo di ciò che baseRadius
+    // inquadra" (vedi FOCUS_ZOOM_MIN/MAX per il perché il rapporto è
+    // invariante). Il raggio misurato è quello della SFERA, quindi generoso
+    // per costruzione: `radiusFactor` autorato è il modo previsto per
+    // stringere l'inquadratura fino a quella di prodotto.
+    focusZoomTarget.current = clamp(
+      (framing.radius / FIT_HALF_WIDTH) * (override.radiusFactor ?? 1),
+      FOCUS_ZOOM_MIN,
+      FOCUS_ZOOM_MAX,
+    )
+    focusGroupRef.current = groupId
+    return true
+  }
+
+  const clearFocus = () => {
+    focusGroupRef.current = null
+    focusExtraRef.current = null
+    pivotTarget.current.set(0, PIVOT_Y, 0)
+    focusZoomTarget.current = 1
+  }
+
+  // Le due funzioni sopra si ricreano a ogni render (leggono `scene`, che è una
+  // prop): l'effetto dell'API imperativa gira invece UNA VOLTA SOLA (deps
+  // [apiRef]) e ne imprigionerebbe la prima versione. Stesso rimedio già usato
+  // per disabledRef/editModeRef: una ref aggiornata a ogni render, letta dentro
+  // la closure stabile.
+  const focusImplRef = useRef(null)
+  focusImplRef.current = { applyFocus, clearFocus }
+
+  // Le inquadrature autorate arrivano in modo asincrono (slider Leva in
+  // ?debug, o evento `app-load-focus` al caricamento del JSON in produzione):
+  // se cambiano mentre un gruppo è già inquadrato, si ri-applica al volo — è
+  // ciò che rende gli slider di FocusTuner (Scene.jsx) utilizzabili a video
+  // invece che alla cieca.
+  useEffect(() => {
+    if (focusGroupRef.current) applyFocus(focusGroupRef.current, focusExtraRef.current)
+  }, [focusOverrides, scene])
+
+  // Entrando nell'editor mesh la posa si blocca e la geometria può essere
+  // spostata: un focus rimasto attivo inquadrerebbe un centro non più valido.
+  useEffect(() => {
+    if (editMode === 'meshes') clearFocus()
+  }, [editMode])
+
   // API imperativa per la pulsantiera delle viste (ViewPad), che vive nel DOM
   // fuori dal Canvas. `goTo` non è un salto secco come __setPose: imposta il
   // target e lascia animare la STESSA molla del resto (stessa velocità
@@ -280,15 +445,14 @@ export function useComposerControls(
       goTo(key) {
         const c = POSE_COORD[key]
         if (!c) return
-        // Lock: in Mesh/Timeline la navigazione ESTERNA (pulsantiera HUD, o
-        // qualunque altro chiamante) resta congelata sulla posa bloccata.
-        // L'unica goTo ammessa mentre il lock è attivo è verso la STESSA
-        // lockedPoseKey (è quella che Scene.jsx richiama entrando in
-        // Mesh/Timeline o cambiando la posa bloccata) — qualunque altra
-        // richiesta viene ignorata silenziosamente, mai un salto a metà.
-        const mode = editModeRef.current
+        // Lock: in Mesh la navigazione ESTERNA (pulsantiera HUD, o qualunque
+        // altro chiamante) resta congelata sulla posa bloccata. L'unica goTo
+        // ammessa mentre il lock è attivo è verso la STESSA lockedPoseKey (è
+        // quella che Scene.jsx richiama entrando in Mesh o cambiando la posa
+        // bloccata) — qualunque altra richiesta viene ignorata
+        // silenziosamente, mai un salto a metà.
         const lockedKey = lockedPoseKeyRef.current
-        const locked = (mode === 'meshes' || mode === 'timeline') && lockedKey != null
+        const locked = editModeRef.current === 'meshes' && lockedKey != null
         if (locked && key !== lockedKey) return
 
         const p = pose.current
@@ -316,10 +480,56 @@ export function useComposerControls(
           frame.current.yawOffset,
         )
       },
+      // Zoom di prodotto: inquadra un gruppo di mesh (vedi applyFocus).
+      // Ritorna false se il gruppo non esiste/è vuoto o se l'editor mesh è
+      // attivo, così il chiamante (HUD) può non accendere lo stato attivo.
+      // `extra` (opzionale) sovrascrive per questa sola chiamata le
+      // inquadrature autorate nel FocusTuner: lo usa il sequencer delle
+      // animazioni per dare a uno step la propria distanza/offset.
+      focusGroup(groupId, extra = null) {
+        return focusImplRef.current.applyFocus(groupId, extra)
+      },
+      // Torna all'inquadratura d'insieme. Non tocca userZoom: uno zoom a
+      // rotella dato in ?debug prima del focus si ritrova intatto all'uscita.
+      clearFocus() {
+        focusImplRef.current.clearFocus()
+      },
+      currentFocus() {
+        return focusGroupRef.current
+      },
+      // --- Sonde di "movimento finito" -----------------------------------
+      // In questo componente non esiste alcun callback di fine animazione: il
+      // sequencer (animation/animationRuntime.js) interroga questi due
+      // predicati per sapere quando uno step può considerarsi concluso.
+      //
+      // La molla SNAPPA esattamente sul target e azzera la velocità quando
+      // converge (vedi l'integrazione nel useFrame): qui l'uguaglianza è
+      // esatta, non serve alcuna soglia.
+      isPoseSettled() {
+        const p = pose.current
+        const s = spring.current
+        const c = curAngles.current
+        return c.pitch === p.targetX && c.yaw === p.targetY && s.vx === 0 && s.vy === 0
+      },
+      // Il focus invece è smorzato in modo asintotico (maath), quindi serve una
+      // soglia: assoluta sul pivot (unità-scena), RELATIVA sul fattore di zoom
+      // — vedi FOCUS_SETTLE_*.
+      isFocusSettled() {
+        const zt = focusZoomTarget.current
+        return (
+          pivotCur.current.distanceToSquared(pivotTarget.current) < FOCUS_SETTLE_DIST_SQ &&
+          Math.abs(focusZoom.current.value - zt) < FOCUS_SETTLE_REL * Math.max(zt, 0.05)
+        )
+      },
     })
     return () => {
       delete apiRef.current.goTo
       delete apiRef.current.currentPoseKey
+      delete apiRef.current.focusGroup
+      delete apiRef.current.clearFocus
+      delete apiRef.current.currentFocus
+      delete apiRef.current.isPoseSettled
+      delete apiRef.current.isFocusSettled
     }
   }, [apiRef])
 
@@ -336,9 +546,16 @@ export function useComposerControls(
       curAngles.current.yaw = p.targetY
       return { pitch: pitchDeg, yaw: yawDeg }
     }
+    // Focus da console: serve a trovare i numeri delle inquadrature (e a
+    // verificarle su tutte le pose) senza passare dall'HUD.
+    //   window.__focusGroup('rotors'); window.__clearFocus()
+    window.__focusGroup = (groupId) => focusImplRef.current.applyFocus(groupId)
+    window.__clearFocus = () => focusImplRef.current.clearFocus()
     return () => {
       delete window.__setPose
       delete window.__abortComposerDrag
+      delete window.__focusGroup
+      delete window.__clearFocus
     }
   }, [])
 
@@ -388,7 +605,7 @@ export function useComposerControls(
   }, [size, camera, focalLength, feel.fitMargin, feel.zoomOutMobile])
 
   // Fit dinamico (Luci + posa corrente === posa bloccata): il modello può
-  // essere stato deformato in Mesh/Timeline (gruppi/mesh traslati/ruotati,
+  // essere stato deformato in Mesh (gruppi/mesh traslati/ruotati,
   // trasformate cotte nella scena reale da MeshController.jsx) — invece della
   // costante FIT_HALF_WIDTH (tarata sul modello vergine), l'inquadratura usa
   // il Box3 LIVE di `scene`. NIENTE ulteriore moltiplicazione per uno
@@ -404,7 +621,7 @@ export function useComposerControls(
   // di questo fix).
   //
   // SOLO ALLARGAMENTO (nuovo): questo percorso esiste per non tagliare un
-  // modello DEFORMATO in Mesh/Timeline, non per re-inquadrare il modello
+  // modello DEFORMATO in Mesh, non per re-inquadrare il modello
   // vergine. Se quel che c'è in scena sta già dentro l'inquadratura corrente
   // non tocca nulla — altrimenti ogni ingresso in modalità Luci riscriveva il
   // raggio e cancellava lo zoom dell'utente (era il reset di zoom "al cambio
@@ -684,11 +901,19 @@ export function useComposerControls(
       p.targetY = p.yaw
     }
 
-    // LOGICA DI ZOOM — indipendente da `disabled`: a differenza di
+    // LOGICA DI ZOOM (SOLO ?debug) — la rotella è uno strumento di authoring:
+    // serve a trovare i fattori di inquadratura che poi si scrivono nel JSON,
+    // non è un'interazione di prodotto. In produzione il listener NON viene
+    // proprio registrato (vedi addEventListener più sotto): un semplice
+    // early-return non basterebbe, perché con `{ passive: false }` +
+    // preventDefault si continuerebbe a mangiare lo scroll della pagina che
+    // ospita il componente.
+    //
+    // Dentro ?debug resta indipendente da `disabled`: a differenza di
     // drag/frecce (bloccati in modalità Mesh, vedi Scene.jsx), lo zoom resta
-    // sempre attivo in ogni modalità dell'editor debug. Muove il FATTORE
-    // userZoom, non il raggio: è ciò che lo rende immune a ogni ricalcolo del
-    // fit (resize, cambio modalità, cambio posa, selezione mesh…).
+    // attivo in ogni modalità dell'editor. Muove il FATTORE userZoom, non il
+    // raggio: è ciò che lo rende immune a ogni ricalcolo del fit (resize,
+    // cambio modalità, cambio posa, focus su un gruppo…).
     const onWheel = (e) => {
       e.preventDefault()
       userZoom.current = clamp(userZoom.current * (1 + e.deltaY * 0.0012), ZOOM_MIN, ZOOM_MAX)
@@ -702,7 +927,7 @@ export function useComposerControls(
     el.addEventListener('pointerenter', onPointerEnter)
     el.addEventListener('pointerleave', onPointerLeave)
     el.addEventListener('keydown', onKeyDown)
-    el.addEventListener('wheel', onWheel, { passive: false }) // ASCOLTO ZOOM
+    if (DEBUG) el.addEventListener('wheel', onWheel, { passive: false }) // ASCOLTO ZOOM (solo authoring)
 
     window.addEventListener('keyup', onKeyUp)
     window.addEventListener('blur', onWindowBlur)
@@ -715,7 +940,7 @@ export function useComposerControls(
       el.removeEventListener('pointerenter', onPointerEnter)
       el.removeEventListener('pointerleave', onPointerLeave)
       el.removeEventListener('keydown', onKeyDown)
-      el.removeEventListener('wheel', onWheel) // RIMOZIONE ZOOM
+      if (DEBUG) el.removeEventListener('wheel', onWheel) // RIMOZIONE ZOOM
       
       window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', onWindowBlur)
@@ -770,13 +995,26 @@ export function useComposerControls(
       integrate('yaw', 'vy', p.targetY)
     }
 
+    // Focus sui gruppi: pivot e fattore di zoom inseguono i propri target con
+    // smorzamento maath. Sul delta GREZZO, non su `scaledDelta`: la carrellata
+    // ha la sua manopola (focusDamp) e non deve cambiare velocità quando si
+    // ritocca `timeScale` della rotazione. A riposo (nessun focus attivo) i
+    // due valori sono già sui target e queste chiamate sono no-op numerici.
+    easing.damp3(pivotCur.current, pivotTarget.current, f.focusDamp, delta)
+    easing.damp(focusZoom.current, 'value', focusZoomTarget.current, f.focusDamp, delta)
+    // Unico punto che ricompone il raggio: base (fit) × userZoom (rotella,
+    // solo debug) × focusZoom (gruppo inquadrato). Nessuno scrive cameraRadius.
+    applyRadius()
+
     // Orbita della telecamera: rotazione inversa perfetta tramite quaternioni
     camera.quaternion.setFromEuler(new THREE.Euler(-cur.pitch, -cur.yaw, 0, 'YXZ'))
-    
-    // Posizioniamo la telecamera al raggio corrente e applichiamo la rotazione
+
+    // Posizioniamo la telecamera al raggio corrente, applichiamo la rotazione
+    // e la portiamo in orbita attorno al pivot corrente (di default
+    // (0, PIVOT_Y, 0) — identico allo storico `position.y += PIVOT_Y`).
     camera.position.set(0, 0, cameraRadius.current)
     camera.position.applyQuaternion(camera.quaternion)
-    camera.position.y += PIVOT_Y
+    camera.position.add(pivotCur.current)
   })
 
   // Edge-detector del fit dinamico (requisito Luci + posa bloccata): la posa

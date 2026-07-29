@@ -6,6 +6,7 @@ import { useControls } from 'leva'
 import { KeyboardModel, DRACO_PATH } from './KeyboardModel'
 import LightRig from './LightRig'
 import MeshController from './MeshController'
+import AnimationDirector from './AnimationDirector'
 import { prepareGroupMaterials, applyMaterialProps } from './materials/groupMaterials'
 import { DEFAULT_MESH_GROUPS } from './materials/meshGroups'
 import { POSE_COORD, POSE_HUD_LABEL } from './poseGraph'
@@ -83,6 +84,68 @@ function MaterialGroupTuner({ group, materials, onChange }) {
 }
 
 /**
+ * Inquadratura autorata di UN gruppo (pannello ?debug, modalità Focus).
+ *
+ * Il focus calcolato da solo (sfera che contiene il gruppo, vedi
+ * focusFraming.js) è un default sicuro, non un'inquadratura di prodotto:
+ * `radiusFactor` la stringe/allarga e `offsetX/Y/Z` spostano il centro
+ * dell'orbita rispetto al baricentro geometrico. I valori si trovano a video
+ * con la rotella (attiva solo in ?debug) e si salvano nel JSON globale con
+ * "Salva Configurazione" del LightRig, come tutto il resto dello stato.
+ *
+ * Stesso pattern per-gruppo di MaterialGroupTuner: un COMPONENTE per gruppo
+ * (una sola `useControls` fissa ciascuno), non una `useControls` dentro un
+ * ciclo — vedi il commento lì sopra per il perché.
+ */
+function FocusGroupTuner({ group, onChange }) {
+  const folderLabel = `Focus · ${group.label.toLowerCase()}`
+  const [values, setValues] = useControls(folderLabel, () => ({
+    radiusFactor: { value: 1, min: 0.1, max: 3, step: 0.01, label: 'distanza (×)' },
+    offsetX: { value: 0, min: -2, max: 2, step: 0.01, label: 'offset X' },
+    offsetY: { value: 0, min: -2, max: 2, step: 0.01, label: 'offset Y' },
+    offsetZ: { value: 0, min: -2, max: 2, step: 0.01, label: 'offset Z' },
+  }), { collapsed: true, render: (get) => get('⚙️ Editor · Modalità.editMode') === 'focus' })
+
+  useEffect(() => {
+    onChange(group.id, values)
+  }, [group.id, values, onChange])
+
+  useEffect(() => {
+    const handler = (e) => {
+      const detail = e.detail?.[group.id]
+      if (detail) setValues(detail)
+    }
+    window.addEventListener('app-load-focus', handler)
+    return () => window.removeEventListener('app-load-focus', handler)
+  }, [group.id, setValues])
+
+  return null
+}
+
+/**
+ * Raccoglie le inquadrature di tutti i gruppi in un solo oggetto
+ * (`{ [groupId]: { radiusFactor, offsetX, offsetY, offsetZ } }`), lo pubblica
+ * su `window.__STATE_FOCUS` per il salvataggio JSON e lo risale a Scene, che
+ * lo passa al hook della camera. Un groupId assente da un JSON vecchio ricade
+ * semplicemente sul focus calcolato.
+ */
+function FocusTuner({ groups = DEFAULT_MESH_GROUPS, onChange }) {
+  const [focusState, setFocusState] = useState({})
+  const handleGroupChange = useCallback((groupId, values) => {
+    setFocusState((prev) => ({ ...prev, [groupId]: values }))
+  }, [])
+
+  useEffect(() => {
+    window.__STATE_FOCUS = focusState
+    onChange(focusState)
+  }, [focusState, onChange])
+
+  return groups.map((group) => (
+    <FocusGroupTuner key={group.id} group={group} onChange={handleGroupChange} />
+  ))
+}
+
+/**
  * Un folder Leva per gruppo di mesh, instanziato a runtime dall'elenco
  * `groups` (default `DEFAULT_MESH_GROUPS`, vedi materials/meshGroups.js).
  * Carica il GLB in proprio (stessa cache di drei condivisa con
@@ -109,9 +172,13 @@ function MaterialTuner({ modelUrl, groups = DEFAULT_MESH_GROUPS }) {
   ))
 }
 
-export default function Scene({ modelUrl, apiRef, timelineApiRef, meshGroups = DEFAULT_MESH_GROUPS }) {
+export default function Scene({ modelUrl, apiRef, meshGroups = DEFAULT_MESH_GROUPS, animations }) {
   const [modelSize, setModelSize] = useState(null)
   const [selectedMesh, setSelectedMesh] = useState(null)
+  // Inquadrature autorate dei gruppi (vedi FocusTuner): raccolte qui perché
+  // devono scendere fino a useComposerControls (via KeyboardModel), che è chi
+  // le applica alla camera.
+  const [focusOverrides, setFocusOverrides] = useState({})
 
   // Modalità editor esclusiva (Nessuno/Luci/Mesh): l'editor luci (LightRig,
   // helper cliccabili) e l'editor mesh (KeyboardModel + MeshController)
@@ -123,28 +190,31 @@ export default function Scene({ modelUrl, apiRef, timelineApiRef, meshGroups = D
   // passato a KeyboardModel/LightRig/MeshController); il drag di rotazione
   // si disattiva solo in Mesh (in Luci serve poter cambiare posa per
   // configurare le luci vista per vista — vedi controlsDisabled sotto).
+  // 'focus' si comporta come 'lights': niente click/gizmo, navigazione VIVA —
+  // le inquadrature dei gruppi si autorano posa per posa, quindi bisogna poter
+  // girare attorno al modello mentre si tarano. Anche 'anim' (editor delle
+  // animazioni) sta in quel gruppo: le animazioni si provano navigando, e sono
+  // loro stesse a muovere posa e focus.
   const { editMode, lockedPose } = useControls('⚙️ Editor · Modalità', {
     editMode: {
-      options: { Nessuno: 'none', Luci: 'lights', Mesh: 'meshes', Timeline: 'timeline' },
+      options: { Nessuno: 'none', Luci: 'lights', Mesh: 'meshes', Animazioni: 'anim', Focus: 'focus' },
       value: 'none',
       label: 'Modalità',
     },
     lockedPose: { options: LOCKED_POSE_OPTIONS, value: 'TL', label: 'Posa bloccata' },
   }, { collapsed: false })
 
-  // Entrando in modalità Mesh o Timeline (o cambiando la posa bloccata mentre
-  // già ci si è dentro), snappa/ri-snappa alla posa bloccata configurabile
-  // (non più hardcoded a 'TL') — non al selezionare una mesh/gruppo,
-  // altrimenti risalterebbe lì ogni volta che si cambia selezione dentro la
-  // stessa sessione di editing.
+  // Entrando in modalità Mesh (o cambiando la posa bloccata mentre già ci si
+  // è dentro), snappa/ri-snappa alla posa bloccata configurabile (non più
+  // hardcoded a 'TL') — non al selezionare una mesh/gruppo, altrimenti
+  // risalterebbe lì ogni volta che si cambia selezione dentro la stessa
+  // sessione di editing.
   useEffect(() => {
     if (!apiRef?.current) return
-    if (editMode === 'meshes' || editMode === 'timeline') {
-      apiRef.current.goTo?.(lockedPose)
-    }
+    if (editMode === 'meshes') apiRef.current.goTo?.(lockedPose)
   }, [editMode, lockedPose, apiRef])
 
-  // Ponte verso Hud.jsx/Timeline.jsx (fuori dal Canvas): pubblica editMode e
+  // Ponte verso Hud.jsx (fuori dal Canvas): pubblica editMode e
   // la posa bloccata sullo stesso apiRef.current condiviso con
   // useComposerControls.js (dentro il Canvas) — Object.assign, mai
   // riassegnazione, perché i due scrittori non hanno un ordine garantito fra
@@ -182,17 +252,19 @@ export default function Scene({ modelUrl, apiRef, timelineApiRef, meshGroups = D
             apiRef={apiRef}
             onSizeComputed={setModelSize}
             onSelectMesh={setSelectedMesh}
-            // Mesh e Timeline disattivano il drag (posa bloccata, vedi sopra):
-            // in Luci serve poter cambiare posa per configurare le luci vista
-            // per vista (vedi anche onWheel in useComposerControls.js, che
-            // resta sempre attivo — zoom mai disattivato da nessuna modalità).
-            controlsDisabled={editMode === 'meshes' || editMode === 'timeline'}
+            // Mesh disattiva il drag (posa bloccata, vedi sopra): in Luci
+            // serve poter cambiare posa per configurare le luci vista per
+            // vista (vedi anche onWheel in useComposerControls.js, che resta
+            // sempre attivo — zoom mai disattivato da nessuna modalità).
+            controlsDisabled={editMode === 'meshes'}
             editMode={editMode}
             lockedPoseKey={lockedPose}
             meshGroups={meshGroups}
+            focusOverrides={focusOverrides}
           />
         </group>
         <MaterialTuner modelUrl={modelUrl} groups={meshGroups} />
+        <FocusTuner groups={meshGroups} onChange={setFocusOverrides} />
 
         {/* Rig volumetrico: griglia di point light + rectAreaLight per faccia
             attorno al bounding box del modello, più le due luci-ombra
@@ -207,7 +279,16 @@ export default function Scene({ modelUrl, apiRef, timelineApiRef, meshGroups = D
           onSelectMesh={setSelectedMesh}
           editMode={editMode}
           meshGroups={meshGroups}
-          timelineApiRef={timelineApiRef}
+        />
+        {/* Esecutore delle animazioni autorate: un solo useFrame, nessun
+            render. Sempre montato (non gated da ?debug): in produzione è chi
+            fa girare le animazioni lanciate dai chip dell'HUD. */}
+        <AnimationDirector
+          modelUrl={modelUrl}
+          apiRef={apiRef}
+          animations={animations}
+          editMode={editMode}
+          meshGroups={meshGroups}
         />
       </Suspense>
     </Canvas>

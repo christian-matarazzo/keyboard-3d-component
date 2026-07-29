@@ -4,9 +4,10 @@ import { Leva } from 'leva'
 import styles from './KeyboardComposer.module.css'
 import Scene from './Scene'
 import Hud from './Hud'
-import Timeline from './Timeline'
+import AnimationEditor from './AnimationEditor'
 import { DEFAULT_MODEL_URL } from './KeyboardModel'
 import { DEFAULT_MESH_GROUPS } from './materials/meshGroups'
+import { EMPTY_ANIMATIONS, normalizeAnimations } from './animation/animationSchema'
 
 // Pannello di tuning (luci, materiali, resa) visibile solo con `?debug`
 // nell'URL: in produzione il canvas resta pulito, a tutto schermo.
@@ -102,18 +103,39 @@ export default function KeyboardComposer({
     return () => cancelAnimationFrame(raf)
   }, [progress])
 
-  // Ponte fra la pulsantiera (DOM) e i controlli (dentro il Canvas): il ref
-  // viene popolato da useComposerControls con `{ goTo(poseKey), currentPoseKey() }`
-  // e da Scene.jsx con `{ editMode, lockedPoseKey }` — seedato a un oggetto
+  // Ponte fra gli overlay DOM (HUD, editor animazioni) e i controlli dentro il
+  // Canvas: il ref viene popolato da useComposerControls con le pose/il focus
+  // (`goTo`, `currentPoseKey`, `focusGroup`, `clearFocus`, `currentFocus`,
+  // `isPoseSettled`, `isFocusSettled`), da AnimationDirector.jsx coi comandi
+  // delle animazioni (`playAnimation`, `stopAnimation`, `currentAnimation`,
+  // `animationState`, `triggerAnimation`) e da Scene.jsx con
+  // `{ editMode, lockedPoseKey }` — seedato a un oggetto
   // vuoto (mai null) perché più scrittori indipendenti (alberi React diversi,
   // uno dentro <Canvas>) fanno Object.assign su di esso senza un ordine
   // garantito fra loro.
   const poseApi = useRef({})
-  // Stesso ponte imperativo, per la timeline: popolato da MeshController.jsx
-  // con le azioni (addKeyframe/removeKeyframe/jumpToKeyframe/setPlayhead) e i
-  // campi di sola lettura (selectionLabel/keyframes/playhead/duration) che
-  // Timeline.jsx interroga nel proprio poll.
-  const timelineApiRef = useRef(null)
+
+  // Animazioni autorate. Lo stato vive QUI e non dietro un ponte imperativo
+  // perché questo componente rende sia il sottoalbero del Canvas (<Scene>) sia
+  // gli overlay DOM (<Hud>, <AnimationEditor>): i DATI scendono come prop
+  // normali, solo i COMANDI hanno bisogno di `poseApi`.
+  const [animations, setAnimations] = useState(EMPTY_ANIMATIONS)
+
+  // Pubblicato per il salvataggio JSON globale (LightRig.jsx le legge da qui
+  // insieme a __STATE_MATERIALS/__STATE_ROTATION/…).
+  useEffect(() => {
+    window.__STATE_ANIMATIONS = animations
+  }, [animations])
+
+  // Contropartita del salvataggio: sia "Carica JSON" sia il fetch di
+  // produzione emettono questo evento (vedi LightRig.jsx).
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.detail) setAnimations(normalizeAnimations(e.detail))
+    }
+    window.addEventListener('app-load-animations', handler)
+    return () => window.removeEventListener('app-load-animations', handler)
+  }, [])
 
   return (
     <section className={styles.section}>
@@ -121,9 +143,20 @@ export default function KeyboardComposer({
       <div
         className={`${styles.canvasWrap} ${loaded ? styles.canvasWrapLoaded : ''}`}
       >
-        <Scene modelUrl={modelUrl} apiRef={poseApi} timelineApiRef={timelineApiRef} meshGroups={meshGroups} />
-        <Hud poseApi={poseApi} />
-        <Timeline poseApi={poseApi} timelineApiRef={timelineApiRef} />
+        <Scene
+          modelUrl={modelUrl}
+          apiRef={poseApi}
+          meshGroups={meshGroups}
+          animations={animations}
+        />
+        <Hud poseApi={poseApi} meshGroups={meshGroups} animations={animations} />
+        <AnimationEditor
+          poseApi={poseApi}
+          animations={animations}
+          onChange={setAnimations}
+          meshGroups={meshGroups}
+          modelUrl={modelUrl}
+        />
       </div>
     </section>
   )

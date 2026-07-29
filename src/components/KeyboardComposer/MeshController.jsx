@@ -4,36 +4,10 @@ import { useGLTF, TransformControls } from '@react-three/drei'
 import { useControls } from 'leva'
 import { DRACO_PATH } from './KeyboardModel'
 import { collectMeshGroups, collectMeshList, DEFAULT_MESH_GROUPS } from './materials/meshGroups'
+import { wrapMeshInPivot, wrapGroupInPivot } from './animation/pivot'
 
 const HALO_SCALE = 1.04
 const HALO_COLOR = '#4dabf7'
-
-// Timeline (editMode 'timeline'): durata fissa per questa prima passata,
-// nessun salvataggio/riproduzione automatica ancora (vedi CLAUDE.md quando
-// verrà aggiornato). Un keyframe è uno snapshot di posX..rotZ a un istante
-// `time`, per una data `selectionKey` — la stessa forma che gizmo/slider già
-// scrivono, quindi "applicare" un keyframe è solo un setMeshCtrl in più.
-const TIMELINE_DURATION = 5
-
-function interpolateKeyframes(kfs, t) {
-  const pick = (kf) => ({ posX: kf.posX, posY: kf.posY, posZ: kf.posZ, rotX: kf.rotX, rotY: kf.rotY, rotZ: kf.rotZ })
-  const lerp = (a, b, f) => a + (b - a) * f
-  if (t <= kfs[0].time) return pick(kfs[0])
-  const last = kfs[kfs.length - 1]
-  if (t >= last.time) return pick(last)
-  for (let i = 0; i < kfs.length - 1; i++) {
-    const a = kfs[i], b = kfs[i + 1]
-    if (t >= a.time && t <= b.time) {
-      const span = b.time - a.time
-      const f = span > 0 ? (t - a.time) / span : 0
-      return {
-        posX: lerp(a.posX, b.posX, f), posY: lerp(a.posY, b.posY, f), posZ: lerp(a.posZ, b.posZ, f),
-        rotX: lerp(a.rotX, b.rotX, f), rotY: lerp(a.rotY, b.rotY, f), rotZ: lerp(a.rotZ, b.rotZ, f),
-      }
-    }
-  }
-  return pick(last)
-}
 
 /**
  * Editor mesh/gruppo (?debug, editMode === 'meshes'): due selettori Leva
@@ -46,11 +20,13 @@ function interpolateKeyframes(kfs, t) {
  * meccanismo di "wrap in un pivot temporaneo" ma con logiche di calcolo del
  * centro deliberatamente separate, non unificate, proprio per non alterare
  * il comportamento mesh-singola esistente.
+ *
+ * Quella meccanica vive ora in animation/pivot.js, condivisa con le animazioni
+ * autorate: identica al wrap, diversa allo SMONTAGGIO — qui `bake: true` (la
+ * modifica dell'utente si cuoce nella mesh e persiste), lì ripristino esatto.
  */
-export default function MeshController({ modelUrl, selectedMesh, onSelectMesh, editMode = 'none', meshGroups = DEFAULT_MESH_GROUPS, timelineApiRef }) {
-  // Timeline riusa integralmente selezione/pivot/gizmo di Mesh: nessuna
-  // logica separata, solo un secondo editMode che attiva lo stesso ramo.
-  const active = editMode === 'meshes' || editMode === 'timeline'
+export default function MeshController({ modelUrl, selectedMesh, onSelectMesh, editMode = 'none', meshGroups = DEFAULT_MESH_GROUPS }) {
+  const active = editMode === 'meshes'
   const { scene } = useGLTF(modelUrl, DRACO_PATH)
 
   const meshList = useMemo(() => collectMeshList(scene, meshGroups), [scene, meshGroups])
@@ -81,7 +57,7 @@ export default function MeshController({ modelUrl, selectedMesh, onSelectMesh, e
     rotX: { value: 0, min: -180, max: 180, step: 1, label: 'Rot X° (rel.)' },
     rotY: { value: 0, min: -180, max: 180, step: 1, label: 'Rot Y° (rel.)' },
     rotZ: { value: 0, min: -180, max: 180, step: 1, label: 'Rot Z° (rel.)' },
-  }), { collapsed: false, render: (get) => ['meshes', 'timeline'].includes(get('⚙️ Editor · Modalità.editMode')) }, [groupOptions, meshOptions])
+  }), { collapsed: false, render: (get) => get('⚙️ Editor · Modalità.editMode') === 'meshes' }, [groupOptions, meshOptions])
   const { groupId, meshName, mode, opacity, posX, posY, posZ, rotX, rotY, rotZ } = meshCtrl
 
   useEffect(() => {
@@ -104,7 +80,7 @@ export default function MeshController({ modelUrl, selectedMesh, onSelectMesh, e
   // valore di verità.
   //
   // Deps DELIBERATAMENTE senza `active`: sulla transizione di riattivazione
-  // (si rientra in Mesh/Timeline con un `meshName` non ancora ripulito
+  // (si rientra in Mesh con un `meshName` non ancora ripulito
   // dall'effetto di disattivazione, che tocca solo `selectedMesh`) includere
   // `active` farebbe rifirare questo effetto sullo stesso giro in cui quello
   // sopra rilegge il `meshName` stale, innescando un ping-pong di un paio di
@@ -159,18 +135,12 @@ export default function MeshController({ modelUrl, selectedMesh, onSelectMesh, e
     return null
   }, [groupId, meshName, meshGroupsData, meshByUuid])
 
-  // Timeline: una traccia di keyframe indipendente per ogni selezione (un
-  // gruppo o una mesh ha il proprio set di posX..rotZ nel tempo — non ha
-  // senso condividerli, sono trasformazioni relative a centri diversi).
+  // Chiave STABILE della selezione corrente (un gruppo o una mesh): è ciò su
+  // cui sono agganciati gli effetti di ciclo di vita qui sotto — vedi
+  // selectionRef.
   const selectionKey = selection
     ? selection.type === 'group' ? `group:${selection.groupId}` : `mesh:${selection.mesh.uuid}`
     : null
-  const [keyframesBySelection, setKeyframesBySelection] = useState({})
-  const [playhead, setPlayhead] = useState(0)
-  const playheadRef = useRef(playhead)
-  playheadRef.current = playhead
-  const keyframesRef = useRef(keyframesBySelection)
-  keyframesRef.current = keyframesBySelection
 
   // Specchi di render usati dagli effetti di ciclo di vita qui sotto, che
   // sono agganciati a `selectionKey` (una STRINGA stabile) e non a
@@ -183,8 +153,6 @@ export default function MeshController({ modelUrl, selectedMesh, onSelectMesh, e
   // azzerato contro un pivot sbagliato.
   const selectionRef = useRef(selection)
   selectionRef.current = selection
-  const editModeRef = useRef(editMode)
-  editModeRef.current = editMode
 
   // --- Pivot al centro (di massa singolo o cumulativo) -----------------
   // Mesh singola: ESATTAMENTE la logica precedente (invariata) — pivot al
@@ -211,7 +179,7 @@ export default function MeshController({ modelUrl, selectedMesh, onSelectMesh, e
 
   useEffect(() => {
     const selection = selectionRef.current
-    // `active` in dipendenza: uscendo da Mesh/Timeline il pivot va DISFATTO,
+    // `active` in dipendenza: uscendo da Mesh il pivot va DISFATTO,
     // non lasciato appeso. Il cleanup fa attach() verso i parent originali,
     // che "cuoce" la trasformata corrente nella mesh — quindi l'edit resta,
     // ma la scena torna pulita (niente pivot orfani, halo e opacità
@@ -230,85 +198,31 @@ export default function MeshController({ modelUrl, selectedMesh, onSelectMesh, e
     const resetPatch = () => {
       const patch = { posX: 0, posY: 0, posZ: 0, rotX: 0, rotY: 0, rotZ: 0 }
       if (selection.type === 'mesh') patch.meshName = selection.mesh.uuid
-      const kfs = editModeRef.current === 'timeline' && selectionKey ? keyframesRef.current[selectionKey] : null
-      if (kfs && kfs.length > 0) Object.assign(patch, interpolateKeyframes(kfs, playheadRef.current))
       return patch
     }
 
-    if (selection.type === 'mesh') {
-      const mesh = selection.mesh
-      const parent = mesh.parent
-      if (!parent) { setPivotInfo(null); return }
+    // La meccanica del wrap vive in animation/pivot.js: è la stessa che usano
+    // le animazioni (spin, offset autorati), estratta da qui senza cambiarla.
+    // L'unica differenza è lo SMONTAGGIO — qui `bake: true`, cioè la
+    // trasformata corrente viene cotta nella mesh e la modifica dell'utente
+    // persiste. Le animazioni fanno l'opposto (ripristinano), vedi pivot.js.
+    const wrap = selection.type === 'mesh'
+      ? wrapMeshInPivot(selection.mesh, { name: '__meshEditorPivot' })
+      : wrapGroupInPivot(selection.meshes, scene, { name: '__meshEditorPivot' })
 
-      mesh.updateWorldMatrix(true, false)
-      mesh.geometry.computeBoundingBox()
-      const localCenter = mesh.geometry.boundingBox.getCenter(new THREE.Vector3())
-      const worldCenter = mesh.localToWorld(localCenter.clone())
+    if (!wrap) { setPivotInfo(null); return }
 
-      // Orientamento del pivot = orientamento mondiale della mesh, espresso
-      // nello spazio locale di `parent` (via getWorldQuaternion, non
-      // copiando il quaternion locale: robusto a prescindere da come pivot e
-      // mesh verranno manipolati più avanti).
-      const parentWorldQuat = parent.getWorldQuaternion(new THREE.Quaternion())
-      const meshWorldQuat = mesh.getWorldQuaternion(new THREE.Quaternion())
-
-      const pivot = new THREE.Group()
-      pivot.name = '__meshEditorPivot'
-      parent.add(pivot)
-      pivot.position.copy(parent.worldToLocal(worldCenter.clone()))
-      pivot.quaternion.copy(parentWorldQuat.invert().multiply(meshWorldQuat))
-      pivot.attach(mesh)
-
-      setPivotInfo({ pivot, basePosition: pivot.position.clone(), baseQuaternion: pivot.quaternion.clone() })
-      setMeshCtrl(resetPatch())
-
-      return () => {
-        parent.attach(mesh) // "cuoce" l'edit corrente nella trasformata locale originale della mesh
-        parent.remove(pivot)
-      }
-    }
-
-    // Gruppo: centro = centro dell'unione dei bounding box world-space.
-    const meshes = selection.meshes
-    meshes.forEach((m) => m.updateWorldMatrix(true, false))
-    const box = new THREE.Box3()
-    for (const m of meshes) box.union(new THREE.Box3().setFromObject(m))
-    const worldCenter = box.getCenter(new THREE.Vector3())
-
-    const pivot = new THREE.Group()
-    pivot.name = '__meshEditorPivot'
-    scene.add(pivot)
-    pivot.position.copy(scene.worldToLocal(worldCenter.clone()))
-    // Quaternion lasciato a identity: con più mesh di orientamento diverso
-    // non esiste un singolo "orientamento del gruppo" ben definito — la
-    // rotazione rigida in blocco funziona comunque via composizione
-    // parent/figlio di attach(), qualunque sia l'orientamento di partenza
-    // del pivot.
-
-    const originalParents = meshes.map((m) => m.parent)
-    for (const m of meshes) pivot.attach(m)
-
-    setPivotInfo({ pivot, basePosition: pivot.position.clone(), baseQuaternion: pivot.quaternion.clone() })
+    setPivotInfo({
+      pivot: wrap.pivot,
+      basePosition: wrap.basePosition,
+      baseQuaternion: wrap.baseQuaternion,
+    })
     setMeshCtrl(resetPatch())
 
-    return () => {
-      meshes.forEach((m, i) => originalParents[i]?.attach(m))
-      pivot.parent?.remove(pivot)
-    }
+    return () => wrap.restore({ bake: true })
     // Agganciato alla CHIAVE stabile della selezione, non all'oggetto
     // `selection`: vedi selectionRef sopra.
   }, [selectionKey, active, scene])
-
-  // Timeline: scorrere il playhead applica il valore interpolato tra i due
-  // keyframe più vicini della selezione corrente — riusa lo stesso
-  // setMeshCtrl(posX..rotZ) che gizmo/slider già scrivono, quindi l'effetto
-  // "applica l'offset al pivot" sotto fa il resto senza duplicazione.
-  useEffect(() => {
-    if (editMode !== 'timeline' || !selectionKey) return
-    const kfs = keyframesBySelection[selectionKey]
-    if (!kfs || kfs.length === 0) return
-    setMeshCtrl(interpolateKeyframes(kfs, playhead))
-  }, [playhead, selectionKey, keyframesBySelection, editMode])
 
   // Applica l'offset relativo al pivot. Puramente IDEMPOTENTE — "il pivot è
   // sempre base + offset corrente" — e quindi sicuro da rieseguire su
@@ -404,68 +318,6 @@ export default function MeshController({ modelUrl, selectedMesh, onSelectMesh, e
     }
     return () => restores.forEach((restore) => restore())
   }, [selectionKey, active, opacity])
-
-  // --- Ponte imperativo per Timeline.jsx (fuori dal Canvas) -------------
-  // Refs, aggiornate a ogni render: le AZIONI (sotto) vivono in un effetto
-  // montato una sola volta (deps [timelineApiRef]) e le leggono da qui invece
-  // che dalle variabili closure dirette, altrimenti — essendo l'effetto
-  // creato una volta sola — le closure imprigionerebbero i valori del primo
-  // render (es. "Aggiungi keyframe" catturerebbe sempre posX..rotZ di allora,
-  // ignorando un trascinamento del gizmo avvenuto dopo senza cambiare
-  // selectionKey/keyframesBySelection/playhead).
-  const selectionKeyRef = useRef(selectionKey)
-  selectionKeyRef.current = selectionKey
-  const meshCtrlRef = useRef(meshCtrl)
-  meshCtrlRef.current = meshCtrl
-  // `keyframesRef` è dichiarato più in alto (accanto allo stato dei keyframe):
-  // serve anche all'effetto del pivot, che è definito prima di questo blocco.
-
-  useEffect(() => {
-    if (!timelineApiRef) return
-    if (!timelineApiRef.current) timelineApiRef.current = {}
-    Object.assign(timelineApiRef.current, {
-      duration: TIMELINE_DURATION,
-      addKeyframe() {
-        const key = selectionKeyRef.current
-        if (!key) return
-        const { posX, posY, posZ, rotX, rotY, rotZ } = meshCtrlRef.current
-        const t = playheadRef.current
-        setKeyframesBySelection((prev) => {
-          const existing = (prev[key] ?? []).filter((k) => Math.abs(k.time - t) > 1e-3)
-          const next = [
-            ...existing,
-            { id: `${Date.now()}_${Math.random().toString(36).slice(2)}`, time: t, posX, posY, posZ, rotX, rotY, rotZ },
-          ].sort((a, b) => a.time - b.time)
-          return { ...prev, [key]: next }
-        })
-      },
-      removeKeyframe(id) {
-        const key = selectionKeyRef.current
-        if (!key) return
-        setKeyframesBySelection((prev) => ({ ...prev, [key]: (prev[key] ?? []).filter((k) => k.id !== id) }))
-      },
-      jumpToKeyframe(id) {
-        const kf = (keyframesRef.current[selectionKeyRef.current] ?? []).find((k) => k.id === id)
-        if (kf) setPlayhead(kf.time)
-      },
-      setPlayhead(t) {
-        setPlayhead(Math.max(0, Math.min(TIMELINE_DURATION, t)))
-      },
-    })
-  }, [timelineApiRef])
-
-  // Campi di sola lettura per Timeline.jsx — "eventualmente corretti" va bene
-  // qui (poll a 150ms), quindi un effetto reattivo normale è sufficiente.
-  useEffect(() => {
-    if (!timelineApiRef?.current) return
-    timelineApiRef.current.selectionLabel = selection
-      ? selection.type === 'group'
-        ? (meshGroups.find((g) => g.id === selection.groupId)?.label ?? selection.groupId)
-        : (selection.mesh.name || selection.mesh.uuid)
-      : null
-    timelineApiRef.current.keyframes = selectionKey ? (keyframesBySelection[selectionKey] ?? []) : []
-    timelineApiRef.current.playhead = playhead
-  }, [timelineApiRef, selection, selectionKey, keyframesBySelection, playhead, meshGroups])
 
   if (!active || !selection || !pivotInfo) return null
 

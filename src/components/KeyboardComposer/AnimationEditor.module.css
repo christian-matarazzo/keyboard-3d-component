@@ -1,0 +1,337 @@
+/* Editor delle animazioni autorate (?debug + editMode 'anim').
+   Stesse convenzioni tipografiche dell'HUD: mono, caps, letter-spacing −2%.
+
+   POSIZIONE: colonna ancorata a SINISTRA, non una barra centrata in basso.
+   Il modello sta al centro del canvas e i chip dell'HUD stanno in basso al
+   centro: una barra larga lì sopra copriva entrambi. La colonna parte sotto il
+   lockup del logo (l'HUD calcola quel punto da --hud-pad/--logo-h, qui
+   riprodotto con clamp equivalenti perché quelle variabili vivono su .hud) e
+   si ferma sopra il footer. Il pannello Leva è ancorato a destra, quindi i due
+   non si incontrano mai. */
+
+.editor {
+  position: absolute;
+  left: clamp(12px, 1.4vw, 20px);
+  top: clamp(70px, 8.5vw, 118px);
+  bottom: clamp(46px, 5.5vw, 78px);
+  z-index: 5;
+  width: clamp(310px, 27vw, 420px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: rgb(10 10 10 / 88%);
+  border: 1px solid rgb(255 255 255 / 12%);
+  backdrop-filter: blur(6px);
+  color: rgb(255 255 255 / 88%);
+  font-family: inherit;
+  font-size: clamp(10px, 0.78vw, 12px);
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+  pointer-events: auto;
+}
+
+/* Ridotto alla sola testata: per guardare il modello senza chiudere il debug. */
+.editorCollapsed {
+  bottom: auto;
+  max-height: none;
+}
+
+/* ── Testata ─────────────────────────────────────────────────────────────── */
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.headerTitle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+}
+
+.spacer {
+  flex: 1 1 auto;
+}
+
+.status {
+  color: rgb(255 255 255 / 55%);
+  white-space: nowrap;
+}
+
+.statusWaiting {
+  color: #ffd43b;
+}
+
+.sectionLabel {
+  width: 100%;
+  padding-top: 2px;
+  color: rgb(255 255 255 / 35%);
+  border-top: 1px solid rgb(255 255 255 / 8%);
+}
+
+/* ── Controlli generici ──────────────────────────────────────────────────── */
+.btn {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid rgb(255 255 255 / 22%);
+  background: transparent;
+  color: rgb(255 255 255 / 70%);
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+}
+
+.btn:hover:not(:disabled) {
+  color: #fff;
+  border-color: rgb(255 255 255 / 50%);
+  background: rgb(255 255 255 / 6%);
+}
+
+.btn:disabled {
+  color: rgb(255 255 255 / 18%);
+  border-color: rgb(255 255 255 / 8%);
+  cursor: default;
+}
+
+.btnActive {
+  color: #fff;
+  border-color: #fff;
+  background: rgb(255 255 255 / 8%);
+}
+
+.btnDanger:hover:not(:disabled) {
+  color: #ff8787;
+  border-color: #ff8787;
+}
+
+.btnIcon {
+  width: 24px;
+  padding: 0;
+  text-align: center;
+}
+
+.input,
+.select {
+  height: 24px;
+  min-width: 0;
+  padding: 0 5px;
+  border: 1px solid rgb(255 255 255 / 18%);
+  background: rgb(255 255 255 / 4%);
+  color: rgb(255 255 255 / 88%);
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: none;
+  /* ⚠️ Il POPUP di una <select> nativa è disegnato dall'OS, non dal CSS del
+     documento: senza questo, su Chrome/Windows resta bianco su bianco e le voci
+     si leggono solo in hover. `color-scheme: dark` è ciò che fa disegnare
+     all'OS il menu in scuro; le regole su option/optgroup sotto sono la
+     cintura di sicurezza per i browser che invece le rispettano. */
+  color-scheme: dark;
+}
+
+.select option,
+.select optgroup {
+  background: #121212;
+  color: rgb(255 255 255 / 90%);
+}
+
+.select optgroup {
+  color: rgb(255 255 255 / 45%);
+  font-style: normal;
+}
+
+.input:focus-visible,
+.select:focus-visible,
+.btn:focus-visible {
+  outline: 2px solid rgb(255 255 255 / 55%);
+  outline-offset: 1px;
+}
+
+.num {
+  width: 58px;
+}
+
+.numSmall {
+  width: 46px;
+}
+
+.grow {
+  flex: 1 1 90px;
+}
+
+/* ── Lista degli step ────────────────────────────────────────────────────── */
+.steps {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-right: 3px;
+}
+
+.empty {
+  padding: 14px 4px;
+  color: rgb(255 255 255 / 40%);
+  text-align: center;
+}
+
+/* Uno step è una SCHEDA su più righe, non una riga sola: in una colonna
+   stretta dieci controlli in fila andrebbero a capo a casaccio. Riga 1
+   identità e comandi, riga 2 parametri, riga 3 tempi. */
+.step {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid rgb(255 255 255 / 10%);
+  background: rgb(255 255 255 / 3%);
+}
+
+.stepLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Righe parallele: rientrate sotto la capofila della propria wave, come nel
+   modello a wave del runtime (vedi buildWaves in animationSchema.js). */
+.stepParallel {
+  margin-left: 16px;
+  border-left: 2px solid #4dabf7;
+}
+
+.stepDisabled {
+  opacity: 0.4;
+}
+
+/* Step attualmente in esecuzione, dal poll dello stato del runtime. */
+.stepRunning {
+  border-color: #4dabf7;
+  background: rgb(77 171 247 / 10%);
+}
+
+.stepIndex {
+  min-width: 16px;
+  color: rgb(255 255 255 / 35%);
+  text-align: right;
+}
+
+.paramLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: rgb(255 255 255 / 45%);
+}
+
+.vec {
+  display: inline-flex;
+  gap: 3px;
+}
+
+/* ── Editor del selettore di mesh ────────────────────────────────────────── */
+.selector {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 4px 5px;
+  border: 1px dashed rgb(255 255 255 / 16%);
+}
+
+.selectorRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.chip {
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid rgb(255 255 255 / 20%);
+  background: transparent;
+  color: rgb(255 255 255 / 50%);
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.chipOn {
+  color: #fff;
+  border-color: #fff;
+  background: rgb(255 255 255 / 8%);
+}
+
+/* Lista di mesh a caselle di spunta invece di una <select multiple>: quella
+   era alta 4 righe, richiedeva ctrl/shift per una selezione multipla e un
+   click distratto azzerava tutto. Qui ogni riga è indipendente, c'è un filtro
+   di testo e il conteggio di quante ne sono selezionate. */
+.meshList {
+  max-height: 168px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgb(255 255 255 / 12%);
+  background: rgb(0 0 0 / 35%);
+}
+
+.meshItem {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 5px;
+  color: rgb(255 255 255 / 70%);
+  text-transform: none;
+  cursor: pointer;
+}
+
+.meshItem:hover {
+  background: rgb(255 255 255 / 6%);
+  color: #fff;
+}
+
+.meshItemOn {
+  color: #fff;
+  background: rgb(77 171 247 / 14%);
+}
+
+.meshCount {
+  color: rgb(255 255 255 / 45%);
+}
+
+/* ── Vista JSON ──────────────────────────────────────────────────────────── */
+.json {
+  flex: 1 1 auto;
+  min-height: 200px;
+  resize: none;
+  padding: 8px;
+  border: 1px solid rgb(255 255 255 / 18%);
+  background: rgb(0 0 0 / 45%);
+  color: rgb(255 255 255 / 85%);
+  font-family: inherit;
+  font-size: inherit;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.jsonError {
+  color: #ff8787;
+  text-transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn,
+  .chip {
+    transition: none;
+  }
+}
