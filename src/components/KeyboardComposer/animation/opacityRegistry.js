@@ -275,9 +275,25 @@ export function createOpacityRegistry(getScene) {
       get done() {
         return finished
       },
+      /**
+       * Quanti dei materiali fotografati sono ANCORA posseduti. Serve a chi
+       * apre un ripristino e poi lascia che qualcun altro smonti nel mezzo
+       * (vedi lo smontaggio morbido in animationRuntime.js): se non ne resta
+       * nessuno non c'è nessuna dissolvenza da aspettare.
+       */
+      get remaining() {
+        let n = 0
+        for (const m of targets) if (owned.has(m)) n++
+        return n
+      },
       lerp(k) {
         if (finished) return
         for (let i = 0; i < targets.length; i++) {
+          // Un materiale rilasciato nel frattempo da chi lo possedeva (lo
+          // scambio di varianti chiude sempre la propria dissolvenza) è già
+          // tornato al suo valore e non è più `transparent`: continuare a
+          // scriverci sopra non si vedrebbe, ma è comunque una bugia.
+          if (!owned.has(targets[i])) continue
           targets[i].opacity = from[i] + (to[i] - from[i]) * k
           // Risalendo verso l'opaco il depth write torna da sé alla soglia.
           syncDepthWrite(targets[i])

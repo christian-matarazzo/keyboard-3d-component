@@ -7,8 +7,15 @@ import { DEFAULT_MESH_GROUPS } from './materials/meshGroups'
 /**
  * HUD di prodotto — l'overlay grafico consegnato dal cliente (Dither, screen
  * `General Concept.png`). Vive nel DOM sopra il canvas, `pointer-events:none`:
- * solo la paginazione `01–05` riattiva i click. Sempre montato (non gated da
- * `?debug`): è UI di prodotto, non tuning.
+ * solo la pulsantiera (paginazione `01–05`, chip, interruttore di modalità)
+ * riattiva i click. Sempre montato (non gated da `?debug`): è UI di prodotto,
+ * non tuning.
+ *
+ * Ha due facce, secondo `appMode` (vedi KeyboardComposer.jsx): in `idle`
+ * restano solo lockup, telemetria, footer e l'interruttore "Configura" — il
+ * modello si gira a mano; in `config` compare tutta la pulsantiera e le
+ * gesture di navigazione sono spente, quindi è da qui che si comanda tutto,
+ * animazioni autorate comprese.
  *
  * Ponti imperativi (ref popolati dentro il Canvas, come ViewPad/LightCapture):
  *  - `poseApi` → `goTo(poseKey)` per navigare + `currentPoseKey()` per la vista
@@ -31,6 +38,13 @@ export default function Hud({
   animations,
   meshVariants = [],
   variantSelection = {},
+  // Modalità di prodotto: `idle` mostra il solo modello (si gira a mano),
+  // `config` mostra tutta la pulsantiera — viste, varianti, zoom sui gruppi e
+  // animazioni — mentre drag/frecce sono spenti (vedi KeyboardComposer.jsx).
+  // Prop e non poll sul ponte imperativo: lo stato vive nel genitore comune di
+  // Canvas e overlay, quindi è un DATO, non un comando.
+  appMode = 'idle',
+  onAppModeChange,
 }) {
   const [poseKey, setPoseKey] = useState(null)
   const [lockState, setLockState] = useState({ locked: false, lockedPoseKey: null })
@@ -42,7 +56,8 @@ export default function Hud({
 
   // Posa attiva + stato di blocco (Mesh): poll leggero (imperativo,
   // non reattivo — stesso bridge di poseApi, popolato anche da Scene.jsx con
-  // editMode/lockedPoseKey, vedi KeyboardModel.jsx/Scene.jsx).
+  // editMode/homePoseKey — la posa home È la posa su cui Mesh blocca la
+  // navigazione, vedi Scene.jsx).
   useEffect(() => {
     const id = setInterval(() => {
       const api = poseApi.current
@@ -50,7 +65,7 @@ export default function Hud({
       setPoseKey((prev) => (prev === k ? prev : k))
 
       const mode = api?.editMode ?? 'none'
-      const lockedPoseKey = api?.lockedPoseKey ?? null
+      const lockedPoseKey = api?.homePoseKey ?? null
       const locked = mode === 'meshes'
       setLockState((prev) =>
         prev.locked === locked && prev.lockedPoseKey === lockedPoseKey
@@ -85,20 +100,22 @@ export default function Hud({
   }, [poseApi])
 
   // Uscita rapida, dal più specifico al più generico: se c'è un'animazione in
-  // corso la si ferma (il suo teardown ripristina anche il focus), altrimenti
-  // si esce dallo zoom. Su `window` e non sul canvas: il focus si attiva
-  // cliccando un chip dell'HUD, che porta via il fuoco dal canvas — un
-  // listener sul canvas non riceverebbe mai il tasto subito dopo il click.
+  // corso la si ferma (il suo teardown ripristina anche il focus), se c'è uno
+  // zoom si esce dallo zoom, altrimenti si esce da config_mode. Su `window` e
+  // non sul canvas: il focus si attiva cliccando un chip dell'HUD, che porta
+  // via il fuoco dal canvas — un listener sul canvas non riceverebbe mai il
+  // tasto subito dopo il click.
   useEffect(() => {
     const onKeyDown = (e) => {
       if (e.key !== 'Escape') return
       const api = poseApi.current
       if (api?.currentAnimation?.()) api.stopAnimation?.()
-      else api?.clearFocus?.()
+      else if (api?.currentFocus?.()) api.clearFocus?.()
+      else if (appMode === 'config') onAppModeChange?.('idle')
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [poseApi])
+  }, [poseApi, appMode, onAppModeChange])
 
   // FPS reali del browser: conto i frame di rAF e ricalcolo ogni ~500ms.
   // Questo è il refresh effettivo del browser (60, 120, 144, 240…), non un
@@ -164,6 +181,13 @@ export default function Hud({
 
   const animItems = (animations?.items ?? []).filter((a) => a.hidden !== true)
 
+  // In idle l'HUD è ridotto al lockup + telemetria + footer: tutta la
+  // pulsantiera (viste, varianti, zoom, animazioni) è la superficie di
+  // config_mode, dove la navigazione a mano è spenta e il modello si comanda
+  // solo da qui. Nascosta, non disabilitata: in idle non c'è nulla da
+  // configurare, e un pulsante inerte sarebbe rumore.
+  const configMode = appMode === 'config'
+
   // Un'animazione muove posa, focus e geometria: lasciarla correre mentre
   // l'utente cambia vista o inquadratura significherebbe due scrittori sugli
   // stessi target. Chi tocca il pager o i chip di focus la ferma prima.
@@ -220,7 +244,11 @@ export default function Hud({
         <div className={styles.version}>V 0.2 Configurator Playground</div>
       </header>
 
-      {/* ── Paginazione / selettore vista (sostituisce le frecce ViewPad) ── */}
+      {/* ── Paginazione / selettore vista (sostituisce le frecce ViewPad) ──
+          Solo in config_mode: in idle le viste si raggiungono a mano (drag e
+          frecce), qui invece sono l'unico modo di cambiare posa perché le
+          gesture sono spente. */}
+      {configMode && (
       <nav className={styles.pager} aria-label="Viste">
         {HUD_VIEWS.map((view, i) => {
           const n = String(i + 1).padStart(2, '0')
@@ -250,15 +278,19 @@ export default function Hud({
           )
         })}
       </nav>
+      )}
 
       {/* ── Pila dei chip ──────────────────────────────────────────────────
-          Le tre righe stanno in UNA colonna flex, non a tre quote assolute
+          Le righe (varianti, animazioni, focus, e in fondo l'interruttore di
+          modalità) stanno in UNA colonna flex, non a quote assolute
           calcolate come multipli di --chip-h: con abbastanza gruppi (oggi 9)
           la riga di focus va a capo e diventa alta due righe, e le quote fisse
           facevano finire le varianti sopra le animazioni. Impilandole, ogni
           riga occupa l'altezza che le serve e le altre si spostano da sole.
           L'ordine nel DOM è quello visivo, dall'alto in basso. */}
       <div className={styles.chipStack}>
+      {configMode && (
+      <>
       {/* ── Varianti di modello ────────────────────────────────────────────
           Un gruppo di pulsanti per variante (layout ISO/ANSI oggi, in futuro
           il rialzo o altro): l'elenco viene dalla prop `meshVariants`, quindi
@@ -372,6 +404,30 @@ export default function Hud({
             </button>
           )
         })}
+      </nav>
+      </>
+      )}
+
+      {/* ── Interruttore idle ⇄ config ──────────────────────────────────────
+          L'unico comando presente in ENTRAMBE le modalità: sta per ULTIMO
+          nella pila, cioè in basso, così resta alla stessa quota mentre le
+          righe sopra compaiono e scompaiono. In modalità Mesh è inerte come
+          tutto il resto: lì la posa è bloccata e i pivot dell'editor non
+          devono mai convivere con quelli di un'animazione. */}
+      <nav className={styles.modeBar} aria-label="Modalità">
+        <button
+          type="button"
+          className={`${styles.modeBtn} ${configMode ? styles.modeBtnActive : ''} ${lockState.locked ? styles.modeBtnDisabled : ''}`}
+          aria-pressed={configMode}
+          aria-disabled={lockState.locked || undefined}
+          disabled={lockState.locked}
+          onClick={() => {
+            if (lockState.locked) return
+            onAppModeChange?.(configMode ? 'idle' : 'config')
+          }}
+        >
+          {configMode ? 'Chiudi' : 'Configura'}
+        </button>
       </nav>
       </div>
 

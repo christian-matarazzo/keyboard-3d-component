@@ -17,7 +17,7 @@ import { POSE_COORD, POSE_HUD_LABEL } from './poseGraph'
 // stessa label breve, es. 'TL'/'TR'/'CFB' → '3/4 FT') — non può essere usata
 // da sola come chiave dell'options Leva, si disambigua accodando la chiave
 // posa. Costruito una sola volta a livello di modulo.
-const LOCKED_POSE_OPTIONS = Object.fromEntries(
+const HOME_POSE_OPTIONS = Object.fromEntries(
   Object.keys(POSE_COORD).map((key) => [`${POSE_HUD_LABEL[key] ?? key} · ${key}`, key])
 )
 
@@ -181,6 +181,16 @@ export default function Scene({
   animations,
   meshVariants = DEFAULT_MESH_VARIANTS,
   variantSelection,
+  // Modalità di prodotto ('idle' | 'config'): lo stato vive in
+  // KeyboardComposer.jsx (rende sia il Canvas sia gli overlay DOM), qui serve
+  // solo a spegnere drag/frecce in config — vedi controlsDisabled sotto.
+  appMode = 'idle',
+  // `{ duration, easing }` della dissolvenza di uscita delle animazioni: di
+  // sola andata verso AnimationDirector.
+  release,
+  // La posa home è una Leva di questo componente, ma è stato di PRODOTTO e va
+  // salvata: risale a KeyboardComposer.jsx, unico scrittore di __STATE_APP.
+  onHomePoseChange,
 }) {
   const [modelSize, setModelSize] = useState(null)
   const [selectedMesh, setSelectedMesh] = useState(null)
@@ -204,34 +214,57 @@ export default function Scene({
   // girare attorno al modello mentre si tarano. Anche 'anim' (editor delle
   // animazioni) sta in quel gruppo: le animazioni si provano navigando, e sono
   // loro stesse a muovere posa e focus.
-  const { editMode, lockedPose } = useControls('⚙️ Editor · Modalità', {
+  //
+  // `homePose` è UNA manopola sola per tre usi: posa d'ingresso in landscape
+  // (KeyboardModel.jsx), posa a cui si rientra uscendo da config_mode
+  // (KeyboardComposer.jsx) e posa su cui la modalità Mesh blocca la
+  // navigazione. Prima era la sola "posa bloccata" della modalità Mesh.
+  const [{ editMode, homePose }, setModeControls] = useControls('⚙️ Editor · Modalità', () => ({
     editMode: {
       options: { Nessuno: 'none', Luci: 'lights', Mesh: 'meshes', Animazioni: 'anim', Focus: 'focus' },
       value: 'none',
       label: 'Modalità',
     },
-    lockedPose: { options: LOCKED_POSE_OPTIONS, value: 'TL', label: 'Posa bloccata' },
-  }, { collapsed: false })
+    homePose: { options: HOME_POSE_OPTIONS, value: 'TL', label: 'Posa home' },
+  }), { collapsed: false })
 
-  // Entrando in modalità Mesh (o cambiando la posa bloccata mentre già ci si
-  // è dentro), snappa/ri-snappa alla posa bloccata configurabile (non più
+  // La posa home è stato di prodotto, non di tuning: va nel JSON globale come
+  // materiali/focus/animazioni. Non si scrive però direttamente su
+  // `window.__STATE_APP`: la sezione `app` contiene anche l'animazione di
+  // rientro e i tempi di rilascio, che vivono in KeyboardComposer.jsx — due
+  // scrittori sullo stesso globale si sovrascriverebbero a vicenda.
+  useEffect(() => {
+    onHomePoseChange?.(homePose)
+  }, [homePose, onHomePoseChange])
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.detail?.homePose && POSE_COORD[e.detail.homePose])
+        setModeControls({ homePose: e.detail.homePose })
+    }
+    window.addEventListener('app-load-app', handler)
+    return () => window.removeEventListener('app-load-app', handler)
+  }, [setModeControls])
+
+  // Entrando in modalità Mesh (o cambiando la posa home mentre già ci si
+  // è dentro), snappa/ri-snappa alla posa home configurabile (non più
   // hardcoded a 'TL') — non al selezionare una mesh/gruppo, altrimenti
   // risalterebbe lì ogni volta che si cambia selezione dentro la stessa
   // sessione di editing.
   useEffect(() => {
     if (!apiRef?.current) return
-    if (editMode === 'meshes') apiRef.current.goTo?.(lockedPose)
-  }, [editMode, lockedPose, apiRef])
+    if (editMode === 'meshes') apiRef.current.goTo?.(homePose)
+  }, [editMode, homePose, apiRef])
 
   // Ponte verso Hud.jsx (fuori dal Canvas): pubblica editMode e
-  // la posa bloccata sullo stesso apiRef.current condiviso con
+  // la posa home sullo stesso apiRef.current condiviso con
   // useComposerControls.js (dentro il Canvas) — Object.assign, mai
   // riassegnazione, perché i due scrittori non hanno un ordine garantito fra
   // loro (alberi React separati, uno dentro <Canvas>).
   useEffect(() => {
     if (!apiRef) return
-    Object.assign(apiRef.current, { editMode, lockedPoseKey: lockedPose })
-  }, [editMode, lockedPose, apiRef])
+    Object.assign(apiRef.current, { editMode, homePoseKey: homePose })
+  }, [editMode, homePose, apiRef])
 
   return (
     <Canvas
@@ -261,13 +294,20 @@ export default function Scene({
             apiRef={apiRef}
             onSizeComputed={setModelSize}
             onSelectMesh={setSelectedMesh}
-            // Mesh disattiva il drag (posa bloccata, vedi sopra): in Luci
-            // serve poter cambiare posa per configurare le luci vista per
-            // vista (vedi anche onWheel in useComposerControls.js, che resta
-            // sempre attivo — zoom mai disattivato da nessuna modalità).
-            controlsDisabled={editMode === 'meshes'}
+            // Due sorgenti indipendenti spengono drag/frecce:
+            //  - Mesh, che blocca la posa (vedi sopra) — in Luci/Focus/Anim
+            //    invece serve poter cambiare posa per autorare vista per vista
+            //    (vedi anche onWheel in useComposerControls.js, che resta
+            //    sempre attivo — zoom mai disattivato da nessuna modalità);
+            //  - config_mode, la modalità di PRODOTTO in cui si comanda il
+            //    modello dai pulsanti invece che a mano. Vale solo con
+            //    editMode 'none': dentro un editor di authoring la
+            //    navigazione deve restare viva comunque, altrimenti si
+            //    autorerebbe alla cieca.
+            controlsDisabled={editMode === 'meshes' || (appMode === 'config' && editMode === 'none')}
             editMode={editMode}
-            lockedPoseKey={lockedPose}
+            homePoseKey={homePose}
+            appMode={appMode}
             meshGroups={meshGroups}
             focusOverrides={focusOverrides}
           />
@@ -299,6 +339,7 @@ export default function Scene({
           editMode={editMode}
           meshGroups={meshGroups}
           meshVariants={meshVariants}
+          release={release}
         />
         {/* Accende le mesh della variante scelta e spegne le alternative: nel
             GLB convivono tutte (ISO e ANSI insieme), quindi senza questo si

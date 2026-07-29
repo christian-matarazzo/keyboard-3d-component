@@ -284,6 +284,47 @@
   composes: focusChipDisabled;
 }
 
+/* ── Interruttore idle ⇄ config ─────────────────────────────────────────────
+   Ultima riga della pila, cioè quella più in basso: è l'unico comando visibile
+   in entrambe le modalità e deve restare alla stessa quota mentre le righe
+   sopra compaiono e scompaiono. Più marcato dei chip (che sono opzioni dentro
+   una sessione di configurazione, mentre questo la apre e la chiude). */
+.modeBar {
+  display: flex;
+  justify-content: center;
+  pointer-events: auto;
+}
+
+.modeBtn {
+  composes: focusChip;
+  padding: 0 clamp(14px, 1.4vw, 22px);
+  border-color: rgb(255 255 255 / 45%);
+  color: rgb(255 255 255 / 82%);
+}
+
+.modeBtn:hover {
+  color: #fff;
+  border-color: #fff;
+}
+
+/* In config l'interruttore è "acceso": stesso pieno del chip di trigger, così
+   si legge come stato attivo e non come una delle opzioni accanto. */
+.modeBtnActive {
+  color: #0b0b0b;
+  border-color: #fff;
+  background: #fff;
+}
+
+.modeBtnActive:hover {
+  color: #0b0b0b;
+  background: rgb(255 255 255 / 85%);
+}
+
+.modeBtnDisabled {
+  composes: focusChipDisabled;
+  background: transparent;
+}
+
 /* Evento atteso: è l'unica cosa nell'HUD che chiede un'azione all'utente,
    quindi si distingue dai chip di stato. */
 .animChipTrigger {
@@ -402,7 +443,8 @@
 @media (prefers-reduced-motion: reduce) {
   .page,
   .focusChip,
-  .animChip {
+  .animChip,
+  .modeBtn {
     transition: none;
   }
 }

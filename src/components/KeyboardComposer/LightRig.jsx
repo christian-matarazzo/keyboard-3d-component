@@ -117,8 +117,42 @@ const boxFromModelSize = (modelSize) => ({
   minZ: -modelSize.z / 2, maxZ: modelSize.z / 2,
 })
 
+/**
+ * Valori PER VISTA della cartella "Impostazioni Globali Vista", con i loro
+ * default. Unica fonte: da qui leggono sia lo schema Leva sia
+ * `generateDefaultConfig`, così un default cambiato in un punto non può
+ * divergere dall'altro (prima erano due elenchi paralleli da tenere allineati
+ * a mano, ed è il modo in cui un valore smette silenziosamente di combaciare
+ * con quello scritto nei JSON già salvati).
+ *
+ * ⚠️ Queste chiavi finiscono nel JSON dentro `lights[posa]`, accanto a
+ * `top_0_intensity` & co. Vale la stessa regola dei prefissi delle luci:
+ * rinominarne una rimappa in silenzio ogni configurazione già salvata.
+ *
+ * I quattro damping erano tunabili in `?debug` ma non venivano salvati da
+ * nessuna parte, quindi in produzione restavano sempre agli hardcoded: erano
+ * l'unico parametro dell'app a non sopravvivere a un salva/ricarica.
+ * `showHelpers`/`showSurfaces` non stanno qui pur essendo salvati per vista:
+ * sono visualizzazione di debug, non un parametro di resa.
+ */
+const DEFAULT_VIEW_SETTINGS = {
+  margin: 1.0,
+  animMarginDamp: 0.25,
+  animLightOnDamp: 0.08,
+  animLightOffDamp: 0.25,
+  animColorDamp: 0.35,
+}
+const VIEW_SETTING_KEYS = Object.keys(DEFAULT_VIEW_SETTINGS)
+
+/** Legge le impostazioni per vista da una config di posa, con i default per le chiavi assenti. */
+const readViewSettings = (config) => {
+  const out = {}
+  for (const k of VIEW_SETTING_KEYS) out[k] = config?.[k] ?? DEFAULT_VIEW_SETTINGS[k]
+  return out
+}
+
 const generateDefaultConfig = () => {
-  const def = { margin: 1.0, showHelpers: true, showSurfaces: true } 
+  const def = { ...DEFAULT_VIEW_SETTINGS, showHelpers: true, showSurfaces: true }
   for (let i = 0; i < 9; i++) { def[`top_${i}_intensity`] = 0; def[`top_${i}_color`] = '#ffffff'; def[`top_${i}_decay`] = 2; }
   for (let i = 0; i < 8; i++) { def[`mid_${i}_intensity`] = 0; def[`mid_${i}_color`] = '#ffffff'; def[`mid_${i}_decay`] = 2; }
   for (let i = 0; i < 9; i++) { def[`bot_${i}_intensity`] = 0; def[`bot_${i}_color`] = '#ffffff'; def[`bot_${i}_decay`] = 2; }
@@ -359,13 +393,14 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
       // Max alzato da 3 a 12: con la scatola adattiva (che segue le mesh
       // traslate dall'editor) serve poter allontanare le luci molto più del
       // vecchio modello statico senza rimanere incastrati nel modello.
-      margin: { value: 1.0, min: 0, max: 12, step: 0.1, label: 'Margine Scatola' },
-      
-      // Controlli per i Damping esposti per il Tuning
-      animMarginDamp: { value: 0.25, min: 0.01, max: 1, step: 0.01, label: 'Velocità Margine' },
-      animLightOnDamp: { value: 0.08, min: 0.01, max: 1, step: 0.01, label: 'Velocità Accensione' },
-      animLightOffDamp: { value: 0.25, min: 0.01, max: 1, step: 0.01, label: 'Velocità Spegnimento' },
-      animColorDamp: { value: 0.35, min: 0.01, max: 1, step: 0.01, label: 'Velocità Colore' },
+      margin: { value: DEFAULT_VIEW_SETTINGS.margin, min: 0, max: 12, step: 0.1, label: 'Margine Scatola' },
+
+      // Velocità di transizione, anch'esse PER VISTA (vedi DEFAULT_VIEW_SETTINGS):
+      // il valore mostrato qui è sempre quello della posa attiva.
+      animMarginDamp: { value: DEFAULT_VIEW_SETTINGS.animMarginDamp, min: 0.01, max: 1, step: 0.01, label: 'Velocità Margine' },
+      animLightOnDamp: { value: DEFAULT_VIEW_SETTINGS.animLightOnDamp, min: 0.01, max: 1, step: 0.01, label: 'Velocità Accensione' },
+      animLightOffDamp: { value: DEFAULT_VIEW_SETTINGS.animLightOffDamp, min: 0.01, max: 1, step: 0.01, label: 'Velocità Spegnimento' },
+      animColorDamp: { value: DEFAULT_VIEW_SETTINGS.animColorDamp, min: 0.01, max: 1, step: 0.01, label: 'Velocità Colore' },
 
       'Resetta Vista': button(() => {
         if (window.confirm(`Vuoi azzerare le luci per la vista ${activePoseRef.current}?`)) {
@@ -373,7 +408,9 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
           def.showHelpers = currentControlsRef.current.showHelpers
           def.showSurfaces = currentControlsRef.current.showSurfaces
           configsRef.current[activePoseRef.current] = def
-          setControls({ margin: def.margin })
+          // Anche le velocità di transizione tornano ai default: fanno parte
+          // della vista, quindi "resetta vista" le comprende.
+          setControls(readViewSettings(def))
           setSelectedLight(null)
         }
       })
@@ -460,11 +497,13 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
           
           // Aggiorna i controlli se c'è una posa già attiva
           if (activePoseRef.current && lightsData[activePoseRef.current]) {
+            // Lo spread sui default copre i JSON precedenti, che non hanno le
+            // chiavi delle velocità: restano validi e prendono i default.
             const newConfig = { ...generateDefaultConfig(), ...lightsData[activePoseRef.current] };
-            setControls({ 
-              margin: newConfig.margin, 
+            setControls({
+              ...readViewSettings(newConfig),
               showHelpers: newConfig.showHelpers,
-              showSurfaces: newConfig.showSurfaces !== undefined ? newConfig.showSurfaces : newConfig.showHelpers 
+              showSurfaces: newConfig.showSurfaces !== undefined ? newConfig.showSurfaces : newConfig.showHelpers
             });
           }
 
@@ -477,6 +516,7 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
             if (parsed.focus) window.dispatchEvent(new CustomEvent('app-load-focus', { detail: parsed.focus }))
             if (parsed.animations) window.dispatchEvent(new CustomEvent('app-load-animations', { detail: parsed.animations }))
             if (parsed.variants) window.dispatchEvent(new CustomEvent('app-load-variants', { detail: parsed.variants }))
+            if (parsed.app) window.dispatchEvent(new CustomEvent('app-load-app', { detail: parsed.app }))
           }
         })
         .catch((err) => {
@@ -485,13 +525,24 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
     }
   }, [setControls])
 
+  // Slider → config della posa attiva. Il runtime legge questi valori da Leva
+  // (currentControlsRef), quindi questo effetto è ciò che li rende persistenti:
+  // senza, una velocità appena regolata si perderebbe al primo cambio vista.
   useEffect(() => {
-    if (activePoseRef.current && configsRef.current[activePoseRef.current]) {
-      configsRef.current[activePoseRef.current].margin = controls.margin
-      configsRef.current[activePoseRef.current].showHelpers = controls.showHelpers
-      configsRef.current[activePoseRef.current].showSurfaces = controls.showSurfaces
-    }
-  }, [controls.margin, controls.showHelpers, controls.showSurfaces])
+    const conf = configsRef.current[activePoseRef.current]
+    if (!activePoseRef.current || !conf) return
+    for (const k of VIEW_SETTING_KEYS) conf[k] = controls[k]
+    conf.showHelpers = controls.showHelpers
+    conf.showSurfaces = controls.showSurfaces
+  }, [
+    controls.margin,
+    controls.animMarginDamp,
+    controls.animLightOnDamp,
+    controls.animLightOffDamp,
+    controls.animColorDamp,
+    controls.showHelpers,
+    controls.showSurfaces,
+  ])
 
   useEffect(() => {
     if (!activePose) return
@@ -499,8 +550,13 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
       configsRef.current[activePose] = generateDefaultConfig()
     }
     const newConfig = configsRef.current[activePose]
-    setControls({ 
-      margin: newConfig.margin, 
+    // Config della posa → slider. È il percorso con cui un valore per vista
+    // arriva davvero al runtime, che legge da Leva e non dalla config: il
+    // cambio avviene all'inizio della transizione, quindi è la vista IN
+    // ENTRATA a governare la propria transizione. Per una velocità (un rateo,
+    // non un valore visibile) non ha senso interpolarla come le intensità.
+    setControls({
+      ...readViewSettings(newConfig),
       showHelpers: newConfig.showHelpers,
       showSurfaces: newConfig.showSurfaces !== undefined ? newConfig.showSurfaces : newConfig.showHelpers
     })
@@ -846,12 +902,29 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
   const isSurfSelected = selectedLight?.layer === 'surf'
 
   const handleSaveJSON = () => {
-    if (activePoseRef.current && currentControlsRef.current) {
-      configsRef.current[activePoseRef.current].margin = currentControlsRef.current.margin
-      configsRef.current[activePoseRef.current].showHelpers = currentControlsRef.current.showHelpers
-      configsRef.current[activePoseRef.current].showSurfaces = currentControlsRef.current.showSurfaces
+    // La posa attiva potrebbe avere modifiche non ancora rientrate nella
+    // config (l'effetto di mirroring gira dopo il commit React): si allinea
+    // qui, subito prima di serializzare.
+    if (activePoseRef.current && currentControlsRef.current && configsRef.current[activePoseRef.current]) {
+      const conf = configsRef.current[activePoseRef.current]
+      for (const k of VIEW_SETTING_KEYS) conf[k] = currentControlsRef.current[k]
+      conf.showHelpers = currentControlsRef.current.showHelpers
+      conf.showSurfaces = currentControlsRef.current.showSurfaces
     }
     
+    // Ogni vista esce dal salvataggio COMPLETA delle proprie impostazioni.
+    // Senza questo passaggio le chiavi comparirebbero solo nelle pose che
+    // l'autore ha effettivamente attraversato durante la sessione (è l'effetto
+    // di mirroring a scriverle, e lavora solo sulla posa attiva), producendo un
+    // file popolato a macchia di leopardo a seconda di come si è navigato.
+    // Il caricamento se la caverebbe comunque — le chiavi assenti cadono sui
+    // default — ma un file che descrive tutte le viste allo stesso modo è
+    // ispezionabile e diffabile, e questo è il file che va in produzione.
+    for (const conf of Object.values(configsRef.current)) {
+      if (!conf) continue
+      for (const k of VIEW_SETTING_KEYS) if (conf[k] === undefined) conf[k] = DEFAULT_VIEW_SETTINGS[k]
+    }
+
     const fullData = {
       lights: configsRef.current,
       materials: window.__STATE_MATERIALS || {},
@@ -869,7 +942,11 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
       // Varianti di modello: la selezione ATTIVA al momento del salvataggio
       // diventa il default di produzione, più i binding variante→animazione di
       // swap. Vedi materials/meshVariants.js.
-      variants: window.__STATE_VARIANTS || {}
+      variants: window.__STATE_VARIANTS || {},
+      // Stato di prodotto non legato a luci/materiali: oggi la sola posa home
+      // (ingresso in landscape, rientro da config_mode, blocco della modalità
+      // Mesh — vedi Scene.jsx).
+      app: window.__STATE_APP || {}
     }
 
     const json = JSON.stringify(fullData, null, 2)
@@ -905,10 +982,10 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
           const currentPose = activePoseRef.current
           if (currentPose && lightsData[currentPose]) {
             const newConfig = { ...generateDefaultConfig(), ...lightsData[currentPose] }
-            setControls({ 
-              margin: newConfig.margin, 
-              showHelpers: newConfig.showHelpers, 
-              showSurfaces: newConfig.showSurfaces !== undefined ? newConfig.showSurfaces : newConfig.showHelpers 
+            setControls({
+              ...readViewSettings(newConfig),
+              showHelpers: newConfig.showHelpers,
+              showSurfaces: newConfig.showSurfaces !== undefined ? newConfig.showSurfaces : newConfig.showHelpers
             })
           }
           
@@ -920,6 +997,7 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
             if (parsed.focus) window.dispatchEvent(new CustomEvent('app-load-focus', { detail: parsed.focus }))
             if (parsed.animations) window.dispatchEvent(new CustomEvent('app-load-animations', { detail: parsed.animations }))
             if (parsed.variants) window.dispatchEvent(new CustomEvent('app-load-variants', { detail: parsed.variants }))
+            if (parsed.app) window.dispatchEvent(new CustomEvent('app-load-app', { detail: parsed.app }))
           }
 
           setSelectedLight(null)

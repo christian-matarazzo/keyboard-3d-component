@@ -1,11 +1,11 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { useThree } from '@react-three/fiber'
 import { useGLTF } from '@react-three/drei'
 import { prepareGroupMaterials } from './materials/groupMaterials'
 import { DEFAULT_MESH_GROUPS } from './materials/meshGroups'
 import { useComposerControls } from './useComposerControls'
-import { ENTRY_LANDSCAPE, ENTRY_PORTRAIT } from './poseGraph'
+import { ENTRY_LANDSCAPE, ENTRY_PORTRAIT, POSE_COORD } from './poseGraph'
 
 export const DRACO_PATH = '/draco/'
 export const DEFAULT_MODEL_URL = '/models/keyboard.glb'
@@ -21,7 +21,7 @@ const DEBUG = new URLSearchParams(window.location.search).has('debug')
 // del file sorgente (l'OBJ è in centimetri).
 const TARGET_WIDTH = 3.2
 
-export function KeyboardModel({ url = DEFAULT_MODEL_URL, apiRef, onSizeComputed, onSelectMesh, controlsDisabled, editMode = 'none', lockedPoseKey = null, meshGroups = DEFAULT_MESH_GROUPS, focusOverrides = null }) {
+export function KeyboardModel({ url = DEFAULT_MODEL_URL, apiRef, onSizeComputed, onSelectMesh, controlsDisabled, editMode = 'none', homePoseKey = null, appMode = 'idle', meshGroups = DEFAULT_MESH_GROUPS, focusOverrides = null }) {
   const { scene } = useGLTF(url, DRACO_PATH)
 
   // Auto-fit: centra il modello e lo scala a TARGET_WIDTH, così camera e
@@ -50,27 +50,51 @@ export function KeyboardModel({ url = DEFAULT_MODEL_URL, apiRef, onSizeComputed,
 
   const portrait = useThree((s) => s.size.width < s.size.height)
 
-  // Posa d'ingresso: su desktop il corner "initial position" del cliente
-  // (pitch 35.264° + yaw 45°, stop ViewCube — vedi poseGraph.js). Su mobile
-  // portrait la vista verticale (faccia tasti alla camera, asse lungo
-  // verticale, manopole in alto) resta pitch 90° + yaw 90° (Rx·Ry, ordine
-  // 'XYZ'). Niente roll su wrapper esterno: così il pitch resta sull'asse
-  // orizzontale dello schermo e lo swipe verticale trascina il modello
-  // seguendo il dito, identico al desktop.
+  // Posa d'ingresso: su desktop è la POSA HOME autorata in ?debug e salvata
+  // nel JSON (default TL, il corner "initial position" del cliente — pitch
+  // 35.264° + yaw 45°, stop ViewCube, vedi poseGraph.js). Su mobile portrait
+  // la vista verticale (faccia tasti alla camera, asse lungo verticale,
+  // manopole in alto) resta pitch 90° + yaw 90° (Rx·Ry, ordine 'XYZ'): il fit
+  // su schermo alto è la ragione per cui quell'ingresso è una scelta di
+  // layout, non una posa di prodotto, quindi la home NON lo sostituisce.
+  // Niente roll su wrapper esterno: così il pitch resta sull'asse orizzontale
+  // dello schermo e lo swipe verticale trascina il modello seguendo il dito,
+  // identico al desktop.
+  const homeCoord = POSE_COORD[homePoseKey] ?? null
   useComposerControls({
     initialRotation: portrait
       ? { x: ENTRY_PORTRAIT.x, y: ENTRY_PORTRAIT.y }
-      : { x: ENTRY_LANDSCAPE.x, y: ENTRY_LANDSCAPE.y },
+      : homeCoord
+        ? { x: homeCoord.pitch, y: homeCoord.yaw }
+        : { x: ENTRY_LANDSCAPE.x, y: ENTRY_LANDSCAPE.y },
     apiRef, // esposto alla pulsantiera delle viste, che sta fuori dal Canvas
     disabled: controlsDisabled,
     editMode,
-    lockedPoseKey,
+    homePoseKey,
     scene, // per il fit dinamico in Luci sulla posa bloccata (vedi useComposerControls.js)
     // Zoom sui gruppi: `meshGroups` classifica le mesh da misurare,
     // `focusOverrides` porta le inquadrature autorate (Scene.jsx/FocusTuner).
     meshGroups,
     focusOverrides,
   })
+
+  // `initialRotation` viene letta una sola volta (finché la posa non è
+  // "initialized", vedi useComposerControls.js): una home che cambia DOPO —
+  // lo slider Leva in ?debug, o il JSON di produzione, che arriva via fetch
+  // asincrono a modello già montato — non muoverebbe nulla. Qui la si segue
+  // con un goTo, cioè con la stessa molla di tutto il resto.
+  //  - solo in idle: in config_mode/durante un'animazione ci sono già altri
+  //    scrittori sui target della camera;
+  //  - mai in portrait: lì l'ingresso è una scelta di fit (vedi sopra), non la
+  //    home, e uno snap a caricamento finito sarebbe uno strappo;
+  //  - mai al mount: il primo valore è già dentro `initialRotation`.
+  const appliedHomeRef = useRef(homePoseKey)
+  useEffect(() => {
+    if (homePoseKey === appliedHomeRef.current) return
+    appliedHomeRef.current = homePoseKey
+    if (portrait || appMode !== 'idle') return
+    apiRef?.current?.goTo?.(homePoseKey)
+  }, [homePoseKey, portrait, appMode, apiRef])
 
   // Un solo <group>, quello della scala: la camera orbita da sola, quindi non
   // serve alcun wrapper da ruotare (i due <group> esterni che c'erano qui —

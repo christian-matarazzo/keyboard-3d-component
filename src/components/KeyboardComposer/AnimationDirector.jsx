@@ -37,6 +37,10 @@ export default function AnimationDirector({
   editMode = 'none',
   meshGroups = DEFAULT_MESH_GROUPS,
   meshVariants = DEFAULT_MESH_VARIANTS,
+  // Velocità e curva della dissolvenza di USCITA (lo smontaggio morbido di
+  // `stop()`, vedi animationRuntime.js): `{ duration, easing }`, autorate
+  // nell'editor e salvate nella sezione `app` del JSON.
+  release,
 }) {
   const { scene } = useGLTF(modelUrl, DRACO_PATH)
 
@@ -48,6 +52,8 @@ export default function AnimationDirector({
   groupsRef.current = meshGroups
   const variantsRef = useRef(meshVariants)
   variantsRef.current = meshVariants
+  const releaseRef = useRef(release)
+  releaseRef.current = release
 
   // Runtime + registry creati UNA volta sola: sono stato mutabile per-frame,
   // non stato React. Il ctx legge tutto da ref, quindi non invecchia mai.
@@ -64,6 +70,7 @@ export default function AnimationDirector({
       get variants() {
         return variantsRef.current
       },
+      getRelease: () => releaseRef.current,
       opacity: createOpacityRegistry(getScene),
       pivots: createPivotRegistry(getScene),
       debug: DEBUG,
@@ -112,9 +119,12 @@ export default function AnimationDirector({
   }, [apiRef])
 
   // L'editor mesh riparenta le stesse mesh dei pivot di animazione: i due non
-  // possono essere vivi insieme. Entrando in Mesh si smonta l'animazione.
+  // possono essere vivi insieme. Entrando in Mesh si smonta l'animazione —
+  // `soft: false`, cioè per intero entro questa chiamata: una dissolvenza di
+  // uscita ancora in corso scriverebbe sugli stessi materiali su cui l'editor
+  // mesh ha il proprio slider di opacità.
   useEffect(() => {
-    if (editMode === 'meshes') runtimeRef.current.runtime.stop()
+    if (editMode === 'meshes') runtimeRef.current.runtime.stop({ soft: false })
   }, [editMode])
 
   // Rete di sicurezza allo smontaggio: nessun materiale clonato e nessun pivot
@@ -122,7 +132,7 @@ export default function AnimationDirector({
   useEffect(() => {
     const { runtime, ctx } = runtimeRef.current
     return () => {
-      runtime.stop()
+      runtime.stop({ soft: false })
       ctx.opacity.releaseAll()
       ctx.pivots.releaseAll()
     }

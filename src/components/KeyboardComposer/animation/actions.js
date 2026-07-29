@@ -210,7 +210,11 @@ export const ACTIONS = {
       const opacityDone = !inst.data.restore || inst.data.restore.done
       return cameraDone && opacityDone
     },
-    stop(inst) {
+    stop(inst, ctx, opts) {
+      // Con `keepOpacity` il rilascio globale ha già fotografato questi
+      // materiali e li sta interpolando: chiudere qui il ripristino parziale
+      // significherebbe rilasciarli sotto i suoi piedi (e farli scattare).
+      if (opts?.keepOpacity) return
       inst.data.restore?.finish()
     },
   },
@@ -255,7 +259,12 @@ export const ACTIONS = {
       inst.data.from = inst.data.handle?.readCurrent()
       inst.data.settled = false
     },
-    stop(inst) {
+    stop(inst, ctx, opts) {
+      // Smontaggio morbido: la proprietà dei materiali passa alla fase di
+      // rilascio del runtime, che li riporta all'opaco interpolando. Rilasciare
+      // qui rimetterebbe opacità/transparent/depthWrite in un frame — lo scatto
+      // che quella fase esiste per togliere.
+      if (opts?.keepOpacity) return
       inst.data.handle?.release()
       inst.data.handle = null
     },

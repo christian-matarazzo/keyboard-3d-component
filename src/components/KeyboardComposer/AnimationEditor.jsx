@@ -11,7 +11,7 @@ const DEBUG = new URLSearchParams(window.location.search).has('debug')
 
 // POSE_HUD_LABEL ha etichette duplicate per design (più pose condividono la
 // stessa label breve): si disambigua accodando la chiave, come
-// LOCKED_POSE_OPTIONS in Scene.jsx.
+// HOME_POSE_OPTIONS in Scene.jsx.
 const POSE_OPTIONS = Object.keys(POSE_COORD).map((key) => ({
   key,
   label: `${POSE_HUD_LABEL[key] ?? key} · ${key}`,
@@ -44,6 +44,10 @@ export default function AnimationEditor({
   meshVariants = [],
   variantAnimations = {},
   onVariantAnimationsChange,
+  // Sezione `app` del JSON: animazione di rientro in idle e tempi della
+  // dissolvenza di uscita (vedi KeyboardComposer.jsx).
+  appConfig = null,
+  onAppConfigChange,
 }) {
   const [editMode, setEditMode] = useState(null)
   const [runState, setRunState] = useState(null)
@@ -453,6 +457,22 @@ export default function AnimationEditor({
               />{' '}
               stop rilascia lo zoom
             </label>
+            {/* Deroga a "fine ≠ smontaggio": serve alle sequenze il cui
+                compito è RIPORTARE la scena a riposo — tipicamente quella di
+                rientro in idle, che parte concatenata e quindi eredita le
+                istanze dell'animazione precedente. Senza, resterebbero vive
+                (uno `spinGroup` continuerebbe a girare in idle). */}
+            <label
+              className={styles.paramLabel}
+              title="A wave esaurite l'animazione si ferma da sola, rilasciando anche ciò che ha ereditato"
+            >
+              <input
+                type="checkbox"
+                checked={current.stopOnFinish === true}
+                onChange={(e) => patchAnimation({ stopOnFinish: e.target.checked })}
+              />{' '}
+              a fine sequenza rilascia tutto
+            </label>
           </div>
 
           {/* Binding variante → animazione di swap. Sta qui e non fra le
@@ -481,6 +501,73 @@ export default function AnimationEditor({
                   </select>
                 </div>
               ))}
+            </>
+          )}
+
+          {/* Transizioni di sistema. Non appartengono a UNA animazione: sono
+              come il componente passa da uno stato all'altro, quindi vivono
+              nella sezione `app` del JSON e non fra le opzioni qui sopra.
+              L'uscita dallo zoom ha la sua manopola gemella nella folder Leva
+              `Rotazione` (`zoom-out (uscita)`), perché è feel di camera. */}
+          {appConfig && onAppConfigChange && (
+            <>
+              <span className={styles.sectionLabel}>transizioni</span>
+              <div className={styles.header}>
+                <span className={styles.paramLabel} title="Giocata uscendo da config_mode: riporta la scena a riposo">
+                  rientro in idle
+                </span>
+                <select
+                  className={`${styles.select} ${styles.grow}`}
+                  value={appConfig.idleAnimation ?? ''}
+                  onChange={(e) => onAppConfigChange({ idleAnimation: e.target.value })}
+                >
+                  <option value="">— rientro secco —</option>
+                  {items.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {/* Parte concatenata (`keep`) per poter dissolvere ciò che trova:
+                  senza `stopOnFinish` acceso lascerebbe però vive le istanze
+                  ereditate. Vale la pena dirlo dove si sceglie. */}
+              {appConfig.idleAnimation &&
+                items.find((a) => a.id === appConfig.idleAnimation)?.stopOnFinish !== true && (
+                  <span className={styles.warning}>
+                    ⚠ accendi “a fine sequenza rilascia tutto” su questa animazione, o ciò
+                    che eredita resta vivo in idle
+                  </span>
+                )}
+              <div className={styles.header}>
+                <span
+                  className={styles.paramLabel}
+                  title="Quanto ci mette l'opacità a tornare com'era quando un'animazione viene fermata o sostituita"
+                >
+                  dissolvenza in uscita
+                </span>
+                <input
+                  type="number"
+                  className={`${styles.input} ${styles.numSmall}`}
+                  value={appConfig.releaseDuration ?? 0.5}
+                  min={0}
+                  step={0.1}
+                  onChange={(e) =>
+                    onAppConfigChange({ releaseDuration: Math.max(0, Number(e.target.value) || 0) })
+                  }
+                />
+                <select
+                  className={`${styles.select} ${styles.grow}`}
+                  value={appConfig.releaseEasing ?? 'easeInOutCubic'}
+                  onChange={(e) => onAppConfigChange({ releaseEasing: e.target.value })}
+                >
+                  {EASING_NAMES.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </>
           )}
 

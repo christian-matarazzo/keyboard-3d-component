@@ -1,5 +1,6 @@
 import { ACTIONS, DEFAULT_MAX_WAIT } from './actions'
 import { buildWaves } from './animationSchema'
+import { ease, clamp01 } from './easings'
 
 /**
  * Sequencer a step delle animazioni autorate. JS puro, nessun React: muta a
@@ -25,12 +26,34 @@ import { buildWaves } from './animationSchema'
  * FINE ≠ SMONTAGGIO. Quando le wave finiscono lo stato passa a 'finished' e le
  * istanze persistenti continuano a ticchettare (i rotori girano, l'isolate
  * resta): è esattamente ciò che "configurazione rotori" significa come stato di
- * prodotto. Solo `stop()` disfa.
+ * prodotto. Solo `stop()` disfa. Unica deroga, esplicita e per animazione:
+ * `stopOnFinish`, per le sequenze cha hanno il compito di RIPORTARE la scena a
+ * riposo (la transizione verso idle) e non devono lasciarsi dietro istanze vive.
+ *
+ * SMONTAGGIO MORBIDO. `stop()` non è più istantaneo sull'opacità. Rilasciare gli
+ * handle in un frame riporta ogni materiale al suo valore di partenza di scatto,
+ * e passare da un'animazione all'altra faceva lampeggiare l'isolate. Adesso lo
+ * stop apre una FASE DI RILASCIO: il registry interpola dall'opacità corrente a
+ * quella fotografata all'acquire, per `release.duration` secondi con la curva
+ * `release.easing`, e solo a fine corsa rilascia davvero (`finish()`, che è
+ * l'unico punto in cui tornano `transparent`/`depthWrite` e cadono i cloni).
+ * Pivot e varianti restano invece sincroni: sono ownership della gerarchia, non
+ * un valore da interpolare. Lo zoom era già smorzato — ha la sua manopola di
+ * uscita in useComposerControls.js (`focusOutDamp`).
+ *
+ * ⚠️ Durante la fase di rilascio un `play()` che azzera lo stato precedente
+ * viene MESSO IN CODA, non avviato: altrimenti il fade di uscita e l'opacità
+ * della nuova animazione scriverebbero sugli stessi materiali nello stesso
+ * frame, e vincerebbe l'ultimo per caso. Questa coda È la transizione fra due
+ * animazioni.
  */
 
 // Una tab tornata in primo piano consegna un delta enorme: senza tetto, uno
 // step a durata verrebbe saltato in un colpo solo.
 const MAX_DT = 1 / 20
+
+// Usati se il chiamante non fornisce una configurazione di rilascio.
+const DEFAULT_RELEASE = { duration: 0.5, easing: 'easeInOutCubic' }
 
 export function createAnimationRuntime(ctx) {
   let state = 'idle' // 'idle' | 'playing' | 'finished'
@@ -42,6 +65,11 @@ export function createAnimationRuntime(ctx) {
   let loopsLeft = 0
   let variantTargets = {}
   const pendingTriggers = new Set()
+  // Fase di rilascio in corso: { restore, t, duration, easing, id } — `id` è
+  // l'animazione che l'ha aperta, serve solo alla telemetria.
+  let release = null
+  // Play messo in coda perché è arrivato durante un rilascio.
+  let pending = null
 
   const isStepDone = (inst) => {
     const s = inst.step
@@ -110,6 +138,14 @@ export function createAnimationRuntime(ctx) {
       if (!canLoop) {
         state = 'finished'
         waveInstances = []
+        // Deroga esplicita a "fine ≠ smontaggio": un'animazione dichiarata
+        // `stopOnFinish` esiste per riportare la scena a riposo (la
+        // transizione verso idle), quindi si smonta da sola invece di lasciare
+        // vive istanze — comprese quelle EREDITATE con `startFrom: 'keep'`,
+        // che altrimenti continuerebbero a girare (uno `spinGroup` in idle).
+        // Sicuro qui: il ciclo su `instances` in `tick` è già finito quando
+        // questa riga svuota l'array.
+        if (anim?.stopOnFinish) stop()
         return
       }
       if (loop.mode === 'count') loopsLeft--
@@ -139,9 +175,27 @@ export function createAnimationRuntime(ctx) {
     if (!inst.done) inst.done = isStepDone(inst)
   }
 
+  /** Avanza la dissolvenza di uscita; a fine corsa rilascia e sblocca la coda. */
+  const tickRelease = (dt) => {
+    release.t += dt
+    const k = release.duration > 0 ? clamp01(release.t / release.duration) : 1
+    release.restore.lerp(ease(release.easing, k))
+    if (k < 1) return
+    release.restore.finish()
+    release = null
+    if (pending) {
+      const { id, opts } = pending
+      pending = null
+      play(id, opts)
+    }
+  }
+
   const tick = (rawDelta) => {
-    if (state === 'idle') return
     const dt = Math.min(rawDelta, MAX_DT)
+    // Il rilascio vive OLTRE lo stato del sequencer: `stop()` ha già portato
+    // `state` a 'idle', ma la dissolvenza di uscita deve continuare.
+    if (release) tickRelease(dt)
+    if (state === 'idle') return
     // (1) prima si aggiorna TUTTO ciò che è già partito…
     for (const inst of instances) tickInstance(inst, dt)
     // (2) …e solo dopo si valuta l'avanzamento. Con questo ordine, l'ordine dei
@@ -149,17 +203,44 @@ export function createAnimationRuntime(ctx) {
     if (state === 'playing' && waveInstances.every((i) => i.done)) advanceWave()
   }
 
-  const stop = () => {
+  /**
+   * Smonta tutto.
+   *
+   * `soft` (default) apre la fase di rilascio dell'opacità descritta in testa al
+   * file invece di riportarla di scatto. Va disattivato quando lo smontaggio
+   * deve essere completo ENTRO questa chiamata: ingresso nell'editor mesh (che
+   * riparenta le stesse mesh e scrive sugli stessi materiali) e smontaggio del
+   * director.
+   */
+  const stop = ({ soft = true } = {}) => {
+    // Un rilascio già in corso viene chiuso subito: due dissolvenze
+    // sovrapposte sugli stessi materiali sono due scrittori per frame.
+    if (release) {
+      release.restore.finish()
+      release = null
+    }
+    pending = null
+    // La fotografia va presa PRIMA dei teardown, mentre i materiali sono ancora
+    // posseduti: è da lì che parte l'interpolazione.
+    const restoreOpacity = soft && instances.length > 0 ? ctx.opacity.beginRestoreAll() : null
+    const keepOpacity = !!restoreOpacity && !restoreOpacity.empty
     // Ordine INVERSO di start: un pivot acquisito per ultimo va disfatto per
     // primo, altrimenti si smonta sotto i piedi di chi lo condivide.
     for (let i = instances.length - 1; i >= 0; i--) {
       try {
-        instances[i].action.stop?.(instances[i], ctx)
+        // `keepOpacity` dice alle azioni che possiedono materiali di NON
+        // rilasciarli: la proprietà passa alla fase di rilascio, che li
+        // interpola e li restituisce alla fine. Senza, `disown` rimetterebbe
+        // qui e ora opacità, `transparent` e `depthWrite` — cioè esattamente lo
+        // scatto che si vuole evitare (e con `transparent: false` il fade non
+        // si vedrebbe nemmeno).
+        instances[i].action.stop?.(instances[i], ctx, { keepOpacity })
       } catch (err) {
         console.warn('[anim] errore nel teardown di', instances[i].step.id, err)
       }
     }
     const restore = anim?.restoreOnStop !== false
+    const stoppedId = anim?.id ?? null
     instances = []
     waveInstances = []
     waves = []
@@ -168,6 +249,29 @@ export function createAnimationRuntime(ctx) {
     state = 'idle'
     pendingTriggers.clear()
     if (restore) ctx.getApi()?.clearFocus?.()
+    // Se nel frattempo tutti i materiali fotografati sono stati rilasciati da
+    // chi li possedeva (lo scambio di varianti chiude sempre la propria
+    // dissolvenza, vedi setVariant), non c'è nulla da dissolvere e non ha senso
+    // trattenere un eventuale play in coda.
+    if (keepOpacity && restoreOpacity.remaining > 0) {
+      // Coercizione esplicita: questi valori arrivano dal JSON, dove una chiave
+      // può essere assente o nulla — e un `duration` NaN incastrerebbe la
+      // dissolvenza per sempre (`t/NaN` non raggiunge mai 1).
+      const cfg = ctx.getRelease?.() ?? {}
+      release = {
+        restore: restoreOpacity,
+        t: 0,
+        duration: Number.isFinite(cfg.duration)
+          ? Math.max(0, cfg.duration)
+          : DEFAULT_RELEASE.duration,
+        easing: typeof cfg.easing === 'string' ? cfg.easing : DEFAULT_RELEASE.easing,
+        id: stoppedId,
+      }
+      // Durata zero = comportamento storico, in un colpo solo.
+      if (release.duration === 0) tickRelease(0)
+    } else {
+      restoreOpacity?.finish()
+    }
   }
 
   /**
@@ -196,8 +300,27 @@ export function createAnimationRuntime(ctx) {
       // Il cursore riparte da capo ma NIENTE viene smontato: si azzera solo
       // ciò che descrive la sequenza in corso, non i suoi effetti.
       pendingTriggers.clear()
+      // Un rilascio in corso è incompatibile col concatenamento: sta
+      // riportando all'opaco proprio i materiali su cui questa animazione
+      // vuole continuare a lavorare. Lo si chiude subito.
+      if (release) {
+        release.restore.finish()
+        release = null
+      }
+      pending = null
     } else {
-      stop()
+      // Un rilascio già in corso È lo smontaggio: `stop()` lo troncherebbe di
+      // scatto (è ciò che deve fare quando lo chiama qualcun altro). Qui basta
+      // rimpiazzare la coda — è il caso di due clic ravvicinati su due
+      // animazioni diverse.
+      if (!release) stop()
+      // Se l'uscita è ancora in dissolvenza, questa animazione parte DOPO:
+      // due scrittori sugli stessi materiali nello stesso frame non hanno un
+      // vincitore definito. L'attesa È la transizione fra le due.
+      if (release) {
+        pending = { id, opts: { fromWave, keep: false, variantTarget } }
+        return true
+      }
     }
     // Intento di swap passato dal toggle dell'HUD: un'animazione di scambio
     // autorata lascia vuoto l'`optionId` del proprio step `setVariant` e
@@ -234,23 +357,37 @@ export function createAnimationRuntime(ctx) {
     return inst ? { name: inst.params.name, label: inst.params.label } : null
   }
 
-  const getState = () => ({
-    id: anim?.id ?? null,
-    label: anim?.label ?? null,
-    state,
-    waveIndex,
-    waveCount: waves.length,
-    waitingTrigger: waitingTrigger(),
-    instances: instances.map((i) => ({
-      step: i.step.id,
-      action: i.step.action,
-      started: i.started,
-      done: i.done,
-      elapsed: Number(i.elapsed.toFixed(3)),
-    })),
-  })
+  // Durante un rilascio con un play in coda l'animazione "corrente" è già
+  // quella richiesta: il chip dell'HUD deve accendersi al clic, non alla fine
+  // della dissolvenza di uscita.
+  const pendingAnim = () =>
+    pending ? ctx.getAnimations()?.items?.find((a) => a.id === pending.id) ?? null : null
 
-  const currentId = () => anim?.id ?? null
+  const getState = () => {
+    const p = pendingAnim()
+    return {
+      id: anim?.id ?? p?.id ?? null,
+      label: anim?.label ?? p?.label ?? null,
+      // 'releasing' = nessuna sequenza sta girando, ma la scena sta ancora
+      // tornando indietro (opacità in dissolvenza, zoom in uscita).
+      state: anim ? state : release ? 'releasing' : state,
+      waveIndex,
+      waveCount: waves.length,
+      waitingTrigger: waitingTrigger(),
+      instances: instances.map((i) => ({
+        step: i.step.id,
+        action: i.step.action,
+        started: i.started,
+        done: i.done,
+        elapsed: Number(i.elapsed.toFixed(3)),
+      })),
+    }
+  }
+
+  // Include il play in coda: chi lo usa per decidere "c'è qualcosa da fermare?"
+  // (l'HUD, prima di cambiare posa) deve fermare anche una transizione appena
+  // richiesta, non solo una sequenza già partita.
+  const currentId = () => anim?.id ?? pending?.id ?? null
 
   /** Opzione richiesta dal chiamante per una variante, se l'ha indicata. */
   const variantTargetFor = (variantId) => variantTargets?.[variantId] ?? null

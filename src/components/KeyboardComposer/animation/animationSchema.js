@@ -65,6 +65,11 @@ export function newAnimation(label = 'Nuova animazione') {
     // 'reset' = al play smonta ciò che sta girando; 'keep' = ci si concatena
     // sopra (vedi `play` in animationRuntime.js).
     startFrom: 'reset',
+    // Deroga a "fine ≠ smontaggio": a wave esaurite l'animazione si ferma da
+    // sola. Serve alle sequenze che RIPORTANO la scena a riposo (la
+    // transizione verso idle), che altrimenti lascerebbero vive le istanze
+    // ereditate col concatenamento — uno `spinGroup` continuerebbe a girare.
+    stopOnFinish: false,
     interruptOn: 'none',
     steps: [],
   }
@@ -120,6 +125,7 @@ function normalizeAnimation(raw) {
     },
     restoreOnStop: raw.restoreOnStop !== false,
     startFrom: raw.startFrom === 'keep' ? 'keep' : 'reset',
+    stopOnFinish: raw.stopOnFinish === true,
     interruptOn: raw.interruptOn === 'input' ? 'input' : 'none',
     steps,
   }

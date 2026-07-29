@@ -198,8 +198,13 @@ export function useComposerControls(
     // e per il fit dinamico in Luci (vedi sotto). `scene` serve SOLO
     // al Box3 live del fit dinamico — già disponibile in KeyboardModel.jsx
     // (useGLTF), nessun fetch nuovo.
+    //
+    // `homePoseKey` è la POSA HOME dell'app (autorata in ?debug, salvata nel
+    // JSON): posa d'ingresso in landscape, posa a cui si rientra uscendo da
+    // config_mode, e posa su cui la modalità Mesh blocca la navigazione. Una
+    // manopola sola — vedi Scene.jsx.
     editMode = 'none',
-    lockedPoseKey = null,
+    homePoseKey = null,
     scene,
     // Zoom di prodotto sui gruppi: `meshGroups` serve a classificare le mesh
     // da misurare (stessa fonte di verità del resto, vedi
@@ -219,14 +224,14 @@ export function useComposerControls(
   const disabledRef = useRef(disabled)
   disabledRef.current = disabled
 
-  // Stessa idea per editMode/lockedPoseKey: lette dentro goTo (closure creata
+  // Stessa idea per editMode/homePoseKey: lette dentro goTo (closure creata
   // una sola volta, deps [apiRef]) e dentro il useFrame del fit dinamico,
   // senza dover ricreare closure/riattivare effetti a ogni cambio di editor
   // state.
   const editModeRef = useRef(editMode)
   editModeRef.current = editMode
-  const lockedPoseKeyRef = useRef(lockedPoseKey)
-  lockedPoseKeyRef.current = lockedPoseKey
+  const homePoseKeyRef = useRef(homePoseKey)
+  homePoseKeyRef.current = homePoseKey
   const meshGroupsRef = useRef(meshGroups)
   meshGroupsRef.current = meshGroups
   const focusOverridesRef = useRef(focusOverrides)
@@ -296,6 +301,12 @@ export function useComposerControls(
     // timeScale), così questo numero è leggibile come "tempo di assestamento
     // in secondi" e resta l'unica manopola del focus.
     focusDamp: { value: 0.6, min: 0.1, max: 2, step: 0.05, label: 'transizione focus' },
+    // Uscita dal focus (zoom-out verso l'insieme): manopola propria, perché è
+    // il movimento che chiude ogni animazione e accompagna la dissolvenza
+    // dell'opacità — vederlo alla stessa velocità dell'entrata lo fa sembrare
+    // frettoloso. Default uguale a focusDamp: comportamento invariato finché
+    // non lo si tocca.
+    focusOutDamp: { value: 0.6, min: 0.1, max: 3, step: 0.05, label: 'zoom-out (uscita)' },
   }), { collapsed: true })
 
   // 1. Salva lo stato corrente
@@ -437,7 +448,7 @@ export function useComposerControls(
   useEffect(() => {
     if (!apiRef) return
     // Object.assign, non riassegnazione: apiRef.current è condiviso con
-    // Scene.jsx (che vi pubblica editMode/lockedPoseKey da fuori del Canvas,
+    // Scene.jsx (che vi pubblica editMode/homePoseKey da fuori del Canvas,
     // senza ordine di commit garantito rispetto a questo effetto) — ogni
     // scrittore deve solo aggiungere/aggiornare i propri campi, mai
     // rimpiazzare l'oggetto intero.
@@ -446,12 +457,12 @@ export function useComposerControls(
         const c = POSE_COORD[key]
         if (!c) return
         // Lock: in Mesh la navigazione ESTERNA (pulsantiera HUD, o qualunque
-        // altro chiamante) resta congelata sulla posa bloccata. L'unica goTo
-        // ammessa mentre il lock è attivo è verso la STESSA lockedPoseKey (è
+        // altro chiamante) resta congelata sulla posa home. L'unica goTo
+        // ammessa mentre il lock è attivo è verso la STESSA homePoseKey (è
         // quella che Scene.jsx richiama entrando in Mesh o cambiando la posa
-        // bloccata) — qualunque altra richiesta viene ignorata
+        // home) — qualunque altra richiesta viene ignorata
         // silenziosamente, mai un salto a metà.
-        const lockedKey = lockedPoseKeyRef.current
+        const lockedKey = homePoseKeyRef.current
         const locked = editModeRef.current === 'meshes' && lockedKey != null
         if (locked && key !== lockedKey) return
 
@@ -997,11 +1008,21 @@ export function useComposerControls(
 
     // Focus sui gruppi: pivot e fattore di zoom inseguono i propri target con
     // smorzamento maath. Sul delta GREZZO, non su `scaledDelta`: la carrellata
-    // ha la sua manopola (focusDamp) e non deve cambiare velocità quando si
+    // ha la sua manopola e non deve cambiare velocità quando si
     // ritocca `timeScale` della rotazione. A riposo (nessun focus attivo) i
     // due valori sono già sui target e queste chiamate sono no-op numerici.
-    easing.damp3(pivotCur.current, pivotTarget.current, f.focusDamp, delta)
-    easing.damp(focusZoom.current, 'value', focusZoomTarget.current, f.focusDamp, delta)
+    //
+    // ENTRATA e USCITA hanno tempi distinti: avvicinarsi a un gruppo e tornare
+    // all'insieme sono due gesti diversi, e l'uscita è quella che si vede alla
+    // fine di ogni animazione (dove accompagna la dissolvenza dell'opacità —
+    // vedi lo smontaggio morbido in animation/animationRuntime.js). Il verso lo
+    // decide `focusGroupRef`: nullo = si sta tornando all'insieme.
+    // `?? f.focusDamp`: un JSON salvato prima di questa manopola non la porta,
+    // e Leva lascia il default — ma il fallback rende esplicito che l'assenza
+    // significa "come l'entrata", non un damping indefinito.
+    const focusTime = focusGroupRef.current ? f.focusDamp : (f.focusOutDamp ?? f.focusDamp)
+    easing.damp3(pivotCur.current, pivotTarget.current, focusTime, delta)
+    easing.damp(focusZoom.current, 'value', focusZoomTarget.current, focusTime, delta)
     // Unico punto che ricompone il raggio: base (fit) × userZoom (rotella,
     // solo debug) × focusZoom (gruppo inquadrato). Nessuno scrive cameraRadius.
     applyRadius()
@@ -1027,7 +1048,7 @@ export function useComposerControls(
   useFrame(() => {
     if (!scene) return
     const mode = editModeRef.current
-    const lockedKey = lockedPoseKeyRef.current
+    const lockedKey = homePoseKeyRef.current
     const curKey =
       mode === 'lights' && lockedKey != null
         ? findPoseKey(pose.current.pitch, pose.current.yaw, frame.current.yawOffset)
