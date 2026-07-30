@@ -70,7 +70,6 @@ export function newAnimation(label = 'Nuova animazione') {
     // transizione verso idle), che altrimenti lascerebbero vive le istanze
     // ereditate col concatenamento — uno `spinGroup` continuerebbe a girare.
     stopOnFinish: false,
-    interruptOn: 'none',
     steps: [],
   }
 }
@@ -126,7 +125,12 @@ function normalizeAnimation(raw) {
     restoreOnStop: raw.restoreOnStop !== false,
     startFrom: raw.startFrom === 'keep' ? 'keep' : 'reset',
     stopOnFinish: raw.stopOnFinish === true,
-    interruptOn: raw.interruptOn === 'input' ? 'input' : 'none',
+    // ⚠️ Niente `interruptOn`: c'era una chiave così, mai letta da nessuno, che
+    // prometteva "un input dell'utente interrompe la sequenza". È l'esatto
+    // contrario della regola vigente — un'animazione non viene interrotta, si
+    // sostituisce con un'altra o si esce da config_mode (vedi Hud.jsx e
+    // KeyboardComposer.jsx). Un JSON che ancora la contiene la perde qui, senza
+    // conseguenze.
     steps,
   }
 }

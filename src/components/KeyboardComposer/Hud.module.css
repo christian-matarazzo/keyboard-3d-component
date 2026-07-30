@@ -1,6 +1,7 @@
 /* HUD di prodotto — overlay grafico dello screen cliente (General Concept).
-   Sempre sopra il canvas, non intercetta i gesti (solo la paginazione riattiva
-   i click). Font/spaziatura/caps dallo style guide: Suisse Mono, −2%, CAPS. */
+   Sempre sopra il canvas, non intercetta i gesti (solo la pila dei chip
+   riattiva i click). Font/spaziatura/caps dallo style guide: Suisse Mono,
+   −2%, CAPS. */
 .hud {
   /* Geometria condivisa: l'altezza del logo e il font base guidano anche
      l'allineamento verticale di telemetria/versione sulla riga "Array
@@ -8,9 +9,9 @@
   --logo-h: clamp(44px, 4.84vw, 68px);
   --hud-fs: clamp(11.5px, 0.99vw, 15px);
   --hud-pad: clamp(18px, 2.64vw, 37px);
-  /* Altezza di un chip e distanza dal fondo della PRIMA riga di chip (quella
-     dei gruppi). La riga delle animazioni si impila sopra derivando da queste
-     due, così basta correggerle nel breakpoint mobile una volta sola. */
+  /* Altezza di un chip e distanza dal fondo della pila di chip. Le righe si
+     impilano su questa quota, così basta correggerla nel breakpoint mobile
+     una volta sola. */
   --chip-h: clamp(26px, 2.2vw, 32px);
   --chip-row-bottom: calc(var(--hud-pad) + 2.4em);
 
@@ -86,77 +87,15 @@
   transform: translateY(calc(0.6522 * var(--logo-h) - 0.6 * var(--hud-fs)));
 }
 
-/* ── Paginazione / selettore vista (rimpiazza le frecce ViewPad) ────────── */
-.pager {
-  position: absolute;
-  /* Ancorati SOTTO il logo (non a un valore assoluto): la telemetria/versione
-     ora vivono sulla riga "Array Keyboard Series" dentro l'ingombro del logo,
-     quindi i bottoni devono partire dopo il fondo del logo per non toccarli.
-     top = padding + altezza logo + gap. */
-  top: calc(var(--hud-pad) + var(--logo-h) + clamp(14px, 1.4vw, 22px));
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  gap: clamp(6px, 0.7vw, 10px);
-  pointer-events: auto;
-}
-
-.page {
-  width: clamp(29px, 2.64vw, 37px);
-  height: clamp(29px, 2.64vw, 37px);
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 0;
-  background: transparent;
-  color: rgb(255 255 255 / 34%);
-  font: inherit;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.02em;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  transition:
-    color 0.16s ease,
-    border-color 0.16s ease,
-    background 0.16s ease;
-}
-
-.page:hover {
-  color: rgb(255 255 255 / 80%);
-}
-
-.pageActive {
-  color: #fff;
-  border-color: #fff;
-  background: rgb(255 255 255 / 6%);
-}
-
-/* Posa bloccata (Mesh, vedi Scene.jsx): i pulsanti diversi dalla
-   posa bloccata restano visibili ma inerti — mai co-presente con
-   .pageActive (la posa attiva È sempre la posa bloccata mentre si è
-   bloccati), quindi nessun conflitto d'ordine con la regola sopra. */
-.pageDisabled {
-  color: rgb(255 255 255 / 14%);
-  cursor: default;
-  pointer-events: none;
-}
-
-.page:focus-visible {
-  outline: 2px solid rgb(255 255 255 / 60%);
-  outline-offset: 2px;
-}
-
-/* ── Zoom sui gruppi ───────────────────────────────────────────────────────
-   Barra di chip centrata sopra il footer: è l'unico zoom disponibile in
-   produzione (la rotella è authoring, vedi useComposerControls.js). Stesse
-   convenzioni della paginazione viste: contenitore fuori dal flusso,
-   pointer-events riattivati solo qui. L'offset dal fondo tiene conto della
-   riga del footer, che è alta una riga di testo. */
-/* Le tre righe di chip (varianti, animazioni, focus) impilate in una colonna
-   sola, ancorata in basso al centro. Prima ognuna era posizionata in assoluto a
-   `--chip-row-bottom + n * --chip-h`: bastava che una andasse a capo — e con 9
-   gruppi la riga di focus ci va — perché le altre le finissero sopra. */
+/* ── Pila dei chip ─────────────────────────────────────────────────────────
+   Le righe (varianti, animazioni, interruttore di modalità) impilate in una
+   colonna sola, ancorata in basso al centro: ognuna occupa l'altezza che le
+   serve — anche andando a capo — e le altre si spostano da sole. L'offset dal
+   fondo tiene conto della riga del footer, alta una riga di testo.
+   ⚠️ Il pager delle viste `01–05` e la barra di zoom sui gruppi NON esistono
+   più: in prodotto pose e inquadrature le guida solo un'animazione autorata
+   (vedi Hud.jsx). Le regole `.pager`/`.page*`/`.focusBar` sono state rimosse
+   con loro. */
 .chipStack {
   position: absolute;
   bottom: var(--chip-row-bottom);
@@ -170,15 +109,9 @@
   pointer-events: none; /* le singole righe se lo riaccendono */
 }
 
-.focusBar {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: clamp(6px, 0.7vw, 10px);
-  pointer-events: auto;
-}
-
-.focusChip {
+/* Stile base condiviso da tutta la pulsantiera della pila (animazioni,
+   varianti, interruttore di modalità), che vi si aggancia con `composes`. */
+.chip {
   height: var(--chip-h);
   display: grid;
   place-items: center;
@@ -198,36 +131,35 @@
     background 0.16s ease;
 }
 
-.focusChip:hover {
+.chip:hover {
   color: rgb(255 255 255 / 85%);
   border-color: rgb(255 255 255 / 45%);
 }
 
-.focusChipActive {
+.chipActive {
   color: #fff;
   border-color: #fff;
   background: rgb(255 255 255 / 6%);
 }
 
-/* Posa bloccata (Mesh): il focus è rifiutato dal hook, i chip
-   diventano inerti — stessa logica di .pageDisabled. */
-.focusChipDisabled {
+/* Modalità Mesh: pivot dell'editor e pivot delle animazioni non devono mai
+   convivere, quindi tutta la pulsantiera diventa inerte. */
+.chipDisabled {
   color: rgb(255 255 255 / 14%);
   border-color: rgb(255 255 255 / 8%);
   cursor: default;
   pointer-events: none;
 }
 
-.focusChip:focus-visible {
+.chip:focus-visible {
   outline: 2px solid rgb(255 255 255 / 60%);
   outline-offset: 2px;
 }
 
 /* ── Animazioni autorate ───────────────────────────────────────────────────
-   Seconda riga di chip, impilata SOPRA quella dei gruppi (non al posto): lo
-   zoom nudo resta disponibile. Click = playAnimation, click sull'attiva =
-   stop. Il chip .animChipTrigger compare solo quando uno step `waitTrigger`
-   sta bloccando la sequenza. */
+   Riga di chip: click = playAnimation, click sull'attiva = rilancia (non
+   ferma — vedi Hud.jsx). Il chip .animChipTrigger compare solo quando uno
+   step `waitTrigger` sta bloccando la sequenza. */
 .animBar {
   display: flex;
   flex-wrap: wrap;
@@ -237,21 +169,21 @@
 }
 
 .animChip {
-  composes: focusChip;
+  composes: chip;
 }
 
 .animChipActive {
-  composes: focusChipActive;
+  composes: chipActive;
 }
 
 .animChipDisabled {
-  composes: focusChipDisabled;
+  composes: chipDisabled;
 }
 
-/* ── Varianti di modello ───────────────────────────────────────────────────
-   Terza riga di chip, sopra le animazioni. A differenza delle altre due qui i
-   pulsanti sono un SELETTORE (uno acceso sempre, mutuamente esclusivi), non
-   azioni: da qui l'etichetta della variante davanti al gruppo e il bordo
+/* ── Varianti di modello (il "layout") ─────────────────────────────────────
+   Prima riga della pila, sopra le animazioni. A differenza di quelli i
+   pulsanti qui sono un SELETTORE (uno acceso sempre, mutuamente esclusivi),
+   non azioni: da qui l'etichetta della variante davanti al gruppo e il bordo
    continuo che li lega. */
 .variantBar {
   display: flex;
@@ -273,15 +205,15 @@
 }
 
 .variantChip {
-  composes: focusChip;
+  composes: chip;
 }
 
 .variantChipActive {
-  composes: focusChipActive;
+  composes: chipActive;
 }
 
 .variantChipDisabled {
-  composes: focusChipDisabled;
+  composes: chipDisabled;
 }
 
 /* ── Interruttore idle ⇄ config ─────────────────────────────────────────────
@@ -296,7 +228,7 @@
 }
 
 .modeBtn {
-  composes: focusChip;
+  composes: chip;
   padding: 0 clamp(14px, 1.4vw, 22px);
   border-color: rgb(255 255 255 / 45%);
   color: rgb(255 255 255 / 82%);
@@ -321,7 +253,7 @@
 }
 
 .modeBtnDisabled {
-  composes: focusChipDisabled;
+  composes: chipDisabled;
   background: transparent;
 }
 
@@ -404,24 +336,13 @@
     display: none;
   }
 
-  /* Il top del pager è calcolato dalla formula base (padding + logo + gap):
-     con --logo-h/--hud-pad ridotti scende sotto il logo corto in automatico. */
-  .pager {
-    gap: 8px;
-  }
-
-  .page {
-    width: 33px;
-    height: 33px;
-  }
-
-  .focusBar,
-  .animBar {
+  .animBar,
+  .variantBar {
     gap: 6px;
     max-width: calc(100% - 2 * var(--hud-pad));
   }
 
-  .focusChip {
+  .chip {
     padding: 0 9px;
   }
 
@@ -441,9 +362,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .page,
-  .focusChip,
+  .chip,
   .animChip,
+  .variantChip,
   .modeBtn {
     transition: none;
   }

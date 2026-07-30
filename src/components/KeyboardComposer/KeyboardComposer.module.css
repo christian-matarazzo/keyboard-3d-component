@@ -37,3 +37,70 @@
 .debugResize:hover {
   background: rgb(255 255 255 / 30%);
 }
+
+/* ── Salva / carica lo stato tunabile (solo ?debug) ────────────────────────
+   Riquadro agganciato sotto il pannello Leva (quota/larghezza misurate a
+   runtime e passate inline: vedi DebugPanel). Palette, raggi, font e altezze
+   sono quelli del tema di default di Leva 0.10 — elevation1 #292d39 per lo
+   sfondo, elevation3 #373c4b per i controlli neutri, accent1 #0066dc per
+   l'azione principale, highlight2 #8c92a4 per le etichette — così si legge
+   come un'altra folder del pannello e non come un widget estraneo. Se un
+   giorno si passa un `theme` custom a <Leva>, questi valori vanno rifatti a
+   mano: sono copiati, non ereditati. */
+.jsonDock {
+  position: fixed;
+  z-index: 1000; /* stesso piano del pannello Leva */
+  box-sizing: border-box;
+  padding: 8px;
+  border-radius: 10px; /* radii.lg di Leva */
+  background: #292d39;
+  box-shadow: 0 0 9px 0 #00000088; /* shadows.level1 di Leva */
+  font-family: ui-monospace, SFMono-Regular, Menlo, 'Roboto Mono', monospace;
+  font-size: 11px;
+  color: #fefefe;
+  user-select: none;
+}
+
+.jsonTitle {
+  margin-bottom: 7px; /* space.rowGap di Leva */
+  padding-left: 2px;
+  color: #8c92a4;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.jsonRow {
+  display: flex;
+  gap: 7px; /* space.colGap di Leva */
+}
+
+.jsonBtn {
+  flex: 1;
+  height: 24px; /* sizes.rowHeight di Leva */
+  border: 0;
+  border-radius: 3px; /* radii.sm di Leva */
+  background: #373c4b;
+  color: #fefefe;
+  font: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.jsonBtn:hover {
+  background: #4a5063;
+}
+
+.jsonBtn:focus-visible {
+  outline: 1px solid #3c93ff;
+  outline-offset: 1px;
+}
+
+/* Il salvataggio è l'azione principale: prende l'accento di Leva, lo stesso
+   dei suoi pulsanti attivi. */
+.jsonBtnPrimary {
+  background: #0066dc;
+}
+
+.jsonBtnPrimary:hover {
+  background: #007bff;
+}

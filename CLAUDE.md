@@ -19,11 +19,13 @@ going forward:
    **playing authored animations** that compose (a)–(c) plus opacity and
    transforms into named, saved sequences. All four exist today.
    **(c) is the group focus** — named, authorable
-   framings on the logical mesh groups (`focusGroup`/`clearFocus`, HUD chips,
-   see "Zoom" under "Interaction + animation"), not the free-form wheel
+   framings on the logical mesh groups (`focusGroup`/`clearFocus`, see "Zoom"
+   under "Interaction + animation"), not the free-form wheel
    multiplier. The wheel is now **authoring-only**: its listener isn't
    registered outside `?debug`, so in production the group focus is the only
-   zoom there is. Not built (and not planned as of this writing):
+   zoom there is — and it is reached **only from an authored animation's
+   `focusGroup` step**, since the HUD's chip row for it was removed (see
+   "HUD"). Not built (and not planned as of this writing):
    *per-pose* framings — the focus is currently one framing per group,
    deliberately pose-independent. (An exploded-view feature was built and then deleted outright in
    favor of the more general group/mesh selection-and-transform mechanism
@@ -116,20 +118,27 @@ subtree and the DOM overlays, so it travels as an ordinary prop — only the
   arrow keys) and the HUD is reduced to lockup, telemetry, footer and the one
   `Configura` button. No pager, no chips.
 - **`config`** is the opposite: drag/arrow-nav is **off** and everything is
-  driven from buttons — the `01–05` pager, the variant chips, the group-focus
-  chips and the **animation chips**. This is the answer to "authored
-  animations must be triggered in production by dedicated buttons": with the
-  gestures suspended there can't be two writers on the pose/zoom targets while
-  a sequence runs.
+  driven from buttons — the variant chips and the **animation chips**. This is
+  the answer to "authored animations must be triggered in production by
+  dedicated buttons": with the gestures suspended there can't be two writers on
+  the pose/zoom targets while a sequence runs.
+  ⚠️ **The `01–05` pose pager and the group-focus chips are GONE** — deleted,
+  not hidden (see "HUD"). Poses and framings are still live primitives
+  (`goTo`, `focusGroup`/`clearFocus`), but the only product surface that
+  reaches them is an authored animation.
 
 Transitions (`changeAppMode` in `KeyboardComposer.jsx`): **both** directions
-`clearFocus()` (a group framing belongs to a configuration session) and
-`goTo(homePoseKey)` — the home pose is where *both* modes start, so an
-authored animation always begins from the same known state instead of wherever
-the user left the model while turning it by hand. `config → idle`
-additionally `stopAnimation()`, which *is* the teardown of opacity/pivots and
-therefore runs before the camera move. The side effects sit **outside** the
-`setState` updater on purpose: an updater must stay pure (StrictMode re-runs
+`clearFocus()`, `stopAnimation()` and `goTo(homePoseKey)` — the home pose is
+where *both* modes start, so an authored animation always begins from the same
+known state instead of wherever the user left the model while turning it by
+hand. `stopAnimation()` *is* the teardown of opacity/pivots and therefore runs
+before the camera move. It used to run on `config → idle` only; it runs in
+**both** directions now because the product HUD no longer stops anything by
+hand (see "What stops an animation"), which makes the mode switch the one place
+where the scene is guaranteed to return to a known state — and an
+`idleAnimation` authored without `stopOnFinish` would otherwise carry live
+instances into the next configuration session. The side effects sit **outside**
+the `setState` updater on purpose: an updater must stay pure (StrictMode re-runs
 it), so the current mode is read from `appModeRef`.
 
 **`config → idle` can instead be an authored animation** — `app.idleAnimation`
@@ -190,19 +199,16 @@ Two consequences of it being authorable:
 
 **Pose lock (Mesh)** is the third use. Entering Mesh mode (or changing
 `homePose` while already in it) calls
-`apiRef.current.goTo(homePose)`. The lock is enforced at two layers, not
-just the trigger:
-- **Mechanism**: `useComposerControls.js`'s `goTo(key)` itself checks
-  `editModeRef`/`homePoseKeyRef` (refs mirroring the `editMode`/
-  `homePoseKey` hook options every render, read inside the `goTo`
-  closure without needing to recreate it) and silently no-ops any request
-  for a *different* pose while locked — so the lock holds regardless of
-  who calls `goTo` (HUD pager, future callers), not just the one UI
-  surface that happens to be gated today.
-- **UI**: `Hud.jsx`'s pager buttons are `disabled` for every pose except
-  the home pose while locked, so it's visually obvious why nothing
-  happens — see "HUD" below for how it learns `editMode`/`homePoseKey`
-  from outside the Canvas.
+`apiRef.current.goTo(homePose)`. The lock is enforced in the **mechanism**,
+not at the call site: `useComposerControls.js`'s `goTo(key)` itself checks
+`editModeRef`/`homePoseKeyRef` (refs mirroring the `editMode`/`homePoseKey`
+hook options every render, read inside the `goTo` closure without needing to
+recreate it) and silently no-ops any request for a *different* pose while
+locked — so the lock holds regardless of who calls `goTo` (an animation's
+`goToPose` step, `?debug` console, future callers). That is the whole of it
+now: the HUD pager that used to mirror the lock in its `disabled` states no
+longer exists (see "HUD"), and `Hud.jsx` therefore polls only `editMode` off
+the bridge, not `homePoseKey`, to grey out its remaining chips wholesale.
 
 Also within `?debug`, `editMode` doesn't just gate raycasting/interaction —
 it gates **panel visibility** too, via Leva's per-folder `render`
@@ -236,7 +242,7 @@ earlier version did, which would re-snap every time you picked a different
 one from the dropdown mid-session.
 
 **`apiRef.current` is a multi-writer bridge, seeded once as `useRef({})`
-(never `null`) in `KeyboardComposer.jsx`.** Four writers, in different React
+(never `null`) in `KeyboardComposer.jsx`.** Five writers, in different React
 subtrees with no commit-ordering guarantee between them, all write onto the
 *same* object via `Object.assign(apiRef.current, {...})` rather than
 replacing it wholesale:
@@ -246,6 +252,11 @@ replacing it wholesale:
 - `AnimationDirector.jsx` (also inside `<Canvas>`) — `playAnimation`,
   `stopAnimation`, `currentAnimation`, `animationState`, `triggerAnimation`,
   `meshCatalog`; same `delete`-only cleanup.
+- `LightRig.jsx` (also inside `<Canvas>`) — `saveConfigJSON`/`loadConfigJSON`,
+  thin wrappers over a per-render-updated ref (same idiom as the focus methods
+  above) so the two handlers, which are the only code that sees `configsRef`,
+  can be driven by buttons living in the DOM next to the Leva panel; same
+  `delete`-only cleanup.
 - `Scene.jsx` (outside the Canvas) — `editMode`, `homePoseKey` (plain
   fields, no cleanup needed).
 - `KeyboardComposer.jsx` itself (outside the Canvas) — the variant commands
@@ -302,6 +313,24 @@ traversal order carries the intensity of key `` `${prefix}_${i}` `` from the
 config JSON. That checks the binding rather than a transient, and it's what
 caught nothing (correctly) during the `gridLayers` consolidation.
 
+**Don't time frames to verify a shader-compilation fix — count programs.**
+Chrome caches linked GL program binaries on disk, so on a machine that has
+opened this app before, the compile still happens and the frame trace shows
+nothing: measured, the first and second play of `GoToRotors` were
+indistinguishable (median 21.5 vs 23.1 ms, no frame over 100 ms) *both before
+and after* the fix. The honest metric is
+
+```js
+window.__r3f_state.gl.info.programs.length   // before and after the first play
+```
+
+which reads 0 new programs when the warm-up is right and 2 when it isn't. To
+find out what a compile actually costs on the machine under test, force a cache
+key that has never existed — clone a group material, set `sheen = 0.5`, assign
+it to a mesh and time one `gl.render` (measured here: 192 ms against a 0.4 ms
+normal frame). Per-material state is reachable via `gl.properties.get(material)
+.programs.size`.
+
 **A hidden/occluded tab breaks the app, not your change.** `requestAnimation
 Frame` is frozen in a background tab, so R3F never measures the container (the
 canvas stays stuck at the default `300×150`, `window.__r3f_state` is never
@@ -322,8 +351,10 @@ pump(25)                                    // damping a convergenza
 ```
 
 To exercise the production lighting while still in `?debug` (where the JSON
-fetch is skipped), feed the file to the app's own "Carica JSON" handler: patch
-`HTMLInputElement.prototype.click` to capture the `<input type=file>` it
+fetch is skipped), feed the file to the app's own load handler
+(`window.__r3f_state`-free: it is on the bridge as
+`apiRef.current.loadConfigJSON()`, the same thing the "Carica" button calls):
+patch `HTMLInputElement.prototype.click` to capture the `<input type=file>` it
 creates, assign a `DataTransfer`-built `File`, and dispatch `change`.
 
 ### Model asset pipeline (OBJ -> GLB)
@@ -364,7 +395,8 @@ The component tree (all under `src/components/KeyboardComposer/`):
 ```
 KeyboardComposer.jsx        DOM shell: canvas fade-in, Leva panel host (DebugPanel)
 ├─ Scene.jsx                 <Canvas> — camera, tone mapping, Suspense/Loader
-│  ├─ KeyboardModel.jsx       loads GLB, auto-fits scale, owns useComposerControls
+│  ├─ KeyboardModel.jsx       loads GLB, auto-fits scale, owns useComposerControls,
+│  │                           keeps the transparent-shader warm-up in sync
 │  ├─ MaterialTuner (in Scene.jsx)   one Leva folder per mesh group, from meshGroups config
 │  ├─ FocusTuner (in Scene.jsx)      one Leva folder per mesh group: authored
 │                              framing (radiusFactor + offset) for the product
@@ -381,9 +413,10 @@ KeyboardComposer.jsx        DOM shell: canvas fade-in, Leva panel host (DebugPan
 │  └─ AnimationDirector.jsx   runs the authored animations: one useFrame, renders
 │                              null, owns the opacity/pivot registries, publishes
 │                              play/stop/state onto apiRef (own useGLTF, shared cache)
-├─ Hud.jsx                    DOM overlay outside the canvas: logo, telemetry, pager,
-│                              group-focus chips (the only zoom in production),
-│                              animation chips + the wait-for-trigger chip
+├─ Hud.jsx                    DOM overlay outside the canvas: logo, telemetry,
+│                              variant chips, animation chips + the wait-for-trigger
+│                              chip, and the idle⇄config button. No pose pager, no
+│                              focus chips — both removed
 └─ AnimationEditor.jsx        DOM overlay outside the canvas: block editor + JSON
                                 view, visible only in ?debug + editMode 'anim'
 
@@ -406,12 +439,14 @@ object, never `null` or reassigned — see "Pose lock" further down for why
 that matters), passes it down as `apiRef` to `useComposerControls`, to
 `AnimationDirector` and to `Scene.jsx`; all three `Object.assign` onto the
 *same* object (full field list under "`apiRef.current` is a multi-writer
-bridge" above). `Hud.jsx` polls `currentPoseKey()`/`currentFocus()`/
-`animationState()`/`editMode`/`homePoseKey` on a 150ms interval (not
-reactive) and calls `goTo()`/`focusGroup()`/`playAnimation()` from its
-buttons. `LightRig.jsx` reads the same `apiRef` every `useFrame` to know
-which per-pose lighting config is active. `AnimationEditor.jsx` reads
-`editMode` off this same bridge to decide its own visibility.
+bridge" above). `Hud.jsx` polls `currentPoseKey()` (telemetry readout only —
+it no longer navigates), `animationState()` and `editMode` on a 150ms interval
+(not reactive) and calls `playAnimation()`/`setVariant()` from its buttons,
+plus `clearFocus()` from the `Escape` cascade. `LightRig.jsx` reads the same
+`apiRef` every `useFrame` to know which per-pose lighting config is active,
+and *writes* `saveConfigJSON`/`loadConfigJSON` onto it so the save/load
+buttons can live next to the Leva panel (see "Lighting"). `AnimationEditor.jsx`
+reads `editMode` off this same bridge to decide its own visibility.
 
 **Data**, by contrast, needs no bridge: `KeyboardComposer.jsx` renders both
 the Canvas subtree and the DOM overlays, so the `animations` list is plain
@@ -436,8 +471,10 @@ Key exports:
   canonical yaw, so `goTo`/arrow-steps never spin an extra full turn.
 - `findPoseKey(pitch, yaw, yawOffset)` — raw angles → pose key, or `null`.
 - `wrapYaw(yaw)` — reduces yaw to `(-180°, 180°]`.
-- `HUD_VIEWS` / `POSE_HUD_LABEL` — the 5 poses exposed in the HUD pager and
-  their short labels.
+- `POSE_HUD_LABEL` — short labels, used by the HUD telemetry readout, by the
+  editor's `pose` parameter field and by `Scene.jsx`'s `homePose` options.
+  ⚠️ `HUD_VIEWS` (the 5 poses of the `01–05` pager) was **deleted** with the
+  pager itself — same fate as `VIEW_SHORTCUTS`, don't reintroduce either.
 - `ENTRY_LANDSCAPE` / `ENTRY_PORTRAIT` / `PORTRAIT_YAW_OFFSET` — entry pose
   differs by orientation; in portrait the *entire graph* is yaw-shifted by
   `PORTRAIT_YAW_OFFSET`, derived once from the entry pose and frozen in a
@@ -504,9 +541,10 @@ Single hook, attached to the model's outer `<group>` ref, that owns:
   zoom that exists. Inside `?debug` the handler still ignores `disabledRef`,
   so it stays live in every `editMode`.
 - **Group focus — lo zoom di prodotto** (`focusGroup(groupId)` /
-  `clearFocus()` / `currentFocus()` on the shared `apiRef` bridge; HUD chips
-  and `Escape` drive it, plus `window.__focusGroup`/`__clearFocus` in
-  `?debug`). Framing a group is **two** motions, not one — getting closer
+  `clearFocus()` / `currentFocus()` on the shared `apiRef` bridge; an authored
+  animation's `focusGroup`/`clearFocus` steps drive it, plus `Escape` and
+  `window.__focusGroup`/`__clearFocus` in `?debug` — the HUD chip row that used
+  to is gone, see "HUD"). Framing a group is **two** motions, not one — getting closer
   alone would push an off-axis group (rotors to one side, `landing`
   underneath) out of frame as the camera approaches:
   - the **orbit pivot** moves from the historical constant `(0, PIVOT_Y, 0)`
@@ -568,8 +606,9 @@ Single hook, attached to the model's outer `<group>` ref, that owns:
 - `focusGroup()` **no-ops in `editMode` `'meshes'`** (same guard
   shape as `goTo`'s pose lock) and an effect **clears an active focus** when
   entering that mode: there the pose is locked and the geometry can be
-  moved by the editor, so a stale center would frame nothing. The HUD chips
-  disable themselves in that mode for the same reason. One accepted
+  moved by the editor, so a stale center would frame nothing. The HUD's
+  remaining chips disable themselves in that mode too, for the sibling reason
+  (an animation would acquire pivots on the meshes the editor holds). One accepted
   nuance: in Lights mode the expand-only dynamic fit can still grow
   `baseRadius`, which scales an active focus proportionally — correct
   behaviour (a deformed model wants a wider framing), not a bug.
@@ -685,6 +724,15 @@ touching any of the consumers below.
   sorted, labelled, dedup-suffixed list `MeshController.jsx`'s Mesh
   dropdown renders — same classification, just reshaped.
 
+**`materials/warmupTransparency.js`** is a third, much smaller file in this
+folder, and it belongs to neither concern above: it precompiles the
+`transparent` shader variant of the materials the two produce, so the first
+animated fade doesn't pay a 192 ms shader compile mid-movement. It is driven
+from `KeyboardModel.jsx` and re-runs whenever `programSignature()` changes —
+**not** once at mount, which was tried and measurably did nothing (the authored
+`clearcoat` values arrive later and are themselves a define). Full argument
+under "Opacity" in the animations section, and in the file's own header.
+
 **`materials/groupMaterials.js`** doesn't know or care what the groups are
 called — it only ever receives an already-classified `{ [groupId]:
 THREE.Mesh[] }` object, fully generic over group ids:
@@ -753,16 +801,28 @@ the tag says *why*. Two sites consume it, and both are required:
 in fades and in the mesh dropdown) and `LightRig`'s `measureModelBox` (or the
 light box is sized on a layout nobody is looking at).
 
-**Where the choice lives.** Precedence is *session choice → default authored in
-the JSON → default declared in the config*. The session choice is
-`sessionStorage` (survives a reload, resets when the tab closes), wrapped in
-try/catch because storage can be denied. `window.__STATE_VARIANTS` carries
-`{ selection, swapAnimations }` into the global blob, and **what gets saved is
-whatever is active at save time** — you pick the shipped default by selecting it
-on screen and pressing Salva, the same way every other tunable in this component
-is authored. On `app-load-variants`, an existing session choice **wins over** the
-JSON default: loading a config must not throw the user back to the starting
-layout.
+**Where the choice lives — and ⚠️ the two halves of this section are
+deliberately treated as opposites.**
+
+- The **selection** (which layout is on) is *user* state and is **never saved to
+  the JSON**. Precedence is only two steps: *session choice → `defaultOption`
+  declared in `meshVariants.js`*. The session choice is `sessionStorage`
+  (survives a reload, resets when the tab closes), wrapped in try/catch because
+  storage can be denied. There is deliberately **no** third step: a starting
+  layout authored into the config file would mean that loading a configuration
+  puts the user back on a choice that isn't theirs. This is a product decision,
+  not a missing feature — an earlier version did save it, and `app-load-variants`
+  needed a "session choice wins over the loaded default" rule to paper over the
+  consequence. Both are gone; a pre-existing JSON that still carries
+  `variants.selection` is **ignored, not migrated**.
+- The **swap bindings** (variant → animation id) *are* authored configuration
+  and do ship in the JSON, so `window.__STATE_VARIANTS` now carries only
+  `{ swapAnimations }`. Without them production would swap instantly instead of
+  playing the authored animation, since `meshVariants.js`'s own `swapAnimation`
+  field is `null` by default.
+
+If you ever put the selection back, put the session-choice-wins rule back with
+it — that pairing is the whole reason the old code looked the way it did.
 
 **`VariantController.jsx`** (inside the Canvas, own `useGLTF`, renders `null`)
 applies visibility. `KeyboardComposer.jsx` owns the selection state and
@@ -797,12 +857,12 @@ old instance: released handles, previous direction, no hold. Caught in the
 browser: the **second** swap silently didn't happen and left the outgoing meshes
 at `opacity 0` while hidden — i.e. invisible even once switched back on.
 
-**The HUD toggle** (a third chip row, above the animation chips) plays the
+**The HUD toggle** (the top chip row, above the animation chips) plays the
 variant's bound swap animation if there is one, and otherwise swaps instantly —
 so a newly declared variant is usable immediately, before you have authored
 anything for it. The binding (variant → animation id) is edited in
 `AnimationEditor` under "swap delle varianti" and ships in the same JSON. Like
-the pager and the focus/animation chips, these buttons **disable themselves in
+the animation chips, these buttons **disable themselves in
 `editMode 'meshes'`**, but for a reason of their own: a swap animation would
 have `pivotRegistry` acquire pivots on the very meshes `MeshController` is
 holding wrapped in its own, and those two must never be live together.
@@ -931,14 +991,36 @@ a side panel to edit intensity/color/decay directly, with `Ctrl/Cmd+Z` undo
 backed by a JSON-snapshot history (`historyRef`, capped at 50). Every
 helper mesh's `raycast` prop is swapped to a no-op whenever `editMode !==
 'lights'`, so it's fully unhittable (not just hidden) while the mesh editor
-is active. "Salva Configurazione" / "Carica JSON" are the exception to the
-mode gating — they stay visible for the whole `DEBUG` session regardless of
-`editMode`, since they serialize/deserialize **all** tunable state at once,
-not just this rig's `configsRef`: also `window.__STATE_MATERIALS`,
-`window.__STATE_ROTATION`, `window.__STATE_KEYLIGHT`,
-`window.__STATE_SPOTLIGHT` and `window.__STATE_FOCUS` (the authored group
-framings — nothing to do with lighting, they live here because this is the
-single save/load point for *all* tunable state), into one JSON blob.
+is active.
+
+**Save / load is not one of those overlays.** `handleSaveJSON`/`handleLoadJSON`
+still live in this file — it is the only code that sees `configsRef` — but they
+are published onto the shared `apiRef` as `saveConfigJSON`/`loadConfigJSON`,
+and the two **buttons live in `KeyboardComposer.jsx`'s `DebugPanel`**, docked
+under the Leva panel (`.jsonDock` in `KeyboardComposer.module.css`). They used
+to be an `Html fullscreen` overlay pinned top-left of the canvas, on top of the
+client's logo lockup. Three things about the new home:
+- it is where they belong semantically — they write and read *everything*
+  authored from the Leva panels, so they read as one more folder of it: same
+  right margin, same width, Leva 0.10's own default palette/radii/row height
+  copied verbatim into the CSS module (⚠️ **copied, not inherited** — passing a
+  custom `theme` to `<Leva>` would desync them);
+- the dock position is **measured, not assumed**: `DebugPanel` wraps `<Leva>`
+  in a `display: contents` div and polls `firstElementChild.getBoundingClient
+  Rect()` every 200 ms. Leva 0.10 renders its root in place (no portal) when
+  `<Leva>` is mounted explicitly, and that root is `position: fixed`, draggable
+  by its title bar and collapsible — a `ResizeObserver` would miss the drag,
+  hence the poll (same idiom as `Hud.jsx`'s). The computed `top` is then
+  **clamped into the viewport**: with enough folders expanded the Leva panel is
+  taller than the window, and a rigidly-docked bar would sit off-screen and
+  unreachable. In that limit it overlaps the panel's last row instead;
+- they stay visible for the whole `DEBUG` session regardless of `editMode`,
+  since they serialize/deserialize **all** tunable state at once, not just this
+  rig's `configsRef`: also `window.__STATE_MATERIALS`, `window.__STATE_ROTATION`,
+  `window.__STATE_KEYLIGHT`, `window.__STATE_SPOTLIGHT` and
+  `window.__STATE_FOCUS` (the authored group framings — nothing to do with
+  lighting, they live here because this is the single save/load point for *all*
+  tunable state), into one JSON blob.
 
 **Production light loading**: outside `?debug`, `LightRig` fetches
 `/lightconfig/app-state-config.json` once on mount and applies it via the
@@ -954,7 +1036,7 @@ sliders are usable live rather than blind. A group id missing from an older
 JSON just keeps the computed framing. In other words: **the lighting/material/
 rotation-feel values actually shipped to production are whatever's baked
 into `public/lightconfig/app-state-config.json`**, authored via the
-`?debug` panel and exported with "Salva Configurazione," not hardcoded
+`?debug` panel and exported with the "Salva" button docked under the Leva panel, not hardcoded
 defaults in the component files (those Leva `value:` defaults are only the
 fallback if the JSON fetch fails).
 
@@ -1372,7 +1454,13 @@ x-ray the rotors, then play B to spin them" impossible — B reset A's work. Wit
 `startFrom: 'keep'` (or `playAnimation(id, { keep: true })`) nothing is torn
 down: the previous instances stay in `instances`, keep being ticked, and remain
 `stop()`'s responsibility. Only the wave cursor and the pending triggers are
-reset. Default stays `'reset'`, so existing behaviour is unchanged.
+reset. Default stays `'reset'`.
+
+⚠️ Since the HUD lost its stop button (see "What stops an animation" below),
+`startFrom: 'reset'` is no longer just a convenience — **it is one of the two
+reset mechanisms the product has**. A set of authored animations that are all
+`'keep'` can only be undone by leaving `config`. Author at least one entry
+animation that resets.
 
 Note what `restoreOnStop` does and doesn't cover: it gates **only the camera
 focus release**. Opacity and transforms are *always* restored on `stop()`,
@@ -1382,16 +1470,43 @@ leak owned materials and orphan pivots (opacity now gets there over
 animation", the control to reach for is `startFrom`, not `restoreOnStop`; the
 editor labels them accordingly ("al play…" vs "stop rilascia lo zoom").
 
-**What stops an animation**: `stopAnimation()` (HUD chip re-clicked, `Escape`,
-the editor's ■), `playAnimation(other)` (plays are exclusive — `stop()`, the
-release phase, then `play()`), **entering `editMode 'meshes'`** (mandatory:
-`MeshController`'s pivot and the registry's pivots reparent the same meshes and
-must never both be live), leaving `config` for `idle` (see "App mode"), the
-animation's own `stopOnFinish`, and director unmount. What does *not* stop it: drag, arrow keys, the
-HUD pager — you must be able to keep orbiting the isolated, spinning rotors.
-Clicking a pager button or a focus chip *does* stop it first
-(`stopIfAnimating()` in `Hud.jsx`), since otherwise two writers would fight
-over pose and zoom targets.
+**`stop()` is not a product surface.** An animation is never stopped by hand
+from the shipped UI: it runs, reaches `'finished'`, and **leaves the scene the
+way it put it** — framing, isolate opacity, persistent rotations all stay. The
+only two ways to undo that are the ones already formalized elsewhere in this
+file: **play another animation declared `startFrom: 'reset'`** (which goes
+through `stop()` on its own account, release phase and all), or **change app
+mode** (see "App mode"). Everything else that calls `stop()` is either
+machinery or authoring:
+
+| caller | why |
+| --- | --- |
+| `playAnimation(other)` with `startFrom: 'reset'` | plays are exclusive — `stop()`, release phase, then `play()`. **This is the product-facing reset.** |
+| `changeAppMode` (both directions) | idle⇄config is the other formalized reset; see "App mode" |
+| entering `editMode 'meshes'` | mandatory — `MeshController`'s pivot and the registry's pivots reparent the same meshes and must never both be live |
+| the animation's own `stopOnFinish` | opt-in, for sequences whose job is to put the scene back |
+| director unmount | safety net |
+| `AnimationEditor`'s ■, `window.__stopAnimation()` | **authoring only**, `?debug` |
+
+Consequences in `Hud.jsx`, all deliberate:
+- **the animation chips are a selector, not a toggle.** Clicking the *active*
+  chip re-plays it (what `startFrom` says happens, happens); it does not stop
+  it. There is no "stop" button in the product HUD.
+- **`Escape` no longer stops.** Its cascade is now: an animation is
+  active → leave `config` for `idle` (the sanctioned reset, skipping the
+  intermediate `clearFocus` rung since the framing belongs to the animation);
+  else a group is framed → `clearFocus()`; else leave `config`.
+- **the two-writers-on-pose/zoom hazard no longer needs arbitration in the
+  HUD at all.** It used to: the pager and the focus chips went inert while
+  `animationState().state` read `'playing'`/`'releasing'` and came back at
+  `'finished'` (which replaced an earlier `stopIfAnimating()` — waiting instead
+  of tearing the animation down). Both rows are now **gone** (see "HUD"), so an
+  animation is the only writer on pose and focus for its whole life, and the
+  `'forever'`-loop edge case that used to hold that buttonry inert is moot.
+  What remains on the chips is the Mesh-mode gate alone.
+
+Drag and arrow keys never stopped it and still don't (they're off in `config`
+anyway).
 
 `?debug` console handles, same idiom as `window.__focusGroup`:
 `__playAnimation(id, opts)`, `__stopAnimation()`, `__animTrigger(name)`,
@@ -1541,6 +1656,57 @@ slider sets `needsUpdate = true` on every change — harmless at mouse cadence,
 disastrous per-frame with ~34 forward-rendered lights. Do not copy that line
 into the per-frame path.
 
+**The acquire-time flip is itself a shader compile, and it is pre-warmed**
+(`materials/warmupTransparency.js`, driven from `KeyboardModel.jsx`). This is
+the one piece of the discipline above that cannot be avoided, only moved:
+`material.transparent` is **not** renderer state, it is a bit of the *program
+cache key* — `getParameters` derives `opaque: material.transparent === false
+&& …`, `getProgramCacheKey` folds it in as `_programLayers.enable(17)`, and
+`WebGLProgram` emits `#define OPAQUE` from it. So the first `setOpacity` of a
+session compiles and links a brand-new shader per define-combination,
+synchronously, with all ~34 lights in it. **Measured in the browser on this
+asset: a normal frame costs 0.4 ms of CPU; the frame that has to compile one of
+these costs 192 (1000 for the very first, which also pays the driver's compiler
+startup).** That is the stutter. It never recurred because
+`materialProperties.programs` is a per-material `Map` keyed by cache key,
+emptied only on material *dispose*, and the group materials are never disposed.
+
+⚠️ **A mount-time one-shot does NOT work, and shipping one was the first
+attempt.** `applyMaterialProps` writes `clearcoat`, and `clearcoat > 0` is
+itself a define (`USE_CLEARCOAT`). The authored values arrive *later*, with the
+production JSON fetch (`app-load-materials`), and on this asset they change the
+combination — `landing` sits at 0, every other group above it. Measured: the
+one-shot warmed the pre-JSON variants, the JSON invalidated them, and the first
+play still compiled 2 programs — **identical to no warm-up at all**, plus one
+wasted program in cache. The fix is `programSignature()`: rather than knowing
+*which* events mutate materials (production fetch, "Carica JSON", Leva sliders,
+and tomorrow the high-def textures, which are also defines), a 400 ms poll
+watches the state that actually enters the cache key and re-warms when it
+changes, with a one-tick debounce so dragging a slider through `clearcoat === 0`
+doesn't recompile at every intermediate value.
+
+Three more details are load-bearing, and the file argues them at length:
+- **synchronous flip → `gl.render` → restore, not `compileAsync` + restore in
+  `.then()`**: an `await` between flip and restore is a window in which an
+  animation could acquire these very materials and have `transparent = false`
+  written over its fade;
+- **a real `gl.render`, not `gl.compile`**: three defers `LINK_STATUS` and *all
+  uniform-location resolution* to `onFirstUse`, i.e. to the first draw. Only an
+  actual draw pays that, and with 34 lights it is a large part of the cost;
+- **`__variantHidden` meshes are temporarily made visible for that one frame**,
+  or their materials are never drawn and so never compiled — verified:
+  `patchesANSI` sat at `programs.size === 0` with ISO selected, so the first
+  variant swap (which cross-fades, i.e. goes transparent) paid a cold compile.
+  It collects materials by the `__groupMaterialFor` tag rather than through
+  `collectMeshGroups`, which skips hidden meshes by design.
+
+It depends on the rig's **light-count invariant** (intensities animate, counts
+never do). Mount/unmount a light and the warm-up warms the wrong cache key.
+
+Free side effect: the clone-on-write path is covered too — a clone has the same
+parameters, hence the same cache key, and `acquireProgram` shares by key at the
+renderer level.
+
 **`depthWrite` is gated by an opacity threshold (`DEPTH_WRITE_MIN`, 0.2), not
 a flat `true`.** The `depthWrite` param is still there and still defaults to
 `true`, but it now means "write depth *while essentially opaque*": every path
@@ -1658,16 +1824,27 @@ Three sites in `LightRig.jsx` must stay in sync, as for every other section:
 fetch (both dispatch `app-load-animations`). Backward compatibility is free —
 the `isNewFormat = !!parsed.lights` gate is untouched and each dispatch is
 `if (parsed.X)`-guarded. The shipped
-`public/lightconfig/app-state-config.json` currently carries only
-`lights/materials/rotation/keylight/spotlight`: like `focus`, `variants` and
-`app` (home pose, `idleAnimation`, `releaseDuration`/`releaseEasing` — see
-"App mode"),
-`animations` is a section the editor writes but the committed file does not yet
-contain. Consequence for variants specifically: production starts on
-`defaultOption` from `meshVariants.js` (`iso`) until someone selects the
-intended layout in `?debug` and presses "Salva Configurazione"; for `app`, on
-`homePose`'s Leva default (`TL`), which is also the historical hardcoded
-entry, so nothing moves until it is authored otherwise.
+`public/lightconfig/app-state-config.json` currently carries **eight** of the
+nine sections — `lights`, `materials`, `rotation`, `keylight`, `spotlight`,
+`focus`, `animations` (6 authored animations: `GoToRotors`, `RotorSPin`,
+`GoIdle`, `GoToPatches`, `SwitchToISO`, `SwitchToANSI`) and `app`
+(`homePose: 'TL'`, `idleAnimation` bound to `GoIdle`, the release timings).
+The ninth, `variants`, will appear the first time someone authors a swap
+binding — it now carries **only** those bindings, never the layout selection
+(see "Model variants"), so production always starts on `defaultOption` from
+`meshVariants.js` (`iso`) by design.
+
+⚠️ **`GoIdle` carries `stopOnFinish: true`, and that is a requirement of the
+binding, not a preference.** A return animation starts with `keep: true` and
+therefore inherits the previous animation's live instances; without it they
+outlive the transition into the next session. `AnimationEditor` warns about
+exactly this configuration.
+
+To re-check this list rather than trusting the paragraph:
+
+```bash
+node -e "console.log(Object.keys(require('./public/lightconfig/app-state-config.json')))"
+```
 
 `normalizeAnimations(raw)` fills defaults, drops steps with unknown actions
 (with a warn), generates missing ids, dedups animation ids, and rebuilds each
@@ -1734,11 +1911,12 @@ in `rotation`.
 
 **`↑ importa` / `↓ esporta`** move *only* the `animations` block, as an
 `animations.json` in exactly the shape of the global blob's `animations` key —
-so the two are interchangeable. This is deliberately separate from `LightRig`'s
-"Salva Configurazione"/"Carica JSON", which serialize *all* tunable state at
-once: animations are the one section you'd want to hand to someone, diff, or
-keep in version control on its own. Import replaces the whole set (like "Carica
-JSON" does), behind a `window.confirm` when there is existing work to lose.
+so the two are interchangeable. This is deliberately separate from the global
+"Salva"/"Carica" pair docked under the Leva panel (handlers in `LightRig.jsx`),
+which serialize *all* tunable state at once: animations are the one section
+you'd want to hand to someone, diff, or keep in version control on its own.
+Import replaces the whole set (like "Carica" does), behind a `window.confirm`
+when there is existing work to lose.
 
 #### Known strains
 
@@ -1767,71 +1945,76 @@ JSON" does), behind a `window.confirm` when there is existing work to lose.
   AABB changes shape as it rotates can make the adaptive light box slowly
   breathe. If it turns out to matter, the skip flag belongs on **spin only** —
   a `transformOffset` *should* stretch the box, that's the point of it.
-- A partial-subset fade clones N materials and flips `transparent`; with ~34
-  lights the first frame can hitch on shader compilation. The fast path avoids
-  it for whole-group selections, which is the common case.
+- A partial-subset fade clones N materials and flips `transparent`. The shader
+  compile that used to cost is now pre-warmed at load
+  (`materials/warmupTransparency.js`, see "Opacity"), and the warm-up covers
+  the clones too since they share the originals' cache key — but the *cloning*
+  itself (N `Material.clone()` plus the swap on each mesh) is still per-acquire
+  work. The fast path avoids it for whole-group selections, the common case.
 
 ### HUD (`Hud.jsx`)
 
 Real, always-mounted product UI (not debug-gated), DOM overlay with
-`pointer-events: none` except the `01–05` pose pager, the **group-focus
-chips**, the **animation chips** and the **app-mode button**.
+`pointer-events: none` except the **variant chips**, the **animation chips**
+and the **app-mode button**.
+
+⚠️ **The surface is deliberately minimal, and two rows were REMOVED to get
+there**, not hidden: the `01–05` pose pager (`.pager`/`.page*`, gone from the
+CSS module too) and the group-focus chip row (`.focusBar`; the shared chip
+base survives, renamed `.chip`/`.chipActive`/`.chipDisabled`). `goTo`,
+`focusGroup` and `clearFocus` are all still live on the bridge — what changed
+is that no *product* button calls them: poses and framings are things an
+authored animation does. Two consequences fall out for free, and they are the
+reason not to add the rows back: an animation is the only writer on the pose
+and zoom targets for its whole lifetime (so nothing in the HUD has to go inert
+while one advances — see "What stops an animation"), and `Hud.jsx` no longer
+needs `homePoseKey` or the runtime's raw `state` string.
 
 ⚠️ **The HUD has two faces, switched by the `appMode` prop** (see "App mode"):
 in `idle` everything interactive except the mode button is **not rendered** —
-no pager, no chips — because in idle there is nothing to configure and an
-inert button is noise; in `config` the whole button surface appears, and it is
-the *only* way to move the model, since drag/arrow-nav is suspended there.
-Everything below describes the `config` face unless stated otherwise.
+no chips — because in idle there is nothing to configure and an inert button is
+noise; in `config` the button surface appears, and it is the *only* way to
+drive the model, since drag/arrow-nav is suspended there. Everything below
+describes the `config` face unless stated otherwise.
 
-A focus chip calls `focusGroup(group.id)`; clicking the active one calls
-`clearFocus()`. The active chip is derived from `currentFocus()` in the same
-150 ms poll — not from local state — so it stays honest when the focus is
-changed from outside (the `?debug` console helpers, or the automatic clear on
-entering Mesh mode).
-
-The **animation row** (`.animBar`/`.animChip`, one row *above* the focus
-chips — added to, not replacing them, so the bare zoom stays available) is
-built from the `animations` prop, which reaches `Hud.jsx` as ordinary React
-state from `KeyboardComposer.jsx` and needs no poll. Only items with
-`hidden !== true` get a chip. Click plays, clicking the active one stops; the
-active id comes from `animationState()` in the same poll, same
-derive-from-the-imperative-source rule as the focus chips. When a
+The **animation row** (`.animBar`/`.animChip`) is built from the `animations`
+prop, which reaches `Hud.jsx` as ordinary React state from
+`KeyboardComposer.jsx` and needs no poll. Only items with `hidden !== true` get
+a chip. **Click plays — including on the active chip, which re-plays it. There
+is no stop** (see "What stops an animation"); the active id is derived from
+`animationState()` in the 150 ms poll rather than from local state, so it stays
+honest when an animation is started or stopped from outside (the `?debug`
+console helpers, the automatic stop on entering Mesh mode). When a
 `waitTrigger` step is blocking, one **extra chip** appears carrying that
 step's authored label and calling `triggerAnimation(name)` — that chip is the
 product surface for "optionally, an event makes the rotors spin."
 
-⚠️ **The rows (variants, animations, focus, and the mode button) live in ONE
-flex column, `.chipStack`**, anchored bottom-centre at `--chip-row-bottom`; the
-individual bars carry no positioning of their own. They used to be three
-absolutely positioned rows at `--chip-row-bottom + n * --chip-h`, which
-silently assumed every row is exactly one chip tall — the moment a row wraps
-(and with 9 mesh groups the focus row does) the rows above it overlapped it.
-Only the stack's `bottom` needs the custom property now, so the mobile
-breakpoint still moves everything by overriding `--chip-row-bottom` alone. Any
-further row goes inside the stack, never next to it.
+⚠️ **The rows (variants, animations, and the mode button) live in ONE flex
+column, `.chipStack`**, anchored bottom-centre at `--chip-row-bottom`; the
+individual bars carry no positioning of their own. They used to be absolutely
+positioned rows at `--chip-row-bottom + n * --chip-h`, which silently assumed
+every row is exactly one chip tall — the moment a row wrapped, the rows above
+it overlapped it. Only the stack's `bottom` needs the custom property now, so
+the mobile breakpoint still moves everything by overriding `--chip-row-bottom`
+alone. Any further row goes inside the stack, never next to it.
 
 **The mode button (`.modeBar`/`.modeBtn`) is the stack's LAST child**, i.e. the
 bottom one, on purpose: it is the only control present in both app modes, and
-the three rows above it appear and disappear — anchoring it last keeps it at a
+the rows above it appear and disappear — anchoring it last keeps it at a
 constant height off the bottom edge instead of jumping when the mode changes.
 
-Clicking a pager button or a focus chip **stops a running animation first**
-(`stopIfAnimating()`), or the two would fight over the same pose/zoom targets.
-`Escape` cascades most-specific-first: stop the animation if one is running,
-else `clearFocus()` if a group is framed, else leave `config` for `idle`. Its
-listener is on `window`, not the canvas: clicking a chip takes focus off the
-canvas, so a canvas-scoped listener would never see the key.
+`Escape` cascades most-specific-first: an animation is active → leave `config`;
+else `clearFocus()` if a group is framed (reachable only from an animation or
+the `?debug` console now, but it is still the right rung); else leave `config`.
+Its listener is on `window`, not the canvas: clicking a chip takes focus off
+the canvas, so a canvas-scoped listener would never see the key.
 
-The pager buttons
-are `disabled` (and visually dimmed via `.pageDisabled`) for every pose
-except `homePoseKey` while `editMode` is `'meshes'` (see
-"Pose lock" above); the focus, animation and variant chips plus the mode
-button disable wholesale in that
-mode for the same reason. `Hud.jsx` learns `editMode`/`homePoseKey` from the
-same 150ms poll it already runs for the active-pose readout, reading them
-off `poseApi.current` (the fields `Scene.jsx` publishes onto the shared
-`apiRef`/`poseApi` bridge). All four telemetry readouts are measured
+The animation chips, the variant chips and the mode button **disable wholesale
+while `editMode` is `'meshes'`** — `MeshController`'s pivots and the animation
+registry's pivots must never be live on the same meshes. `Hud.jsx` learns
+`editMode` from the same 150 ms poll it already runs for the active-pose
+readout, reading it off `poseApi.current` (the field `Scene.jsx` publishes onto
+the shared `apiRef`/`poseApi` bridge). All four telemetry readouts are measured
 directly rather than derived from R3F/React state:
 - FPS: counted via its own `requestAnimationFrame` loop, independent of the
   R3F render loop.
@@ -2032,9 +2215,13 @@ Two invalidation sources that are not obvious and would bite:
 - **Shader recompilation is real stutter.** With 34 lights the permutation
   count is large and a mid-interaction compile is visible. The rig already
   does the right thing by animating light *intensities* and never light
-  *counts* — that invariant must hold. Precompile asynchronously
-  (`renderer.compileAsync`) during the existing fade-in, which is already
-  dead time.
+  *counts* — that invariant must hold. Precompile during the existing fade-in,
+  which is already dead time. ⚠️ **A targeted version of this already exists
+  and is not planned work**: `materials/warmupTransparency.js` warms the
+  `transparent` variant of every group material (see "Opacity"). Any effect
+  added here multiplies the permutation count again, so extend that warm-up
+  rather than writing a second one — and read its argument for why it uses a
+  real `gl.render` instead of `compileAsync`.
 - **Don't reallocate render targets on resize** without debouncing, or
   window resizing becomes a microfreeze.
 

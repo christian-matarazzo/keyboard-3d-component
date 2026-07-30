@@ -131,15 +131,13 @@ export const NEIGHBORS = {
   BBE: { up: null, down: null, left: 'BBR', right: 'BBL' },
 }
 
-/**
- * Selettore vista dell'HUD di prodotto: la paginazione `01–05` sopra la
- * tastiera (rimpiazza le frecce ViewPad). Ordine = ordine dei numeri. La `04`
- * = `TL` (initial position, 3/4 front) è la posa d'ingresso landscape, quindi
- * al caricamento è la voce attiva — riproduce lo screen del cliente 1:1.
- * Restano pose del grafo: da qui la navigazione a drag/tastiera riprende
- * senza casi speciali. Facilmente riordinabile su richiesta del cliente.
+/*
+ * `HUD_VIEWS` (le 5 pose della paginazione `01–05`) è stato RIMOSSO insieme al
+ * pager dell'HUD: in prodotto le pose non si scelgono più da un pulsante, le
+ * porta un'animazione autorata (vedi Hud.jsx). Stessa fine di
+ * `VIEW_SHORTCUTS`, la mappa direzione→posa del vecchio ViewPad — non
+ * reintrodurli.
  */
-export const HUD_VIEWS = ['TOP', 'CFT', 'FRONT', 'TL', 'BOTTOM']
 
 /**
  * Etichette brevi per l'HUD (readout alto-centro "3/4 FT"): chiave posa →

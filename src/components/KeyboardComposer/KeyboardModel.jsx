@@ -3,6 +3,11 @@ import * as THREE from 'three'
 import { useThree } from '@react-three/fiber'
 import { useGLTF } from '@react-three/drei'
 import { prepareGroupMaterials } from './materials/groupMaterials'
+import {
+  collectGroupMaterials,
+  programSignature,
+  warmTransparentPrograms,
+} from './materials/warmupTransparency'
 import { DEFAULT_MESH_GROUPS } from './materials/meshGroups'
 import { useComposerControls } from './useComposerControls'
 import { ENTRY_LANDSCAPE, ENTRY_PORTRAIT, POSE_COORD } from './poseGraph'
@@ -49,6 +54,52 @@ export function KeyboardModel({ url = DEFAULT_MODEL_URL, apiRef, onSizeComputed,
   }, [scene, meshGroups])
 
   const portrait = useThree((s) => s.size.width < s.size.height)
+  const gl = useThree((s) => s.gl)
+  const rootScene = useThree((s) => s.scene)
+  const camera = useThree((s) => s.camera)
+
+  // Precompila le varianti TRASPARENTI degli shader dei materiali di gruppo,
+  // così la prima animazione con una dissolvenza non paga una compilazione di
+  // shader (misurata: 192 ms di main thread) in mezzo al movimento di camera.
+  // Il meccanismo sta in materials/warmupTransparency.js — in breve:
+  // `transparent` è un bit della chiave di cache del programma, non uno stato
+  // del renderer. Non è gated da DEBUG: lo scatto si vedeva in produzione per
+  // primo.
+  //
+  // ⚠️ Non è un one-shot al mount, e la prima versione che lo era NON
+  // funzionava: i valori dei materiali arrivano dopo, col JSON di produzione,
+  // e fra questi c'è `clearcoat`, che è a sua volta un define. Si osserva
+  // quindi la FIRMA di ciò che entra nella chiave di cache e si riscalda
+  // quando cambia — vale per il fetch di produzione, per "Carica JSON", per
+  // gli slider Leva e per le texture che arriveranno.
+  //
+  // Il giro di conferma (`sig !== pendingRef`) è un antirimbalzo: trascinando
+  // uno slider Leva attraverso lo zero di `clearcoat` la firma sfarfalla, e
+  // senza si ricompilerebbe a ogni valore intermedio. Costa un tick di ritardo
+  // sul primo warm-up, che cade comunque dentro la dissolvenza d'ingresso.
+  const warmRef = useRef({ warmed: null, pending: null })
+  useEffect(() => {
+    warmRef.current = { warmed: null, pending: null }
+    const check = () => {
+      const { materials, hidden } = collectGroupMaterials(scene)
+      if (!materials.length) return
+      const sig = programSignature(materials)
+      const st = warmRef.current
+      if (sig === st.warmed) return (st.pending = null)
+      if (sig !== st.pending) return (st.pending = sig)
+      st.warmed = sig
+      st.pending = null
+      warmTransparentPrograms({
+        gl,
+        scene: rootScene, // la scena R3F, non quella del GLTF: servono le luci
+        camera,
+        materials,
+        hidden,
+      })
+    }
+    const id = setInterval(check, 400)
+    return () => clearInterval(id)
+  }, [scene, gl, rootScene, camera])
 
   // Posa d'ingresso: su desktop è la POSA HOME autorata in ?debug e salvata
   // nel JSON (default TL, il corner "initial position" del cliente — pitch

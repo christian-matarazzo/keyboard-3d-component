@@ -30,6 +30,15 @@ import { ease, clamp01 } from './easings'
  * `stopOnFinish`, per le sequenze cha hanno il compito di RIPORTARE la scena a
  * riposo (la transizione verso idle) e non devono lasciarsi dietro istanze vive.
  *
+ * ⚠️ E `stop()` NON è una superficie di prodotto. Nell'HUD non esiste più un
+ * comando "ferma": i chip sono un selettore, non un interruttore. Ciò che
+ * un'animazione lascia in scena si azzera solo lanciandone un'altra dichiarata
+ * `startFrom: 'reset'` (che passa da `stop()` per suo conto) o cambiando
+ * modalità di prodotto. Restano a chiamarlo: la transizione idle⇄config, la
+ * guardia all'ingresso nell'editor mesh, lo smontaggio del director,
+ * `stopOnFinish`, e i comandi di AUTORAZIONE (il ■ dell'editor e
+ * `window.__stopAnimation`), che non sono prodotto.
+ *
  * SMONTAGGIO MORBIDO. `stop()` non è più istantaneo sull'opacità. Rilasciare gli
  * handle in un frame riporta ogni materiale al suo valore di partenza di scatto,
  * e passare da un'animazione all'altra faceva lampeggiare l'isolate. Adesso lo

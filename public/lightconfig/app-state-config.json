@@ -2311,7 +2311,8 @@
               "poseKey": "TL"
             }
           }
-        ]
+        ],
+        "stopOnFinish": true
       },
       {
         "id": "anim_ms6045w4nd9do",
@@ -2500,5 +2501,11 @@
         ]
       }
     ]
+  },
+  "app": {
+    "homePose": "TL",
+    "idleAnimation": "anim_ms5zlva66qnju",
+    "releaseDuration": 0.5,
+    "releaseEasing": "easeInOutCubic"
   }
 }

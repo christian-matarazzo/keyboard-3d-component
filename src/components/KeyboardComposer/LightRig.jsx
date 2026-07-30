@@ -36,19 +36,6 @@ const SELECT_STYLE = {
   appearance: 'auto',
 }
 
-const PANEL_BTN_STYLE = {
-  background: 'rgba(20, 20, 20, 0.8)',
-  border: '1px solid rgba(255, 255, 255, 0.2)',
-  color: 'white',
-  padding: '8px 16px',
-  borderRadius: '8px',
-  cursor: 'pointer',
-  fontWeight: 'bold',
-  fontFamily: 'sans-serif',
-  boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-  backdropFilter: 'blur(4px)',
-}
-
 // --- SCATOLA LUCI ADATTIVA ------------------------------------------------
 // La scatola (griglia 3x3x3 di point light + 6 rectAreaLight per faccia) non
 // deriva più dalla bounding box STATICA del modello vergine (`modelSize`,
@@ -939,9 +926,11 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
       // Stessa ragione del `focus` qui sopra: non c'entrano con le luci, ma
       // questo è l'unico punto di salvataggio/caricamento globale.
       animations: window.__STATE_ANIMATIONS || { version: 1, items: [] },
-      // Varianti di modello: la selezione ATTIVA al momento del salvataggio
-      // diventa il default di produzione, più i binding variante→animazione di
-      // swap. Vedi materials/meshVariants.js.
+      // Varianti di modello: SOLO i binding variante→animazione di swap.
+      // ⚠️ La selezione (quale layout è acceso) NON si salva: è stato
+      // dell'utente, vive in sessionStorage, e in produzione si riparte sempre
+      // dal `defaultOption` di materials/meshVariants.js. Vedi il commento in
+      // KeyboardComposer.jsx per il perché.
       variants: window.__STATE_VARIANTS || {},
       // Stato di prodotto non legato a luci/materiali: oggi la sola posa home
       // (ingresso in landscape, rientro da config_mode, blocco della modalità
@@ -1011,6 +1000,33 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
     input.click()
   }
 
+  // I due comandi passano sul ponte imperativo condiviso: la pulsantiera
+  // "salva/carica" non vive più qui dentro come overlay `<Html>` sul canvas,
+  // ma nel DOM accanto al pannello Leva (DebugPanel, in KeyboardComposer.jsx),
+  // di cui è il prolungamento visivo. Restano qui gli handler, che sono i soli
+  // a vedere `configsRef` e a sapere quali sezioni serializzare.
+  //
+  // Wrapper sottili su un ref riaggiornato a ogni render (stesso idioma di
+  // `focusImplRef` in useComposerControls.js): l'effetto di pubblicazione gira
+  // una volta sola (`deps: [apiRef]`), ma le funzioni pubblicate non si
+  // congelano sulla closure del primo mount. `Object.assign`, mai
+  // `apiRef.current = {...}`: il ponte ha più scrittori (vedi CLAUDE.md).
+  const jsonImplRef = useRef({ save: null, load: null })
+  jsonImplRef.current.save = handleSaveJSON
+  jsonImplRef.current.load = handleLoadJSON
+
+  useEffect(() => {
+    if (!apiRef) return
+    Object.assign(apiRef.current, {
+      saveConfigJSON: () => jsonImplRef.current.save?.(),
+      loadConfigJSON: () => jsonImplRef.current.load?.(),
+    })
+    return () => {
+      delete apiRef.current.saveConfigJSON
+      delete apiRef.current.loadConfigJSON
+    }
+  }, [apiRef])
+
   return (
     <group position={RIG_POSITION} ref={rigRef}>
 
@@ -1018,29 +1034,9 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
       <ShadowKeyLight debug={DEBUG} lightsActive={editMode === 'lights'} />
       <ShadowSpotLight debug={DEBUG} lightsActive={editMode === 'lights'} />
 
-      {/* PANNELLO DI SALVATAGGIO/CARICAMENTO (In alto a sinistra) */}
-      {DEBUG && (
-        <Html fullscreen style={{ pointerEvents: 'none', zIndex: 10000 }}>
-          <div style={{
-            position: 'absolute',
-            top: '20px',
-            left: '20px',
-            pointerEvents: 'auto',
-            display: 'flex',
-            gap: '10px'
-          }}>
-            <button
-              onClick={handleSaveJSON}
-              style={{ ...PANEL_BTN_STYLE, background: 'rgba(20, 100, 200, 0.8)', border: '1px solid rgba(100, 180, 255, 0.5)' }}
-            >
-              Salva Configurazione
-            </button>
-            <button onClick={handleLoadJSON} style={PANEL_BTN_STYLE}>
-              Carica JSON
-            </button>
-          </div>
-        </Html>
-      )}
+      {/* La pulsantiera di salvataggio/caricamento sta in KeyboardComposer.jsx
+          (DebugPanel), agganciata al pannello Leva: qui sopra ne pubblichiamo
+          solo i due comandi sul ponte imperativo. */}
 
       {lightsInteractive && (controls.showHelpers || controls.showSurfaces) && (
         <Html fullscreen style={{ pointerEvents: 'none', zIndex: 9999 }}>

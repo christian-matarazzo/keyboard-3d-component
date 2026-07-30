@@ -303,11 +303,17 @@ export default function AnimationEditor({
         >
           ▶ play
         </button>
+        {/* ⚠️ Comando di AUTORAZIONE, non di prodotto: in produzione non
+            esiste un "ferma" (i chip dell'HUD selezionano soltanto, e ciò che
+            un'animazione lascia in scena si azzera lanciandone una con "al
+            play: azzera lo stato precedente" o uscendo da config_mode). Qui
+            serve per rimettere la scena a zero fra una prova e l'altra. */}
         <button
           type="button"
           className={styles.btn}
           disabled={!playing}
           onClick={() => api?.stopAnimation?.()}
+          title="Solo per autorare: in produzione l'animazione non si ferma a mano"
         >
           ■ stop
         </button>
@@ -420,10 +426,15 @@ export default function AnimationEditor({
             )}
             {/* Concatenamento: è ciò che permette di premere play su una
                 seconda animazione senza che zoom, opacità e trasformazioni
-                della prima vengano smontati. */}
+                della prima vengano smontati.
+                ⚠️ Ed è, all'inverso, l'UNICA leva di azzeramento rimasta in
+                produzione: l'HUD non ferma più niente, quindi un'animazione
+                dichiarata "azzera lo stato precedente" è ciò che riporta la
+                scena a zero prima di ricostruirla. Almeno una nel set
+                dovrebbe averla, o si esce solo da config_mode. */}
             <label
               className={styles.paramLabel}
-              title="Cosa fare, al play, di ciò che sta già girando"
+              title="Cosa fare, al play, di ciò che sta già girando — «azzera» è l'unico reset disponibile in produzione insieme all'uscita da config"
             >
               al play
               <select
