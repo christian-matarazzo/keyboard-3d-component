@@ -28,17 +28,23 @@ const readStoredVariants = () => {
 //    per essere salvata: un solo scrittore di window.__STATE_APP.
 //  - `idleAnimation` è l'animazione autorata che riporta la scena a riposo
 //    uscendo da config_mode ('' = transizione secca).
-//  - `release*` sono velocità e curva della dissolvenza di USCITA, cioè come
-//    l'opacità torna al suo valore quando un'animazione viene fermata o
-//    sostituita da un'altra (vedi lo smontaggio morbido in
-//    animation/animationRuntime.js). Lo zoom-out ha la sua manopola gemella
-//    nella folder Leva `Rotazione` (`focusOutDamp`), perché è feel di camera e
-//    viaggia con `rotation`.
+//  - `release*` sono velocità e curva del RIENTRO di uscita, cioè come la scena
+//    torna com'era quando un'animazione viene fermata o sostituita da un'altra
+//    (vedi lo smontaggio morbido in animation/animationRuntime.js). Due binari
+//    indipendenti perché hanno tempi naturali diversi: l'opacità
+//    (`releaseDuration`/`releaseEasing`) e la POSA delle mesh traslate o ruotate
+//    (`releaseTransforms*`, spegnibile — da spento si torna allo scatto
+//    istantaneo di prima). Il terzo pezzo del rientro, lo zoom-out, ha la sua
+//    manopola gemella nella folder Leva `Rotazione` (`focusOutDamp`), perché è
+//    feel di camera e viaggia con `rotation`.
 const DEFAULT_APP_CONFIG = {
   homePose: 'TL',
   idleAnimation: '',
   releaseDuration: 0.5,
   releaseEasing: 'easeInOutCubic',
+  releaseTransforms: true,
+  releaseTransformsDuration: 0.7,
+  releaseTransformsEasing: 'easeInOutCubic',
 }
 
 // Pannello di tuning (luci, materiali, resa) visibile solo con `?debug`
@@ -403,8 +409,10 @@ export default function KeyboardComposer({
   //    migrato (vedi il listener più sotto).
   //  - i BINDING variante → animazione di swap sono CONFIGURAZIONE autorata
   //    (nell'AnimationEditor, blocco "swap delle varianti") e restano nel
-  //    JSON: senza, in produzione il toggle scambierebbe di scatto invece di
-  //    lanciare l'animazione autorata.
+  //    JSON. ⚠️ Un binding assente non vuol dire "scambio di scatto": vuol dire
+  //    l'animazione INTEGRATA (un incrocio morbido in dissolvenza, vedi
+  //    BUILTIN_ANIMATIONS in animation/animationSchema.js). Autorarne una è
+  //    quindi solo "la mia al posto di quella di serie".
   //
   // Il seed legge sessionStorage una sola volta.
   const [variantSelection, setVariantSelection] = useState(() =>
@@ -473,10 +481,15 @@ export default function KeyboardComposer({
           meshVariants={meshVariants}
           variantSelection={variantSelection}
           appMode={appMode}
-          // Tempi della dissolvenza di uscita, per il runtime delle animazioni.
+          // Tempi del rientro di uscita, per il runtime delle animazioni: la
+          // dissolvenza dell'opacità e il riposizionamento delle mesh, che
+          // corrono insieme ma con durate proprie.
           release={{
             duration: appConfig.releaseDuration,
             easing: appConfig.releaseEasing,
+            transforms: appConfig.releaseTransforms !== false,
+            transformsDuration: appConfig.releaseTransformsDuration,
+            transformsEasing: appConfig.releaseTransformsEasing,
           }}
           // La posa home nasce da una Leva dentro Scene e risale qui solo per
           // essere salvata insieme al resto della sezione `app`.

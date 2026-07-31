@@ -189,10 +189,12 @@
 }
 
 /* ── Varianti di modello (il "layout") ─────────────────────────────────────
-   Prima riga della pila, sopra le animazioni. A differenza di quelli i
-   pulsanti qui sono un SELETTORE (uno acceso sempre, mutuamente esclusivi),
-   non azioni: da qui l'etichetta della variante davanti al gruppo e il bordo
-   continuo che li lega. */
+   Prima riga della pila, sopra le animazioni. ⚠️ UN comando per variante, non
+   un chip per opzione: mostra l'opzione accesa e a ogni clic passa alla
+   successiva (vedi Hud.jsx). Quindi non è né un selettore né un'azione — è una
+   LETTURA DI STATO che si può ruotare, e da lì lo stile: etichetta della
+   variante davanti, valore in chiaro come un chip attivo, marcatore di giro
+   in coda smorzato. */
 .variantBar {
   display: flex;
   flex-wrap: wrap;
@@ -212,16 +214,32 @@
   white-space: nowrap;
 }
 
-.variantChip {
+/* Il comando ciclico. `chip` mette `place-items: center` su una griglia a
+   colonna singola: qui i figli sono più d'uno (valore, contatore, ↻), quindi
+   serve il flusso per colonne, o si sovrapporrebbero nella stessa cella. */
+.variantCycle {
   composes: chip;
+  composes: chipActive;
+  grid-auto-flow: column;
+  align-items: center;
+  gap: clamp(6px, 0.6vw, 10px);
 }
 
-.variantChipActive {
-  composes: chipActive;
+.variantCount,
+.variantNext {
+  color: rgb(255 255 255 / 45%);
+  font-variant-numeric: tabular-nums;
 }
 
 .variantChipDisabled {
   composes: chipDisabled;
+}
+
+/* Il marcatore di giro segue lo spegnimento del pulsante: lasciato in chiaro
+   sembrerebbe l'unica cosa ancora cliccabile. */
+.variantChipDisabled .variantCount,
+.variantChipDisabled .variantNext {
+  color: inherit;
 }
 
 /* ── Interruttore idle ⇄ config ─────────────────────────────────────────────
@@ -372,7 +390,7 @@
 @media (prefers-reduced-motion: reduce) {
   .chip,
   .animChip,
-  .variantChip,
+  .variantCycle,
   .modeBtn {
     transition: none;
   }

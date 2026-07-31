@@ -1,5 +1,5 @@
 import { ACTIONS, DEFAULT_MAX_WAIT } from './actions'
-import { buildWaves } from './animationSchema'
+import { buildWaves, findAnimation } from './animationSchema'
 import { ease, clamp01 } from './easings'
 
 /**
@@ -39,16 +39,21 @@ import { ease, clamp01 } from './easings'
  * `stopOnFinish`, e i comandi di AUTORAZIONE (il ■ dell'editor e
  * `window.__stopAnimation`), che non sono prodotto.
  *
- * SMONTAGGIO MORBIDO. `stop()` non è più istantaneo sull'opacità. Rilasciare gli
- * handle in un frame riporta ogni materiale al suo valore di partenza di scatto,
- * e passare da un'animazione all'altra faceva lampeggiare l'isolate. Adesso lo
- * stop apre una FASE DI RILASCIO: il registry interpola dall'opacità corrente a
- * quella fotografata all'acquire, per `release.duration` secondi con la curva
- * `release.easing`, e solo a fine corsa rilascia davvero (`finish()`, che è
- * l'unico punto in cui tornano `transparent`/`depthWrite` e cadono i cloni).
- * Pivot e varianti restano invece sincroni: sono ownership della gerarchia, non
- * un valore da interpolare. Lo zoom era già smorzato — ha la sua manopola di
- * uscita in useComposerControls.js (`focusOutDamp`).
+ * SMONTAGGIO MORBIDO. `stop()` non è istantaneo. Rilasciare gli handle in un
+ * frame riporta ogni materiale al suo valore di partenza — e ogni mesh spostata
+ * al suo posto — di scatto, e passare da un'animazione all'altra faceva
+ * lampeggiare l'isolate e teletrasportare l'esploso. Adesso lo stop apre una
+ * FASE DI RILASCIO a due binari, che corrono insieme con tempi e curve propri:
+ *   - OPACITÀ: si interpola dal valore corrente a quello fotografato
+ *     all'acquire, e solo a fine corsa si rilascia davvero (`finish()`, unico
+ *     punto in cui tornano `transparent`/`depthWrite` e cadono i cloni);
+ *   - POSA: i pivot tornano alla loro posa di riposo interpolando, e vengono
+ *     rilasciati (unwind restore-not-bake) solo a rientro concluso.
+ * Il rientro della posa si può spegnere (`transforms: false`), il che riporta il
+ * comportamento storico. Le VARIANTI restano invece sincrone: la scelta di un
+ * layout è stato dell'utente, non un valore da interpolare. Lo zoom era già
+ * smorzato — ha la sua manopola di uscita in useComposerControls.js
+ * (`focusOutDamp`).
  *
  * ⚠️ Durante la fase di rilascio un `play()` che azzera lo stato precedente
  * viene MESSO IN CODA, non avviato: altrimenti il fade di uscita e l'opacità
@@ -62,7 +67,20 @@ import { ease, clamp01 } from './easings'
 const MAX_DT = 1 / 20
 
 // Usati se il chiamante non fornisce una configurazione di rilascio.
-const DEFAULT_RELEASE = { duration: 0.5, easing: 'easeInOutCubic' }
+const DEFAULT_RELEASE = {
+  duration: 0.5,
+  easing: 'easeInOutCubic',
+  transformsDuration: 0.7,
+  transformsEasing: 'easeInOutCubic',
+}
+
+/**
+ * Coercizione esplicita dei tempi di rilascio: arrivano dal JSON, dove una
+ * chiave può essere assente, nulla o spazzatura — e un `duration` NaN
+ * incastrerebbe la dissolvenza per sempre (`t/NaN` non raggiunge mai 1).
+ */
+const releaseTime = (v, fallback) => (Number.isFinite(v) ? Math.max(0, v) : fallback)
+const releaseCurve = (v, fallback) => (typeof v === 'string' ? v : fallback)
 
 export function createAnimationRuntime(ctx) {
   let state = 'idle' // 'idle' | 'playing' | 'finished'
@@ -199,19 +217,40 @@ export function createAnimationRuntime(ctx) {
     if (!inst.done) inst.done = isStepDone(inst)
   }
 
-  /** Avanza la dissolvenza di uscita; a fine corsa rilascia e sblocca la coda. */
+  /**
+   * Avanza il rientro di uscita; a fine corsa chiude tutto e sblocca la coda.
+   *
+   * I binari (opacità, posa delle mesh) hanno tempi e curve PROPRI e corrono
+   * insieme sullo stesso orologio: rimettere a posto un esploso vuole in genere
+   * più respiro di una dissolvenza, e obbligarli alla stessa durata avrebbe
+   * significato tararne una sola e subire l'altra. Il rilascio finisce quando
+   * ha finito il più lento.
+   */
   const tickRelease = (dt) => {
     release.t += dt
-    const k = release.duration > 0 ? clamp01(release.t / release.duration) : 1
-    release.restore.lerp(ease(release.easing, k))
-    if (k < 1) return
-    release.restore.finish()
+    let allDone = true
+    for (const e of release.entries) {
+      const k = e.duration > 0 ? clamp01(release.t / e.duration) : 1
+      e.restore.lerp(ease(e.easing, k))
+      if (k >= 1) e.restore.finish()
+      else allDone = false
+    }
+    if (!allDone) return
+    release.finish?.()
     release = null
     if (pending) {
       const { id, opts } = pending
       pending = null
       play(id, opts)
     }
+  }
+
+  /** Chiude subito un rilascio in corso, saltando all'arrivo. */
+  const finishRelease = () => {
+    if (!release) return
+    for (const e of release.entries) e.restore.finish()
+    release.finish?.()
+    release = null
   }
 
   const tick = (rawDelta) => {
@@ -237,28 +276,36 @@ export function createAnimationRuntime(ctx) {
    * director.
    */
   const stop = ({ soft = true } = {}) => {
-    // Un rilascio già in corso viene chiuso subito: due dissolvenze
-    // sovrapposte sugli stessi materiali sono due scrittori per frame.
-    if (release) {
-      release.restore.finish()
-      release = null
-    }
+    // Un rilascio già in corso viene chiuso subito: due rientri sovrapposti
+    // sugli stessi materiali (o sugli stessi pivot) sono due scrittori per
+    // frame.
+    finishRelease()
     pending = null
-    // La fotografia va presa PRIMA dei teardown, mentre i materiali sono ancora
-    // posseduti: è da lì che parte l'interpolazione.
+    const cfg = ctx.getRelease?.() ?? {}
+    // Le fotografie vanno prese PRIMA dei teardown, mentre materiali e pivot
+    // sono ancora posseduti: è da lì che parte l'interpolazione.
     const restoreOpacity = soft && instances.length > 0 ? ctx.opacity.beginRestoreAll() : null
     const keepOpacity = !!restoreOpacity && !restoreOpacity.empty
+    // Il rientro della POSA è disattivabile (`transforms: false`): chi vuole
+    // che le mesh tornino a posto di scatto — o che ci tornino soltanto quando
+    // lo dice un'animazione — lo spegne e riprende il comportamento storico.
+    const restoreTransforms =
+      soft && instances.length > 0 && cfg.transforms !== false
+        ? ctx.pivots.beginRestoreAll()
+        : null
+    const keepTransforms = !!restoreTransforms && !restoreTransforms.empty
     // Ordine INVERSO di start: un pivot acquisito per ultimo va disfatto per
     // primo, altrimenti si smonta sotto i piedi di chi lo condivide.
     for (let i = instances.length - 1; i >= 0; i--) {
       try {
-        // `keepOpacity` dice alle azioni che possiedono materiali di NON
-        // rilasciarli: la proprietà passa alla fase di rilascio, che li
-        // interpola e li restituisce alla fine. Senza, `disown` rimetterebbe
-        // qui e ora opacità, `transparent` e `depthWrite` — cioè esattamente lo
-        // scatto che si vuole evitare (e con `transparent: false` il fade non
-        // si vedrebbe nemmeno).
-        instances[i].action.stop?.(instances[i], ctx, { keepOpacity })
+        // `keepOpacity`/`keepTransforms` dicono alle azioni che possiedono
+        // materiali o pivot di NON rilasciarli: la proprietà passa alla fase di
+        // rilascio, che li interpola e li restituisce alla fine. Senza,
+        // `disown` rimetterebbe qui e ora opacità, `transparent` e `depthWrite`
+        // (e con `transparent: false` il fade non si vedrebbe nemmeno), e
+        // l'unwind dei pivot riporterebbe ogni mesh al suo posto in un frame —
+        // cioè esattamente gli scatti che si vogliono evitare.
+        instances[i].action.stop?.(instances[i], ctx, { keepOpacity, keepTransforms })
       } catch (err) {
         console.warn('[anim] errore nel teardown di', instances[i].step.id, err)
       }
@@ -273,29 +320,50 @@ export function createAnimationRuntime(ctx) {
     state = 'idle'
     pendingTriggers.clear()
     if (restore) ctx.getApi()?.clearFocus?.()
-    // Se nel frattempo tutti i materiali fotografati sono stati rilasciati da
-    // chi li possedeva (lo scambio di varianti chiude sempre la propria
-    // dissolvenza, vedi setVariant), non c'è nulla da dissolvere e non ha senso
-    // trattenere un eventuale play in coda.
+
+    // Un binario entra nel rilascio solo se ha ancora qualcosa da riportare
+    // indietro. Se nel frattempo tutto ciò che era stato fotografato è stato
+    // rilasciato da chi lo possedeva (lo scambio di varianti chiude sempre la
+    // propria dissolvenza, vedi setVariant), non c'è nulla da interpolare e non
+    // ha senso trattenere un eventuale play in coda.
+    const entries = []
     if (keepOpacity && restoreOpacity.remaining > 0) {
-      // Coercizione esplicita: questi valori arrivano dal JSON, dove una chiave
-      // può essere assente o nulla — e un `duration` NaN incastrerebbe la
-      // dissolvenza per sempre (`t/NaN` non raggiunge mai 1).
-      const cfg = ctx.getRelease?.() ?? {}
-      release = {
+      entries.push({
         restore: restoreOpacity,
-        t: 0,
-        duration: Number.isFinite(cfg.duration)
-          ? Math.max(0, cfg.duration)
-          : DEFAULT_RELEASE.duration,
-        easing: typeof cfg.easing === 'string' ? cfg.easing : DEFAULT_RELEASE.easing,
-        id: stoppedId,
-      }
-      // Durata zero = comportamento storico, in un colpo solo.
-      if (release.duration === 0) tickRelease(0)
+        duration: releaseTime(cfg.duration, DEFAULT_RELEASE.duration),
+        easing: releaseCurve(cfg.easing, DEFAULT_RELEASE.easing),
+      })
     } else {
       restoreOpacity?.finish()
     }
+    if (keepTransforms && restoreTransforms.remaining > 0) {
+      entries.push({
+        restore: restoreTransforms,
+        duration: releaseTime(cfg.transformsDuration, DEFAULT_RELEASE.transformsDuration),
+        easing: releaseCurve(cfg.transformsEasing, DEFAULT_RELEASE.transformsEasing),
+      })
+    } else {
+      restoreTransforms?.finish()
+    }
+
+    if (entries.length === 0) {
+      // Niente da dissolvere: i pivot che le azioni non hanno mollato (perché
+      // gli era stato detto di non farlo) vanno comunque restituiti.
+      if (keepTransforms) ctx.pivots.releaseAll()
+      return
+    }
+    release = {
+      entries,
+      t: 0,
+      id: stoppedId,
+      // ⚠️ I pivot si RILASCIANO solo qui, a rientro concluso. Il ripristino
+      // del registry riporta la posa ma lascia gli handle montati apposta (vedi
+      // pivotRegistry.js): senza questa chiusura resterebbero wrappate per
+      // sempre mesh che nessuno possiede più.
+      finish: keepTransforms ? () => ctx.pivots.releaseAll() : null,
+    }
+    // Durata zero su tutti i binari = comportamento storico, in un colpo solo.
+    if (entries.every((e) => e.duration === 0)) tickRelease(0)
   }
 
   /**
@@ -314,7 +382,10 @@ export function createAnimationRuntime(ctx) {
    *    Le istanze ereditate restano comunque a carico di `stop()`.
    */
   const play = (id, { fromWave = 0, keep, variantTarget } = {}) => {
-    const next = ctx.getAnimations()?.items?.find((a) => a.id === id)
+    // `findAnimation` guarda prima fra le autorate e poi fra le INTEGRATE
+    // (animationSchema.js): è così che il controllo di layout dell'HUD ha una
+    // transizione morbida di default senza che nel JSON ci sia nulla.
+    const next = findAnimation(ctx.getAnimations()?.items, id)
     if (!next) {
       if (ctx.debug) console.warn('[anim] animazione inesistente:', id)
       return false
@@ -329,12 +400,9 @@ export function createAnimationRuntime(ctx) {
       // ciò che descrive la sequenza in corso, non i suoi effetti.
       pendingTriggers.clear()
       // Un rilascio in corso è incompatibile col concatenamento: sta
-      // riportando all'opaco proprio i materiali su cui questa animazione
-      // vuole continuare a lavorare. Lo si chiude subito.
-      if (release) {
-        release.restore.finish()
-        release = null
-      }
+      // riportando all'opaco — e alla posa di riposo — proprio ciò su cui
+      // questa animazione vuole continuare a lavorare. Lo si chiude subito.
+      finishRelease()
       pending = null
     } else {
       // Un rilascio già in corso È lo smontaggio: `stop()` lo troncherebbe di
@@ -383,7 +451,7 @@ export function createAnimationRuntime(ctx) {
 
   /** Prerequisito soddisfatto? Solo quello DIRETTO: la catena si fa valere da sé. */
   const isUnlocked = (id) => {
-    const a = ctx.getAnimations()?.items?.find((x) => x.id === id)
+    const a = findAnimation(ctx.getAnimations()?.items, id)
     if (!a?.requires) return true
     return completed.has(a.requires)
   }
@@ -422,7 +490,7 @@ export function createAnimationRuntime(ctx) {
   // quella richiesta: il chip dell'HUD deve accendersi al clic, non alla fine
   // della dissolvenza di uscita.
   const pendingAnim = () =>
-    pending ? ctx.getAnimations()?.items?.find((a) => a.id === pending.id) ?? null : null
+    pending ? findAnimation(ctx.getAnimations()?.items, pending.id) : null
 
   const getState = () => {
     const p = pendingAnim()
@@ -458,6 +526,19 @@ export function createAnimationRuntime(ctx) {
   /** Opzione richiesta dal chiamante per una variante, se l'ha indicata. */
   const variantTargetFor = (variantId) => variantTargets?.[variantId] ?? null
 
+  /**
+   * Primo intento di swap passato al play, VARIANTE COMPRESA. Serve allo step
+   * `setVariant` che lascia vuoto anche `variantId`: è ciò che rende una sola
+   * animazione (in particolare quella integrata) buona per qualunque variante,
+   * invece di doverne autorare una per ciascuna.
+   */
+  const firstVariantTarget = () => {
+    for (const [variantId, optionId] of Object.entries(variantTargets ?? {})) {
+      if (optionId) return { variantId, optionId }
+    }
+    return null
+  }
+
   return {
     tick,
     play,
@@ -467,6 +548,7 @@ export function createAnimationRuntime(ctx) {
     getState,
     currentId,
     variantTargetFor,
+    firstVariantTarget,
     isUnlocked,
     resetProgress,
   }

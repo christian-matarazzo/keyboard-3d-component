@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import styles from './Hud.module.css'
 import { POSE_HUD_LABEL } from './poseGraph'
 import { DEFAULT_MODEL_URL } from './KeyboardModel'
+import { BUILTIN_VARIANT_SWAP_ID } from './animation/animationSchema'
 
 /**
  * HUD di prodotto — l'overlay grafico consegnato dal cliente (Dither, screen
@@ -206,23 +207,39 @@ export default function Hud({
   // sarebbe rumore.
   const configMode = appMode === 'config'
 
-  // Commuta una variante di modello. Se per quella variante è stata autorata
-  // un'animazione di swap la si lancia (sarà il suo step `setVariant` a fare
-  // l'incrocio in dissolvenza); altrimenti si scambia di scatto, così una
-  // variante nuova è utilizzabile subito, prima ancora di averle disegnato
-  // un'animazione.
-  const chooseVariant = (variantId, optionId) => {
+  // Fa RUOTARE una variante di modello: dall'opzione corrente alla successiva,
+  // e dall'ultima si torna alla prima. Un solo comando invece di un pulsante
+  // per opzione — con due opzioni è un interruttore, con più di due è un giro.
+  //
+  // Lo scambio passa SEMPRE da un'animazione, mai da uno scatto: se per quella
+  // variante ne è stata autorata una (binding nell'editor) si lancia quella,
+  // altrimenti l'integrata (`BUILTIN_VARIANT_SWAP_ID`, un incrocio morbido in
+  // dissolvenza — vedi animationSchema.js). Lo scatto resta solo come rete di
+  // sicurezza per quando il runtime non c'è ancora o l'id non si risolve.
+  const cycleVariant = (variant) => {
     const api = poseApi.current
-    if (!api || variantSelection[variantId] === optionId) return
-    const animId = api.variantSwapAnimation?.(variantId)
-    if (animId && (animations?.items ?? []).some((a) => a.id === animId)) {
-      // L'intento va passato al runtime: lo step `setVariant` dell'animazione
-      // lascia l'opzione vuota e la prende da qui, così funziona in entrambi
-      // i versi.
-      api.playAnimation?.(animId, { variantTarget: { [variantId]: optionId } })
-    } else {
-      api.setVariant?.(variantId, optionId)
-    }
+    const options = variant?.options ?? []
+    if (!api || options.length < 2) return
+    // `Math.max(i, 0)` come nel render: una selezione irriconoscibile (non
+    // dovrebbe capitare, `normalizeVariantSelection` la garantisce) si legge
+    // come la prima opzione in entrambi i posti, così il titolo "Passa a …"
+    // non promette qualcosa di diverso da ciò che il clic fa.
+    const i = options.findIndex((o) => o.id === variantSelection[variant.id])
+    const next = options[(Math.max(i, 0) + 1) % options.length]
+    if (!next || next.id === variantSelection[variant.id]) return
+
+    const authored = api.variantSwapAnimation?.(variant.id)
+    const animId =
+      authored && (animations?.items ?? []).some((a) => a.id === authored)
+        ? authored
+        : BUILTIN_VARIANT_SWAP_ID
+    // L'intento va passato al runtime: lo step `setVariant` lascia vuoti
+    // variante e opzione e li prende da qui, così una sola animazione copre
+    // tutti i versi (ed è ciò che rende generica quella integrata).
+    const played = api.playAnimation?.(animId, {
+      variantTarget: { [variant.id]: next.id },
+    })
+    if (!played) api.setVariant?.(variant.id, next.id)
   }
 
   return (
@@ -265,42 +282,67 @@ export default function Hud({
       {configMode && (
       <>
       {/* ── Varianti di modello (il "layout") ──────────────────────────────
-          Un gruppo di pulsanti per variante (layout ISO/ANSI oggi, in futuro
-          il rialzo o altro): l'elenco viene dalla prop `meshVariants`, quindi
-          aggiungerne una non richiede toccare questo file. La scelta è
-          ricordata per la sessione della scheda ed è ciò che decide quali mesh
-          alternative del GLB sono accese — vedi materials/meshVariants.js. */}
+          UN comando per variante (layout ISO/ANSI oggi, in futuro il rialzo o
+          altro), non un pulsante per opzione: mostra quella accesa e a ogni
+          clic passa alla successiva, tornando alla prima dopo l'ultima. Con
+          due opzioni è un interruttore, con più di due è un giro — e il
+          comando resta uno solo comunque, il che è il motivo per cui è fatto
+          così: la pulsantiera non cresce con le opzioni. Quando ce n'è più di
+          due si mostra anche a che punto del giro si è.
+          L'elenco viene dalla prop `meshVariants`, quindi aggiungerne una non
+          richiede toccare questo file. La scelta è ricordata per la sessione
+          della scheda ed è ciò che decide quali mesh alternative del GLB sono
+          accese — vedi materials/meshVariants.js. */}
       {meshVariants.length > 0 && (
         <nav className={styles.variantBar} aria-label="Varianti">
-          {meshVariants.map((variant) => (
-            <span key={variant.id} className={styles.variantGroup} role="group" aria-label={variant.label}>
-              <span className={styles.variantLabel}>{variant.label}</span>
-              {variant.options.map((option) => {
-                const active = variantSelection[variant.id] === option.id
-                // Disattivati in modalità Mesh come il resto della pila, ma per
-                // un motivo tutto loro: un'animazione di swap prenderebbe i
-                // pivot del registry sulle stesse mesh che l'editor tiene
-                // avvolte nel suo, e i due non devono MAI essere vivi insieme.
-                const disabled = locked
-                return (
-                  <button
-                    key={option.id}
-                    type="button"
-                    className={`${styles.variantChip} ${active ? styles.variantChipActive : ''} ${disabled ? styles.variantChipDisabled : ''}`}
-                    aria-pressed={active}
-                    aria-disabled={disabled || undefined}
-                    disabled={disabled}
-                    onClick={() => {
-                      if (disabled) return
-                      chooseVariant(variant.id, option.id)
-                    }}
-                  >
-                    {option.label}
-                  </button>
-                )
-              })}
-            </span>
-          ))}
+          {meshVariants.map((variant) => {
+            const options = variant.options ?? []
+            if (options.length === 0) return null
+            const i = options.findIndex((o) => o.id === variantSelection[variant.id])
+            const current = options[i] ?? options[0]
+            const next = options[(Math.max(i, 0) + 1) % options.length]
+            // Una variante con una sola opzione non ha nulla da ruotare: resta
+            // a video come lettura di stato, ma non è un comando.
+            // Spento anche in modalità Mesh come il resto della pila, per un
+            // motivo tutto suo: l'animazione di swap prenderebbe i pivot del
+            // registry sulle stesse mesh che l'editor tiene avvolte nel suo, e
+            // i due non devono MAI essere vivi insieme.
+            const single = options.length < 2
+            const disabled = locked || single
+            return (
+              <span key={variant.id} className={styles.variantGroup} role="group" aria-label={variant.label}>
+                <span className={styles.variantLabel}>{variant.label}</span>
+                <button
+                  type="button"
+                  className={`${styles.variantCycle} ${disabled ? styles.variantChipDisabled : ''}`}
+                  aria-disabled={disabled || undefined}
+                  disabled={disabled}
+                  aria-label={
+                    single
+                      ? `${variant.label}: ${current.label}`
+                      : `${variant.label}: ${current.label}. Passa a ${next.label}`
+                  }
+                  title={single ? undefined : `Passa a ${next.label}`}
+                  onClick={() => {
+                    if (disabled) return
+                    cycleVariant(variant)
+                  }}
+                >
+                  <span>{current.label}</span>
+                  {options.length > 2 && (
+                    <span className={styles.variantCount} aria-hidden="true">
+                      {Math.max(i, 0) + 1}/{options.length}
+                    </span>
+                  )}
+                  {!single && (
+                    <span className={styles.variantNext} aria-hidden="true">
+                      ↻
+                    </span>
+                  )}
+                </button>
+              </span>
+            )
+          })}
         </nav>
       )}
 

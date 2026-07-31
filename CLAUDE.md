@@ -118,7 +118,7 @@ subtree and the DOM overlays, so it travels as an ordinary prop — only the
   arrow keys) and the HUD is reduced to lockup, telemetry, footer and the one
   `Configura` button. No pager, no chips.
 - **`config`** is the opposite: drag/arrow-nav is **off** and everything is
-  driven from buttons — the variant chips and the **animation chips**. This is
+  driven from buttons — the variant cycler and the **animation chips**. This is
   the answer to "authored animations must be triggered in production by
   dedicated buttons": with the gestures suspended there can't be two writers on
   the pose/zoom targets while a sequence runs.
@@ -417,7 +417,7 @@ KeyboardComposer.jsx        DOM shell: canvas fade-in, Leva panel host (DebugPan
 │                              null, owns the opacity/pivot registries, publishes
 │                              play/stop/state onto apiRef (own useGLTF, shared cache)
 ├─ Hud.jsx                    DOM overlay outside the canvas: logo, telemetry,
-│                              variant chips, animation chips + the wait-for-trigger
+│                              variant cycler, animation chips + the wait-for-trigger
 │                              chip, and the idle⇄config button. No pose pager, no
 │                              focus chips — both removed
 └─ AnimationEditor.jsx        DOM overlay outside the canvas: block editor + JSON
@@ -434,7 +434,8 @@ animation/                     (no React except the two components above)
 ├─ easings.js                  named curves for duration-driven steps
 ├─ opacityRegistry.js          runtime-only opacity ownership (fast path + clone-on-write)
 ├─ pivot.js                    wrapMeshInPivot / wrapGroupInPivot (shared with MeshController)
-└─ pivotRegistry.js            refcounted pivots, composed channels, restore-not-bake unwind
+└─ pivotRegistry.js            refcounted pivots, composed channels, restore-not-bake
+                                unwind, ripristino graduale della posa (beginRestoreAll)
 ```
 
 `Hud.jsx`/`AnimationEditor.jsx` (DOM) and the pose/lighting/animation logic
@@ -823,9 +824,9 @@ deliberately treated as opposites.**
   `variants.selection` is **ignored, not migrated**.
 - The **swap bindings** (variant → animation id) *are* authored configuration
   and do ship in the JSON, so `window.__STATE_VARIANTS` now carries only
-  `{ swapAnimations }`. Without them production would swap instantly instead of
-  playing the authored animation, since `meshVariants.js`'s own `swapAnimation`
-  field is `null` by default.
+  `{ swapAnimations }`. ⚠️ An **absent** binding no longer means "swap
+  instantly": it means the **built-in** swap animation (see "The one control"
+  below), so the binding is only ever "mine instead of the stock one".
 
 If you ever put the selection back, put the session-choice-wins rule back with
 it — that pairing is the whole reason the old code looked the way it did.
@@ -848,10 +849,16 @@ visibility.
 `duration`. ⚠️ It breaks the teardown symmetry every other action obeys, and
 deliberately: **`stop()` does not revert the choice.** Opacity and transforms
 always go back; a variant selection is *user state*, so stopping a swap
-mid-flight must leave the layout the user asked for. Its `optionId` param
-left **empty** means "whichever option the caller requested" — the HUD passes
-`playAnimation(id, { variantTarget })`, which is what lets one authored swap
-animation serve **both** directions instead of a hard-wired one.
+mid-flight must leave the layout the user asked for. **Both** its `variantId`
+and `optionId` params left **empty** mean "whatever the caller asked for" — the
+HUD passes `playAnimation(id, { variantTarget })`, read back through
+`runtime.firstVariantTarget()` / `variantTargetFor(id)`. Empty `optionId` is
+what lets one authored swap serve **every** direction of a variant instead of a
+hard-wired one; empty `variantId` on top of it makes the animation agnostic of
+*which* variant is rotating, which is exactly how the built-in one can exist at
+all without knowing about ISO/ANSI. A step that hard-wires `optionId` covers one
+direction only and is a mistake on a cycling control — `AnimationEditor` warns
+when a bound swap animation does it.
 
 ⚠️ **`setVariant` is also the only action whose `restart()` must re-run
 `start()`.** Every other persistent action holds its materials/pivots until
@@ -863,15 +870,46 @@ old instance: released handles, previous direction, no hold. Caught in the
 browser: the **second** swap silently didn't happen and left the outgoing meshes
 at `opacity 0` while hidden — i.e. invisible even once switched back on.
 
-**The HUD toggle** (the top chip row, above the animation chips) plays the
-variant's bound swap animation if there is one, and otherwise swaps instantly —
-so a newly declared variant is usable immediately, before you have authored
-anything for it. The binding (variant → animation id) is edited in
-`AnimationEditor` under "swap delle varianti" and ships in the same JSON. Like
-the animation chips, these buttons **disable themselves in
-`editMode 'meshes'`**, but for a reason of their own: a swap animation would
-have `pivotRegistry` acquire pivots on the very meshes `MeshController` is
-holding wrapped in its own, and those two must never be live together.
+**The one control — the HUD does NOT show a button per option.** The top chip
+row carries **one** control per variant (`.variantCycle`): it reads out the
+option currently on and each click **rotates to the next**, wrapping after the
+last. With two options that is a toggle; with more than two it is a cycle, and
+the control count stays 1 either way — which is the whole point, the buttonry
+doesn't grow with the options. Past two, a `n/N` counter appears so the position
+in the cycle is legible. A variant with a single option renders as a read-out
+and is inert. ⚠️ The per-option chips (`.variantChip`/`.variantChipActive`,
+`chooseVariant`) were **removed**, not hidden — don't reintroduce a "pick this
+exact option" surface; an authored animation's `setVariant` step is where a
+specific option is named.
+
+**The swap is always an animation, never a snap.** The control plays the
+variant's bound animation if there is one, and otherwise the **built-in** one
+(`BUILTIN_VARIANT_SWAP_ID`, `'__swapDefault'`, in `animation/animationSchema.js`)
+— a soft diagonal cross-fade, `startFrom: 'keep'`, 0.75 s `easeInOutCubic`, the
+incoming option entering from upper-left while the outgoing leaves upper-right.
+So a newly declared variant is pleasant immediately, before anything is authored
+for it. The direct `setVariant()` call survives only as a **fallback** for when
+`playAnimation` isn't on the bridge yet (returns falsy).
+
+⚠️ **Built-in animations are a mechanism, not a special case in the HUD**:
+`BUILTIN_ANIMATIONS` is a normalized list living next to the schema, and the
+runtime resolves ids through `findAnimation(items, id)` — authored first,
+built-in second, so an authored id of the same name always wins. Anything that
+needs a "default behaviour that would otherwise be an instant scene change"
+belongs there, so that authored and default go through the *same* path
+(`setVariant`, the same cross-fade, the same `startFrom`/`stop()` semantics) and
+binding an animation changes only *which id gets played*. They are `hidden` and
+never enter the `animations` prop, so they get no chip. Accepted nuance: while a
+built-in plays it *is* the current animation, so `animationState().id` briefly
+stops matching any chip (the previously active one goes dark for the duration);
+`startFrom: 'keep'` means nothing in the scene is torn down, only the label.
+
+The binding (variant → animation id) is edited in `AnimationEditor` under "swap
+delle varianti" and ships in the same JSON. Like the animation chips, this
+button **disables itself in `editMode 'meshes'`**, but for a reason of its own: a
+swap animation would have `pivotRegistry` acquire pivots on the very meshes
+`MeshController` is holding wrapped in its own, and those two must never be live
+together.
 
 ### Lighting (`LightRig.jsx`)
 
@@ -1421,16 +1459,42 @@ the previous animation's live instances. Without it those keep running with
 nobody left to stop them. Calling `stop()` from inside `advanceWave()` is safe:
 `tick`'s loop over `instances` has already finished by then.
 
-**Teardown is soft on opacity.** Releasing the handles restores every material
-to its snapshot **in one frame**, which is what made switching from one
-animation to another flash the isolate back to opaque. `stop()` now opens a
-**release phase**: `beginRestoreAll()` is taken *before* the per-action
-teardowns (while the materials are still owned), those teardowns are told
-`{ keepOpacity: true }` so `setOpacity`/`clearFocus` **skip their own release**,
-and the runtime interpolates to the snapshot over `app.releaseDuration` with
-`app.releaseEasing`, calling `finish()` — the only place `transparent`/
-`depthWrite` come back and clones are disposed — at the end. Consequences worth
-knowing:
+**Teardown is soft, on two rails.** Releasing the handles restores every
+material to its snapshot — and every moved mesh to its place — **in one frame**,
+which is what made switching from one animation to another flash the isolate
+back to opaque and teleport an explode. `stop()` now opens a **release phase**
+with one rail per registry: `beginRestoreAll()` is taken *before* the per-action
+teardowns (while materials and pivots are still owned), those teardowns are told
+`{ keepOpacity, keepTransforms }` so they **skip their own release**, and the
+runtime interpolates each rail to its snapshot.
+
+| rail | interpolates | knobs | closed by |
+| --- | --- | --- | --- |
+| opacity | material opacity → acquire snapshot | `app.releaseDuration` / `releaseEasing` | `finish()` — the only place `transparent`/`depthWrite` come back and clones are disposed |
+| transforms | each pivot's composed pose → its rest pose | `app.releaseTransforms` (on/off) + `releaseTransformsDuration` / `releaseTransformsEasing` | `finish()` clears the channels; `ctx.pivots.releaseAll()` then does the restore-not-bake unwind |
+
+The rails share one clock but keep **their own duration and curve** — putting an
+explode back wants more room than a fade, and forcing one duration meant tuning
+one and suffering the other. The phase ends when the slowest is done. Turning
+`releaseTransforms` off restores the historic snap, which is why it exists.
+
+⚠️ **The transform rail does NOT release the handles when it finishes** — it
+zeroes the channels and leaves the pivots mounted. That is what makes a `keep`
+play after a `clearFocus` restore able to move the same meshes again (verified:
+the chained step re-offsets to the same 0.28872). Releasing there would leave
+live instances holding dead handles, writing into orphan channels and moving
+nothing. The unwind is the *runtime's* job, at the end of the phase.
+
+⚠️ **`handle.restoring` freezes `compose()` for the duration of a restore**, and
+it is load-bearing: a `spinGroup` is still live and still writing its channel
+every frame while the scene comes back. Without the freeze the spin wins and the
+return is invisible (verified: with the freeze the rotors' world angle falls
+152.76° → 0 with **zero** frames going back up). The price, accepted: a
+transform step *starting* during a restore has no effect and loses its channel —
+asking for "put everything back" and "move this" at once is a contradiction, not
+a use case.
+
+Other consequences worth knowing:
 - `tick()` advances the release **even when `state === 'idle'`**; that is the
   one thing that outlives the sequencer.
 - ⚠️ a `play()` that resets is **queued** until the release completes
@@ -1439,11 +1503,11 @@ knowing:
   That wait *is* the transition between two animations. `getState()` reports
   `state: 'releasing'` with the **pending** id, so the HUD chip lights on the
   click rather than at the end of the fade.
-- pivots and variants stay **synchronous**: they are hierarchy ownership, not a
-  value to interpolate. `setVariant` always closes its own cross-fade
-  (`keepOpacity` doesn't apply to it) — hence `beginRestoreAll().lerp` skips
-  targets that are no longer owned, and `remaining` lets `stop()` decide there
-  is nothing left to fade.
+- **variants** stay **synchronous**: a layout choice is user state, not a value
+  to interpolate. `setVariant` always closes its own cross-fade (neither
+  `keepOpacity` nor `keepTransforms` applies to it) — hence both
+  `beginRestoreAll().lerp`s skip targets that are no longer owned, and
+  `remaining` lets `stop()` decide there is nothing left to bring back.
 - `stop({ soft: false })` is the escape hatch, and both callers need it:
   entering `editMode 'meshes'` (whose opacity slider writes the same materials)
   and director unmount.
@@ -1476,8 +1540,9 @@ animation that resets.
 Note what `restoreOnStop` does and doesn't cover: it gates **only the camera
 focus release**. Opacity and transforms are *always* restored on `stop()`,
 because their handles have to go back to the registries — leaving them would
-leak owned materials and orphan pivots (opacity now gets there over
-`releaseDuration` instead of instantly, but it always gets there). If the goal is "don't undo the previous
+leak owned materials and orphan pivots (both now get there over their own
+release rail — `releaseDuration`, `releaseTransformsDuration` — instead of
+instantly, but they always get there). If the goal is "don't undo the previous
 animation", the control to reach for is `startFrom`, not `restoreOnStop`; the
 editor labels them accordingly ("al play…" vs "stop rilascia lo zoom").
 
@@ -1595,19 +1660,24 @@ same materials in the same frame.
 
 Shipped set: `goToPose`, `focusGroup`, `clearFocus`, `setOpacity` (fade-in and
 fade-out are the same action with `opacity` 1 or 0), `spinGroup`, `rotateBy`,
-`wobble`, `transformOffset`, `setVariant` (see "Model variants"), `waitTime`,
-`waitTrigger`.
+`wobble`, `bounce`, `transformOffset`, `setVariant` (see "Model variants"),
+`waitTime`, `waitTrigger`.
 
 **`clearFocus` is not just the inverse of `focusGroup`** — it is the full "put
-it back", so it also **restores opacity**, interpolated over its own `duration`
-rather than snapped. Without it, leaving an isolate required a hand-authored
-inverse `setOpacity`, and on *which* selector? The opacity may have been taken
-by several different steps. The restore therefore goes through
-`opacityRegistry.beginRestoreAll()`, the only thing that knows which materials
-are under override and what value each started from — it interpolates toward
-the **snapshot**, not a literal `1`, so a GLB material authored semi-transparent
-isn't silently "fixed". The handles are released only once the interpolation
-completes; releasing earlier would snap. A `restoreOpacity` param turns it off.
+it back", so besides leaving the zoom it brings back the two things an animation
+can have moved away from rest: **opacity** and the **pose of the meshes** it
+translated or rotated. Both interpolate over the step's own `duration` rather
+than snapping. Without them, leaving an isolate or an explode required
+hand-authored inverse steps, and on *which* selector? Opacity and pivots may
+have been taken by several different steps. The restores therefore go through
+`opacityRegistry.beginRestoreAll()` / `pivotRegistry.beginRestoreAll()`, the
+only things that know who is under override and what each started from — the
+opacity one interpolates toward the **snapshot**, not a literal `1`, so a GLB
+material authored semi-transparent isn't silently "fixed". Handles are released
+only once the interpolation completes (for transforms, not even then — see the
+two-rail table above); releasing earlier would snap. `restoreOpacity` and
+`restoreTransforms` turn the two off independently: "back to the whole model"
+with the parts left where they are is a legitimate framing.
 
 ⚠️ **The fade only happens if the opacity handles are still owned when the step
 starts.** `stop()` restores opacity *synchronously* (the materials have to go
@@ -1630,6 +1700,21 @@ constant in seconds; `0` never dies down). `rotateBy` exists as a preset rather
 than as a case of `transformOffset` because a single-axis + angle UI is a very
 different authoring act from a rotation vec3 — and because "show me the other
 side of this part" is a thing you want one control for.
+
+**`bounce` is `wobble` translated** — the same decaying envelope written into
+the channel's *translation* instead of its rotation, with a `mode` picking a
+one-sided (`|sin|`, "salta e ricade") or symmetric (`sin`, spring) profile.
+⚠️ It deliberately has **no `perMesh`**: the channel's centre only enters the
+rotational half of `x ↦ c + T + Q·(x − c)`, so with `quat` at identity the
+per-mesh and rigid-group centres give bit-identical results — a parameter that
+changes nothing is worse than an absent one. Use `phasePerMesh`/`alternate` to
+break the unison instead. It also takes a **per-step channel, not
+`OFFSET_CHANNEL`**: it rewrites its translation every frame and would otherwise
+swallow the authored offsets; on separate channels the two simply add ("the
+group sits displaced *and* bounces"). Unlike `wobble` it stops writing once the
+envelope dies (`data.settled`, hence a `restart` that clears it — the runtime
+zeroes `elapsed` on a loop iteration but not `data`); with `decay: 0` that point
+never arrives, which is what that value is for.
 
 **The axis is simply the model's axis** — `'y'` means the model's vertical, no
 parameter, no conversion. That is a property of the pivot being identity-
@@ -1929,6 +2014,13 @@ To re-check this list rather than trusting the paragraph:
 node -e "console.log(Object.keys(require('./public/lightconfig/app-state-config.json')))"
 ```
 
+⚠️ **Built-ins are deliberately outside all of this.** `BUILTIN_ANIMATIONS`
+(today: the default variant swap) is normalized at module load in
+`animationSchema.js`, never enters `animations`/`window.__STATE_ANIMATIONS`, is
+never saved, and is reachable only because the runtime resolves ids through
+`findAnimation` — authored list first. Don't "promote" one into the JSON: that
+would make an id the user could rename or delete out from under the HUD.
+
 `normalizeAnimations(raw)` fills defaults, drops steps with unknown actions
 (with a warn), generates missing ids, dedups animation ids, and rebuilds each
 step's `params` from the action's schema — so a JSON missing a parameter added
@@ -2039,12 +2131,13 @@ Two parameter types get real UI:
 **A "transizioni" block sits next to the variant-swap bindings**, and for the
 same reason: what it edits is not a property of one animation but of how the
 component moves between states — the `config → idle` return animation and the
-release fade's duration/easing. It writes into the `app` section
-(`appConfig`/`onAppConfigChange` props from `KeyboardComposer.jsx`), not into
-`animations`, and it warns when the bound return animation lacks
-`stopOnFinish`. Its sibling knob for the zoom-out lives in Leva
-(`Rotazione → zoom-out (uscita)`), because that one is camera feel and travels
-in `rotation`.
+two release rails: "dissolvenza in uscita" (opacity) and "riposizionamento"
+(the pose of moved meshes, whose checkbox greys out its own duration/easing).
+It writes into the `app` section (`appConfig`/`onAppConfigChange` props from
+`KeyboardComposer.jsx`), not into `animations`, and it warns when the bound
+return animation lacks `stopOnFinish`. The third piece of the same return, the
+zoom-out, has its knob in Leva (`Rotazione → zoom-out (uscita)`) because that
+one is camera feel and travels in `rotation`.
 
 **`↑ importa` / `↓ esporta`** move *only* the `animations` block, as an
 `animations.json` in exactly the shape of the global blob's `animations` key —
@@ -2073,10 +2166,12 @@ when there is existing work to lose.
   sequencer over the thing it replaced, and it is felt while authoring, not in
   production.
 - **Not reversible by construction.** A timeline plays backwards for free; a
-  sequencer doesn't. The way back is either `stopAnimation()`'s teardown
-  (all at once, no easing) or hand-authored inverse steps — which is why
-  `stop()` must stay exhaustive and the restore-not-bake unwind is not
-  negotiable.
+  sequencer doesn't. The way back is either `stopAnimation()`'s teardown or
+  hand-authored inverse steps — which is why `stop()` must stay exhaustive and
+  the restore-not-bake unwind is not negotiable. That teardown is no longer
+  *abrupt* (both rails ease, see "Teardown is soft"), but it is still a
+  **return to rest, not a rewind**: it interpolates straight from wherever the
+  scene is to the snapshot, ignoring the path the animation took to get there.
 - **`LightRig`'s `measureModelBox` will see the spinning rotors.** It
   re-measures every `BOX_REFRESH_FRAMES` and damps the result, so a group whose
   AABB changes shape as it rotates can make the adaptive light box slowly
@@ -2092,7 +2187,7 @@ when there is existing work to lose.
 ### HUD (`Hud.jsx`)
 
 Real, always-mounted product UI (not debug-gated), DOM overlay with
-`pointer-events: none` except the **variant chips**, the **animation chips**
+`pointer-events: none` except the **variant cycler**, the **animation chips**
 and the **app-mode button**.
 
 ⚠️ **The surface is deliberately minimal, and two rows were REMOVED to get
@@ -2113,6 +2208,12 @@ no chips — because in idle there is nothing to configure and an inert button i
 noise; in `config` the button surface appears, and it is the *only* way to
 drive the model, since drag/arrow-nav is suspended there. Everything below
 describes the `config` face unless stated otherwise.
+
+The **variant row** (`.variantBar`) carries one `.variantCycle` control per
+variant — a read-out of the option currently on, which rotates to the next one
+on click and always swaps through an animation (the bound one, else the built-in
+soft cross-fade). Full argument, and what was removed to get there, under "The
+one control" in "Model variants".
 
 The **animation row** (`.animBar`/`.animChip`) is built from the `animations`
 prop, which reaches `Hud.jsx` as ordinary React state from
@@ -2153,7 +2254,7 @@ the `?debug` console now, but it is still the right rung); else leave `config`.
 Its listener is on `window`, not the canvas: clicking a chip takes focus off
 the canvas, so a canvas-scoped listener would never see the key.
 
-The animation chips, the variant chips and the mode button **disable wholesale
+The animation chips, the variant cycler and the mode button **disable wholesale
 while `editMode` is `'meshes'`** — `MeshController`'s pivots and the animation
 registry's pivots must never be live on the same meshes. `Hud.jsx` learns
 `editMode` from the same 150 ms poll it already runs for the active-pose

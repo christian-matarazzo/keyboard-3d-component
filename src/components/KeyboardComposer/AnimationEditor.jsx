@@ -706,8 +706,12 @@ export default function AnimationEditor({
 
           {/* Binding variante → animazione di swap. Sta qui e non fra le
               opzioni dell'animazione perché è una proprietà della VARIANTE:
-              "quando l'utente tocca questo toggle, gioca questa". Finisce nel
-              JSON globale insieme alla selezione di default. */}
+              "quando l'utente ruota questo comando, gioca questa". Finisce nel
+              JSON globale.
+              ⚠️ Vuoto NON vuol dire più "scambio secco": senza binding si gioca
+              l'animazione INTEGRATA (un incrocio morbido in dissolvenza, vedi
+              BUILTIN_ANIMATIONS in animation/animationSchema.js). Scegliere
+              qui è quindi solo "la mia al posto di quella di serie". */}
           {meshVariants.length > 0 && onVariantAnimationsChange && (
             <>
               <span className={styles.sectionLabel}>swap delle varianti</span>
@@ -721,7 +725,7 @@ export default function AnimationEditor({
                       onVariantAnimationsChange({ ...variantAnimations, [v.id]: e.target.value })
                     }
                   >
-                    <option value="">— scambio immediato —</option>
+                    <option value="">— transizione predefinita —</option>
                     {items.map((a) => (
                       <option key={a.id} value={a.id}>
                         {a.label}
@@ -730,6 +734,19 @@ export default function AnimationEditor({
                   </select>
                 </div>
               ))}
+              {/* Un'animazione di swap con variante e opzione FISSE serve un
+                  verso solo: il comando dell'HUD ruota su tutte le opzioni, e
+                  su quelle non previste non succederebbe nulla. */}
+              {meshVariants.some((v) => {
+                const bound = items.find((a) => a.id === variantAnimations?.[v.id])
+                return bound?.steps?.some((s) => s.action === 'setVariant' && s.params?.optionId)
+              }) && (
+                <span className={styles.warning}>
+                  ⚠ svuota l’opzione negli step «cambia variante»: il comando di
+                  layout ruota fra tutte le opzioni, un’opzione fissa copre un
+                  verso solo
+                </span>
+              )}
             </>
           )}
 
@@ -786,6 +803,45 @@ export default function AnimationEditor({
                   className={`${styles.select} ${styles.grow}`}
                   value={appConfig.releaseEasing ?? 'easeInOutCubic'}
                   onChange={(e) => onAppConfigChange({ releaseEasing: e.target.value })}
+                >
+                  {EASING_NAMES.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {/* Binario gemello del precedente e con la stessa portata: vale
+                  per il passaggio da un'animazione all'altra e per il rientro
+                  secco in idle. Da spento le mesh spostate tornano a posto di
+                  scatto, che è come si comportava prima. */}
+              <div className={styles.header}>
+                <label
+                  className={styles.paramLabel}
+                  title="Riporta gradualmente al loro posto le mesh che un'animazione ha traslato o ruotato"
+                >
+                  <input
+                    type="checkbox"
+                    checked={appConfig.releaseTransforms !== false}
+                    onChange={(e) => onAppConfigChange({ releaseTransforms: e.target.checked })}
+                  />{' '}
+                  riposizionamento
+                </label>
+                <NumberInput
+                  className={`${styles.input} ${styles.numSmall}`}
+                  value={appConfig.releaseTransformsDuration ?? 0.7}
+                  min={0}
+                  step={0.1}
+                  disabled={appConfig.releaseTransforms === false}
+                  onChange={(v) =>
+                    onAppConfigChange({ releaseTransformsDuration: Math.max(0, v) })
+                  }
+                />
+                <select
+                  className={`${styles.select} ${styles.grow}`}
+                  value={appConfig.releaseTransformsEasing ?? 'easeInOutCubic'}
+                  disabled={appConfig.releaseTransforms === false}
+                  onChange={(e) => onAppConfigChange({ releaseTransformsEasing: e.target.value })}
                 >
                   {EASING_NAMES.map((name) => (
                     <option key={name} value={name}>
@@ -1255,6 +1311,9 @@ function ParamField({ schema, value, allParams, meshGroups, meshCatalog, meshVar
   const label = schema.label ?? schema.key
 
   switch (schema.type) {
+    // Vuoto = quella dell'intento passato al play, come per `variantOption`:
+    // uno step che li lascia entrambi vuoti serve qualunque variante in
+    // qualunque verso (è così che è fatta l'animazione di swap integrata).
     case 'variant':
       return (
         <label className={styles.paramLabel}>
@@ -1264,7 +1323,7 @@ function ParamField({ schema, value, allParams, meshGroups, meshCatalog, meshVar
             value={value ?? ''}
             onChange={(e) => onChange(e.target.value)}
           >
-            <option value="">— nessuna —</option>
+            <option value="">↔ quella del comando</option>
             {(meshVariants ?? []).map((v) => (
               <option key={v.id} value={v.id}>
                 {v.label}
@@ -1289,7 +1348,7 @@ function ParamField({ schema, value, allParams, meshGroups, meshCatalog, meshVar
             onChange={(e) => onChange(e.target.value)}
             disabled={!variant}
           >
-            <option value="">↔ quella scelta dal toggle</option>
+            <option value="">↔ quella scelta dal comando</option>
             {(variant?.options ?? []).map((o) => (
               <option key={o.id} value={o.id}>
                 {o.label}

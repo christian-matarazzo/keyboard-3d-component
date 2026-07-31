@@ -37,9 +37,10 @@ export default function AnimationDirector({
   editMode = 'none',
   meshGroups = DEFAULT_MESH_GROUPS,
   meshVariants = DEFAULT_MESH_VARIANTS,
-  // Velocità e curva della dissolvenza di USCITA (lo smontaggio morbido di
-  // `stop()`, vedi animationRuntime.js): `{ duration, easing }`, autorate
-  // nell'editor e salvate nella sezione `app` del JSON.
+  // Tempi del RIENTRO di uscita (lo smontaggio morbido di `stop()`, vedi
+  // animationRuntime.js): `{ duration, easing }` per l'opacità e
+  // `{ transforms, transformsDuration, transformsEasing }` per la posa delle
+  // mesh spostate. Autorati nell'editor e salvati nella sezione `app` del JSON.
   release,
 }) {
   const { scene } = useGLTF(modelUrl, DRACO_PATH)

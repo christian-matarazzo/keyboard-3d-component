@@ -171,6 +171,68 @@ export function normalizeAnimations(raw) {
   return { version: ANIMATIONS_VERSION, items: normalized }
 }
 
+/* ── Animazioni INTEGRATE ───────────────────────────────────────────────────
+   Non stanno nel JSON, non si autorano e non hanno un chip: sono il
+   comportamento di DEFAULT di un comando di prodotto che, senza, dovrebbe
+   cambiare la scena di scatto. Oggi ce n'è una sola, lo scambio di variante.
+
+   Perché un'animazione vera e non un ramo di codice nell'HUD: così il verso
+   morbido e quello autorato passano dallo STESSO percorso — stesso step
+   `setVariant`, stesso crossfade, stessa semantica di `startFrom`/`stop()` —
+   e una volta che si autora un'animazione di swap non cambia nient'altro che
+   quale id si lancia. `findAnimation` le cerca DOPO quelle autorate, quindi un
+   id autorato uguale vince: le integrate non possono coprire il lavoro
+   dell'autore.
+
+   ⚠️ `startFrom: 'keep'`: cambiare layout in mezzo a una configurazione non
+   deve smontare l'inquadratura e l'opacità che ci sono (il chip di layout non
+   è un "ricomincia"). E lo step lascia VUOTI sia `variantId` sia `optionId`:
+   entrambi arrivano dall'intento passato al play (`variantTarget`), che è ciò
+   che rende questa unica animazione buona per qualunque variante e in
+   qualunque verso — vedi `setVariant` in actions.js.
+*/
+export const BUILTIN_VARIANT_SWAP_ID = '__swapDefault'
+
+export const BUILTIN_ANIMATIONS = normalizeAnimations([
+  {
+    id: BUILTIN_VARIANT_SWAP_ID,
+    label: 'Scambio variante (predefinito)',
+    hidden: true,
+    startFrom: 'keep',
+    steps: [
+      {
+        id: 'swap',
+        action: 'setVariant',
+        wait: 'duration',
+        duration: 0.75,
+        easing: 'easeInOutCubic',
+        params: {
+          variantId: '',
+          optionId: '',
+          // Incrocio in diagonale: la nuova opzione scende da sinistra-alto,
+          // la vecchia esce verso destra-alto. Unità LOCALI del GLB (vedi la
+          // nota sugli offset in actions.js): ~30 qui è una frazione visibile
+          // ma non teatrale del corpo tastiera.
+          offsetIn: [-30, 34, 0],
+          offsetOut: [30, 34, 0],
+        },
+      },
+    ],
+  },
+]).items
+
+/**
+ * Cerca un'animazione per id fra quelle AUTORATE e, solo se non c'è, fra le
+ * integrate. L'ordine è il punto: un id autorato ha sempre la precedenza.
+ */
+export function findAnimation(items, id) {
+  return (
+    (items ?? []).find((a) => a.id === id) ??
+    BUILTIN_ANIMATIONS.find((a) => a.id === id) ??
+    null
+  )
+}
+
 /**
  * Ripulisce i prerequisiti di sequenza: un `requires` che punta a se stesso, a
  * un id inesistente o che chiude un ANELLO va tolto, altrimenti l'animazione

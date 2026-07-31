@@ -25,8 +25,11 @@ export const DEFAULT_MESH_VARIANTS = [
     label: 'Layout',
     // Opzione mostrata quando non c'è nulla di salvato né di autorato.
     defaultOption: 'iso',
-    // Id di un'animazione (facoltativo, autorabile): se presente, il toggle
-    // dell'HUD la lancia invece di scambiare di scatto. Vedi Hud.jsx.
+    // Id di un'animazione (facoltativo, autorabile): se presente il comando di
+    // layout dell'HUD lancia QUESTA. Se manca non si scambia di scatto — si
+    // gioca l'animazione integrata (`BUILTIN_VARIANT_SWAP_ID` in
+    // animation/animationSchema.js), un incrocio morbido in dissolvenza. Vedi
+    // Hud.jsx.
     swapAnimation: null,
     options: [
       { id: 'iso', label: 'ISO', nameTokens: ['S05_L_ISO', 'S05_R_ISO'] },

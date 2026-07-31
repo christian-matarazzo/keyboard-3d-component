@@ -99,7 +99,12 @@ const slideHandles = (handles, stepId, v, scale) => {
   }
 }
 
-const releaseHandles = (inst) => {
+const releaseHandles = (inst, opts) => {
+  // Smontaggio morbido, gemello di `keepOpacity`: la posa passa alla fase di
+  // rilascio del runtime, che riporta i pivot a riposo interpolando e li
+  // rilascia a fine corsa. Mollarli qui rimetterebbe ogni mesh al suo posto in
+  // un frame — lo scatto che quella fase esiste per togliere.
+  if (opts?.keepTransforms) return
   const key = inst.data.channelKey ?? inst.step.id
   for (const { h } of inst.data.handles ?? []) {
     h.clear(key)
@@ -165,13 +170,16 @@ export const ACTIONS = {
     inverse: () => ({ action: 'clearFocus', params: { restoreOpacity: false } }),
   },
 
-  // Non è solo l'inverso di focusGroup: è il "torna com'era" completo, quindi
-  // riporta anche l'OPACITÀ dove stava prima che l'animazione la toccasse —
-  // interpolata sulla stessa `duration`, non azzerata di scatto. Senza questo,
-  // uscire da un isolamento richiedeva un `setOpacity` inverso autorato a mano
-  // (e su quale selettore? l'opacità può essere stata presa da più step
-  // diversi). Il ripristino passa dal registry, che è l'unico a sapere quali
-  // materiali sono sotto override e con che valore di partenza.
+  // Non è solo l'inverso di focusGroup: è il "torna com'era" COMPLETO, quindi
+  // oltre a uscire dallo zoom riporta dov'erano le due cose che un'animazione
+  // può aver spostato dal loro stato di riposo — l'OPACITÀ e la POSA delle mesh
+  // (traslazioni e rotazioni) — interpolate sulla stessa `duration`, non
+  // azzerate di scatto. Senza, uscire da un isolamento o da un esploso
+  // richiedeva inversi autorati a mano: e su quale selettore? Opacità e pivot
+  // possono essere stati presi da più step diversi. I due ripristini passano
+  // dai rispettivi registry, gli unici a sapere chi è sotto override e con che
+  // valore di partenza. Entrambi si spengono da un interruttore, perché "torna
+  // all'insieme" con le mesh ferme dove sono è una scelta legittima.
   clearFocus: {
     label: 'Torna all’insieme',
     group: 'camera',
@@ -190,33 +198,54 @@ export const ACTIONS = {
         default: true,
         label: 'Ripristina opacità',
       },
+      {
+        key: 'restoreTransforms',
+        type: 'boolean',
+        default: true,
+        label: 'Rimetti le mesh a posto',
+      },
     ],
     start(inst, ctx) {
       ctx.getApi()?.clearFocus?.()
       if (inst.params.restoreOpacity !== false) {
         inst.data.restore = ctx.opacity.beginRestoreAll()
       }
+      if (inst.params.restoreTransforms !== false) {
+        inst.data.restoreT = ctx.pivots.beginRestoreAll()
+      }
     },
     update(inst) {
-      const r = inst.data.restore
-      if (!r || r.done) return
       const k = progress(inst)
-      r.lerp(k)
-      // Il rilascio (che rimette transparent/depthWrite e smonta i cloni)
-      // avviene solo a fine corsa: farlo prima significherebbe uno scatto.
-      if (k >= 1) r.finish()
+      const r = inst.data.restore
+      if (r && !r.done) {
+        r.lerp(k)
+        // Il rilascio (che rimette transparent/depthWrite e smonta i cloni)
+        // avviene solo a fine corsa: farlo prima significherebbe uno scatto.
+        if (k >= 1) r.finish()
+      }
+      const t = inst.data.restoreT
+      if (t && !t.done) {
+        t.lerp(k)
+        // Stessa regola: a fine corsa i canali vengono azzerati e i pivot
+        // tornano a muoversi. Prima sarebbe uno scatto (e per le azioni ancora
+        // vive, un ritorno immediato alla posa che stavano scrivendo).
+        if (k >= 1) t.finish()
+      }
     },
     isSettled(inst, ctx) {
       const cameraDone = ctx.getApi()?.isFocusSettled?.() ?? true
       const opacityDone = !inst.data.restore || inst.data.restore.done
-      return cameraDone && opacityDone
+      const transformsDone = !inst.data.restoreT || inst.data.restoreT.done
+      return cameraDone && opacityDone && transformsDone
     },
     stop(inst, ctx, opts) {
-      // Con `keepOpacity` il rilascio globale ha già fotografato questi
-      // materiali e li sta interpolando: chiudere qui il ripristino parziale
-      // significherebbe rilasciarli sotto i suoi piedi (e farli scattare).
-      if (opts?.keepOpacity) return
-      inst.data.restore?.finish()
+      // Con `keepOpacity`/`keepTransforms` il rilascio globale ha già
+      // fotografato questi materiali (o questi pivot) e li sta interpolando:
+      // chiudere qui il ripristino parziale significherebbe strapparglieli di
+      // mano a metà strada, cioè far scattare esattamente ciò che entrambe le
+      // fasi esistono per addolcire. I due interruttori sono indipendenti.
+      if (!opts?.keepOpacity) inst.data.restore?.finish()
+      if (!opts?.keepTransforms) inst.data.restoreT?.finish()
     },
     inverse: () => null,
     inverseNote: 'non si sa quale gruppo re-inquadrare',
@@ -311,8 +340,8 @@ export const ACTIONS = {
     // Nessun restart: su un giro di loop la rotazione continua da dov'era
     // invece di scattare a zero.
     restart() {},
-    stop(inst) {
-      releaseHandles(inst)
+    stop(inst, ctx, opts) {
+      releaseHandles(inst, opts)
     },
     inverse: () => null,
     inverseNote:
@@ -364,8 +393,8 @@ export const ACTIONS = {
     restart(inst) {
       inst.data.settled = false
     },
-    stop(inst) {
-      releaseHandles(inst)
+    stop(inst, ctx, opts) {
+      releaseHandles(inst, opts)
     },
     // Angolo opposto. Funziona anche a canali distinti: lo step diretto tiene
     // il suo (fermo, a regime non riscrive più) e questo ne apre uno nuovo —
@@ -416,11 +445,97 @@ export const ACTIONS = {
     // riavvia un'istanza persistente su un giro di loop, ed è esattamente ciò
     // che serve qui — l'inviluppo di smorzamento riparte da capo invece di
     // trovarsi già spento.
-    stop(inst) {
-      releaseHandles(inst)
+    stop(inst, ctx, opts) {
+      releaseHandles(inst, opts)
     },
     inverse: () => null,
     inverseNote: 'l’oscillazione si spegne da sé',
+  },
+
+  // Il fratello TRASLATORIO di wobble: stessa oscillazione smorzata, ma su una
+  // posizione invece che su un angolo. Serve al "il pezzo si posa e rimbalza",
+  // che con una rotazione non si ottiene.
+  //
+  // Due differenze rispetto a wobble, entrambe conseguenze del fatto che qui si
+  // trasla e basta:
+  //
+  // 1. ⚠️ NON c'è `perMesh`, e non è una dimenticanza: il centro di un canale
+  //    conta solo per la parte ROTATORIA del moto rigido (x ↦ c + T + Q·(x−c),
+  //    vedi pivotRegistry.js). Con `quat` all'identità, "ognuna sul proprio
+  //    centro" e "il gruppo come corpo rigido" danno lo stesso identico
+  //    risultato — un parametro che non cambia nulla è peggio che assente.
+  //    Per sfalsare le mesh ci sono `phasePerMesh` e `alternate`.
+  // 2. `amplitude` è in unità LOCALI del GLB, come gli slider Pos di
+  //    MeshController e la `position` di transformOffset (su questo asset il
+  //    fattore verso le unità-scena è ~0.0096: si tara a occhio, non a calcolo).
+  //
+  // `mode` sceglie l'inviluppo: 'rimbalzo' rimane da UN SOLO lato del riposo
+  // (|sin|, cioè il pezzo salta e ricade senza mai sprofondare sotto la propria
+  // sede), 'molla' oscilla simmetricamente attorno ad esso — lo stesso profilo
+  // di wobble, tradotto.
+  bounce: {
+    label: 'Bounce (rimbalzo)',
+    group: 'trasformazioni',
+    persistent: true,
+    defaults: { wait: 'none', duration: 1.2 },
+    params: [
+      { key: 'selector', type: 'selector', default: { kind: 'group', groupId: '' }, label: 'Mesh' },
+      { key: 'axis', type: 'select', options: ['x', 'y', 'z'], default: 'y', label: 'Asse' },
+      { key: 'amplitude', type: 'number', default: 3, min: -100, max: 100, step: 0.05, label: 'Ampiezza (unità locali)' },
+      { key: 'frequency', type: 'number', default: 2.2, min: 0.05, max: 12, step: 0.05, label: 'Frequenza (Hz)' },
+      { key: 'decay', type: 'number', default: 0.9, min: 0, max: 20, step: 0.1, label: 'Smorzamento (s, 0 = mai)' },
+      { key: 'mode', type: 'select', options: ['rimbalzo', 'molla'], default: 'rimbalzo', label: 'Profilo' },
+      // Segno alternato: mesh pari in un verso, dispari nell'altro (il centro
+      // dei canali non c'entra, vedi sopra — qui è puro segno della traslazione).
+      { key: 'alternate', type: 'boolean', default: false, label: 'Segno alternato' },
+      { key: 'phasePerMesh', type: 'number', default: 0, min: 0, max: 360, step: 5, label: 'Sfasamento per mesh°' },
+    ],
+    start(inst, ctx) {
+      // Canale PROPRIO dello step (non OFFSET_CHANNEL): il rimbalzo riscrive la
+      // traslazione a ogni frame, e prendendo il canale condiviso degli offset
+      // autorati se lo mangerebbe. Su canali distinti le due traslazioni si
+      // sommano, che è l'intento ("il gruppo sta spostato E rimbalza").
+      // `perMesh: true` non è una scelta di comportamento (il centro è
+      // indifferente a una traslazione pura, vedi sopra): è solo il ramo che
+      // evita di calcolare il baricentro comune per poi non usarlo.
+      acquireHandles(inst, ctx, { perMesh: true })
+    },
+    update(inst) {
+      // Una volta esaurito l'inviluppo si smette di ricomporre: l'istanza è
+      // persistente (tiene i pivot), quindi il runtime continuerebbe a
+      // ticchettarla per riscrivere all'infinito la stessa traslazione nulla.
+      // Con `decay: 0` non si arriva mai qui, ed è l'intento di quel valore.
+      if (inst.data.settled) return
+      const env = inst.params.decay > 0 ? Math.exp(-inst.elapsed / inst.params.decay) : 1
+      const w = 2 * Math.PI * inst.params.frequency * inst.elapsed
+      const phase = THREE.MathUtils.degToRad(inst.params.phasePerMesh ?? 0)
+      const amp = inst.params.amplitude ?? 0
+      const oneSided = inst.params.mode !== 'molla'
+      const axis = axisOf(inst)
+      // Sotto il millesimo dell'ampiezza il rimbalzo è finito: si scrive lo zero
+      // esatto (non l'ultimo epsilon) e si chiude.
+      const dead = env < 1e-3
+      const handles = inst.data.handles ?? []
+      for (let i = 0; i < handles.length; i++) {
+        const { h, ch, sign } = handles[i]
+        const s = Math.sin(w + i * phase)
+        const d = dead ? 0 : amp * env * sign * (oneSided ? Math.abs(s) : s)
+        ch.translation.copy(axis).multiplyScalar(d)
+        h.compose()
+      }
+      if (dead) inst.data.settled = true
+    },
+    // ⚠️ Serve, a differenza di wobble: su un giro di loop il runtime azzera
+    // `elapsed` (l'inviluppo riparte da capo, ed è quel che vogliamo) ma non
+    // `data`, quindi senza questo un rimbalzo già esaurito resterebbe fermo.
+    restart(inst) {
+      inst.data.settled = false
+    },
+    stop(inst, ctx, opts) {
+      releaseHandles(inst, opts)
+    },
+    inverse: () => null,
+    inverseNote: 'il rimbalzo si spegne da sé',
   },
 
   transformOffset: {
@@ -481,8 +596,8 @@ export const ACTIONS = {
       }))
       inst.data.settled = false
     },
-    stop(inst) {
-      releaseHandles(inst)
+    stop(inst, ctx, opts) {
+      releaseHandles(inst, opts)
     },
     // ⚠️ Il canale degli offset è CONDIVISO (OFFSET_CHANNEL) e si interpola da
     // dove lo si trova: riportarlo a zero è letteralmente "torna alla posa di
@@ -528,18 +643,27 @@ export const ACTIONS = {
     durationDriven: true,
     defaults: { wait: 'duration', duration: 0.5, easing: 'easeInOutCubic' },
     params: [
+      // Anche questo, come `optionId`, può restare vuoto: si prende la variante
+      // dall'intento passato al play. Un'animazione di swap che lascia vuoti
+      // entrambi serve QUALUNQUE variante in QUALUNQUE verso — è esattamente
+      // com'è fatta quella integrata (vedi BUILTIN_ANIMATIONS in
+      // animationSchema.js), che infatti non conosce il layout ISO/ANSI.
       { key: 'variantId', type: 'variant', default: '', label: 'Variante' },
       // Lasciato vuoto = "quella chiesta da chi ha lanciato l'animazione"
-      // (il toggle dell'HUD). È così che una sola animazione di swap serve
-      // entrambi i versi invece di uno solo.
+      // (il controllo di layout dell'HUD). È così che una sola animazione di
+      // swap serve tutti i versi invece di uno solo.
       { key: 'optionId', type: 'variantOption', default: '', label: 'Opzione' },
       { key: 'offsetIn', type: 'vec3', default: [0, 0, 0], min: -200, max: 200, step: 0.5, label: 'Entra da' },
       { key: 'offsetOut', type: 'vec3', default: [0, 0, 0], min: -200, max: 200, step: 0.5, label: 'Esce verso' },
     ],
     start(inst, ctx) {
       const api = ctx.getApi()
-      const { variantId } = inst.params
-      const optionId = inst.params.optionId || ctx.runtime.variantTargetFor(variantId)
+      // Entrambi i parametri possono essere vuoti: in quel caso valgono quelli
+      // dell'intento passato al play (`variantTarget`, dal controllo dell'HUD).
+      const target = ctx.runtime.firstVariantTarget?.() ?? null
+      const variantId = inst.params.variantId || target?.variantId || ''
+      const optionId =
+        inst.params.optionId || (variantId ? ctx.runtime.variantTargetFor(variantId) : null)
       const from = api?.currentVariants?.()?.[variantId]
       if (!variantId || !optionId || from === optionId) {
         inst.data.skip = true

@@ -47,6 +47,8 @@ import { wrapGroupInPivot } from './pivot'
 const _q = new THREE.Quaternion()
 const _t = new THREE.Vector3()
 const _sum = new THREE.Vector3()
+// Orientamento a riposo di un pivot (vedi `acquire`: identity sotto `scene`).
+const IDENTITY = new THREE.Quaternion()
 
 /**
  * Chiave del canale delle TRASLAZIONI/collocazioni autorate, condivisa da tutti
@@ -73,6 +75,14 @@ export function createPivotRegistry(getScene) {
       basePosition: wrap.basePosition,
       refs: 1,
       channels: new Map(), // step.id -> { center, translation, quat }
+      // Handle già restituito: `compose()` scriverebbe su un pivot staccato
+      // dalla scena. Capita davvero — un'azione persistente continua a
+      // ticchettare finché il runtime non la butta via.
+      released: false,
+      // Un ripristino graduale sta pilotando questo pivot: le azioni vive
+      // continuano pure a scrivere nei propri canali, ma non muovono più nulla.
+      // È ciò che impedisce a uno `spinGroup` di combattere col rientro.
+      restoring: false,
 
       /**
        * Canale di una chiave, creato al volo.
@@ -101,6 +111,7 @@ export function createPivotRegistry(getScene) {
       },
 
       compose() {
+        if (this.released || this.restoring) return
         // ⚠️ ROTAZIONI PRIMA, TRASLAZIONI DOPO, e non è un dettaglio: significa
         // "gira su se stessa DOPO essere stata portata fuori", cioè il caso
         // esploso-e-rotante. Componendo invece i canali in blocco nell'ordine di
@@ -131,6 +142,7 @@ export function createPivotRegistry(getScene) {
       release(opts) {
         if (this.refs <= 0) return
         if (--this.refs > 0) return
+        this.released = true
         handles.delete(mesh)
         // Default: RIPRISTINA (non cuoce) — vedi la nota in pivot.js sul perché
         // è non negoziabile per le animazioni.
@@ -168,6 +180,73 @@ export function createPivotRegistry(getScene) {
 
   const acquireAll = (meshes) => (meshes ?? []).map(acquire).filter(Boolean)
 
+  /**
+   * Ripristino GRADUALE della POSA di tutto ciò che è sotto pivot: ogni mesh
+   * traslata o ruotata torna dove stava, interpolando, invece di scattarci.
+   * Gemello di `beginRestoreAll` in opacityRegistry.js, e per la stessa
+   * ragione: rilasciare in un frame riporta tutto al suo posto di scatto, che
+   * è esattamente lo strappo che si vuole togliere passando da un'animazione
+   * all'altra o rientrando in idle.
+   *
+   * ⚠️ Interpola la posa COMPOSTA del pivot, non i canali. I canali restano di
+   * chi li ha aperti — un'azione persistente viva continua a scriverci — ma da
+   * qui in poi non muovono più niente: `restoring` congela `compose()`. Senza
+   * quel congelamento uno `spinGroup` riscriverebbe il pivot ogni frame e il
+   * rientro non si vedrebbe nemmeno. Il prezzo, voluto: uno step di
+   * trasformazione che parte MENTRE un ripristino è in corso non ha effetto e
+   * perde il proprio canale a fine corsa. Chiedere insieme "rimetti tutto a
+   * posto" e "spostami questo" è una contraddizione, non un caso d'uso.
+   *
+   * ⚠️ NON rilascia gli handle: a fine corsa i pivot restano montati, con i
+   * canali azzerati (cioè indistinguibili dalla posa a riposo). Rilasciarli
+   * qui lascerebbe le istanze vive con in mano handle morti, e un replay
+   * scriverebbe in canali orfani senza muovere nulla. Chi vuole anche il
+   * rilascio lo fa dopo, esplicitamente (vedi `stop()` in animationRuntime.js).
+   */
+  const beginRestoreAll = () => {
+    // Solo chi porta davvero un contributo: un pivot a canali vuoti è già a
+    // riposo, e includerlo mentirebbe su `empty`.
+    const targets = [...handles.values()].filter((h) => h.channels.size > 0)
+    const from = targets.map((h) => ({
+      pos: h.pivot.position.clone(),
+      quat: h.pivot.quaternion.clone(),
+    }))
+    for (const h of targets) h.restoring = true
+    let finished = false
+    return {
+      empty: targets.length === 0,
+      get done() {
+        return finished
+      },
+      /** Quanti pivot fotografati sono ANCORA vivi (vedi il gemello opacità). */
+      get remaining() {
+        let n = 0
+        for (const h of targets) if (!h.released) n++
+        return n
+      },
+      lerp(k) {
+        if (finished) return
+        for (let i = 0; i < targets.length; i++) {
+          const h = targets[i]
+          if (h.released) continue // rilasciato nel frattempo: è già tornato a posto
+          h.pivot.position.lerpVectors(from[i].pos, h.basePosition, k)
+          h.pivot.quaternion.slerpQuaternions(from[i].quat, IDENTITY, k)
+        }
+      },
+      finish() {
+        if (finished) return
+        finished = true
+        for (const h of targets) {
+          h.restoring = false
+          h.channels.clear()
+          // Posa a riposo ESATTA, non l'ultimo epsilon dell'interpolazione: a
+          // canali vuoti `compose()` scrive basePosition + identity.
+          if (!h.released) h.compose()
+        }
+      },
+    }
+  }
+
   /** Rete di sicurezza allo smontaggio del director. */
   const releaseAll = () => {
     for (const handle of [...handles.values()]) {
@@ -178,5 +257,5 @@ export function createPivotRegistry(getScene) {
 
   const stats = () => ({ pivots: handles.size, pivotedMeshes: handles.size })
 
-  return { acquire, acquireAll, releaseAll, stats }
+  return { acquire, acquireAll, releaseAll, beginRestoreAll, stats }
 }
