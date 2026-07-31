@@ -62,6 +62,15 @@ export function newAnimation(label = 'Nuova animazione') {
     hidden: false,
     loop: { mode: 'none' },
     restoreOnStop: true,
+    // SEQUENZA: id dell'animazione che deve essere stata ESEGUITA (arrivata a
+    // fine wave) perché questa sia lanciabile. '' = nessun prerequisito.
+    // Una catena `A1 ← A2 ← A3` è tutto il concetto di sequenza: non serve un
+    // contenitore "gruppo ordinato", l'ordine È la catena, e ogni anello
+    // conosce solo il proprio predecessore. Il vincolo è di PRODOTTO — lo fa
+    // valere l'HUD, non il runtime: il ▶ dell'editor e i comandi di console
+    // devono poter lanciare qualunque animazione mentre la si autora (stessa
+    // regola di appMode, vedi CLAUDE.md).
+    requires: '',
     // 'reset' = al play smonta ciò che sta girando; 'keep' = ci si concatena
     // sopra (vedi `play` in animationRuntime.js).
     startFrom: 'reset',
@@ -125,6 +134,10 @@ function normalizeAnimation(raw) {
     restoreOnStop: raw.restoreOnStop !== false,
     startFrom: raw.startFrom === 'keep' ? 'keep' : 'reset',
     stopOnFinish: raw.stopOnFinish === true,
+    // Validato dopo, in normalizeAnimations: qui l'elenco completo non c'è
+    // ancora, e un prerequisito che punta a un id inesistente o a un ciclo
+    // renderebbe l'animazione impossibile da lanciare per sempre.
+    requires: typeof raw.requires === 'string' ? raw.requires : '',
     // ⚠️ Niente `interruptOn`: c'era una chiave così, mai letta da nessuno, che
     // prometteva "un input dell'utente interrompe la sequenza". È l'esatto
     // contrario della regola vigente — un'animazione non viene interrotta, si
@@ -154,7 +167,69 @@ export function normalizeAnimations(raw) {
     seen.add(anim.id)
     normalized.push(anim)
   }
+  sanitizeRequires(normalized)
   return { version: ANIMATIONS_VERSION, items: normalized }
+}
+
+/**
+ * Ripulisce i prerequisiti di sequenza: un `requires` che punta a se stesso, a
+ * un id inesistente o che chiude un ANELLO va tolto, altrimenti l'animazione
+ * resta bloccata per sempre — nessuna delle due potrebbe mai essere eseguita
+ * per prima. Si spezza l'arco che chiude il ciclo, non l'intera catena.
+ */
+function sanitizeRequires(items) {
+  const byId = new Map(items.map((a) => [a.id, a]))
+  for (const a of items) {
+    if (!a.requires) continue
+    if (a.requires === a.id || !byId.has(a.requires)) {
+      a.requires = ''
+      continue
+    }
+    const chain = new Set([a.id])
+    let cur = byId.get(a.requires)
+    while (cur) {
+      if (chain.has(cur.id)) {
+        console.warn('[anim] prerequisito ciclico rimosso da', a.id)
+        a.requires = ''
+        break
+      }
+      chain.add(cur.id)
+      cur = cur.requires ? byId.get(cur.requires) : null
+    }
+  }
+}
+
+/**
+ * Vero se `candidate` può fare da prerequisito ad `anim` senza chiudere un
+ * ciclo — cioè se `anim` non è già, direttamente o no, un suo antenato. Serve
+ * all'editor per non offrire nemmeno la scelta sbagliata.
+ */
+export function canRequire(items, animId, candidateId) {
+  if (!candidateId || candidateId === animId) return false
+  const byId = new Map((items ?? []).map((a) => [a.id, a]))
+  let cur = byId.get(candidateId)
+  const seen = new Set()
+  while (cur) {
+    if (cur.id === animId) return false
+    if (seen.has(cur.id)) return false
+    seen.add(cur.id)
+    cur = cur.requires ? byId.get(cur.requires) : null
+  }
+  return true
+}
+
+/** La catena di prerequisiti che porta ad `anim`, dal primo anello a lei. */
+export function requireChain(items, animId) {
+  const byId = new Map((items ?? []).map((a) => [a.id, a]))
+  const chain = []
+  let cur = byId.get(animId)
+  const seen = new Set()
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id)
+    chain.unshift(cur)
+    cur = cur.requires ? byId.get(cur.requires) : null
+  }
+  return chain
 }
 
 /**
@@ -173,4 +248,24 @@ export function buildWaves(animation) {
     else waves.push([step])
   }
   return waves
+}
+
+/**
+ * Stessa partizione, ma su TUTTI gli step, disabilitati compresi. È la vista
+ * dell'editor — dove un gruppo di azioni sincronizzate è una scatola che si
+ * apre e si chiude — e dell'inversione, che deve rimontare i gruppi al
+ * contrario senza perdere per strada ciò che è momentaneamente spento.
+ *
+ * ⚠️ Non coincide sempre con `buildWaves`: se la capofila di un gruppo è
+ * disabilitata, a runtime è il primo step abilitato che apre la wave. Per
+ * questo il numero di wave mostrato su ogni scheda continua ad arrivare da
+ * `buildWaves`, non da qui.
+ */
+export function buildStepGroups(steps = []) {
+  const groups = []
+  for (const step of steps) {
+    if (step.parallel && groups.length > 0) groups[groups.length - 1].push(step)
+    else groups.push([step])
+  }
+  return groups
 }

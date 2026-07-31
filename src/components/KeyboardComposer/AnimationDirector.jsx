@@ -97,6 +97,11 @@ export default function AnimationDirector({
       currentAnimation: () => runtime.currentId(),
       animationState: () => runtime.getState(),
       triggerAnimation: (name) => runtime.trigger(name),
+      // Sequenze: prerequisito soddisfatto? e azzeramento dell'avanzamento,
+      // che chiama il cambio di modalità di prodotto (vedi
+      // KeyboardComposer.jsx). Il vincolo lo fa valere l'HUD, non `play`.
+      animationUnlocked: (id) => runtime.isUnlocked(id),
+      resetAnimationProgress: () => runtime.resetProgress(),
       // Catalogo delle mesh per il selettore dell'editor, che vive nel DOM
       // fuori dal Canvas e non ha accesso alla scena. Espone il NOME del nodo
       // (ciò che i selettori salvano) accanto alla label dedup di
@@ -114,6 +119,8 @@ export default function AnimationDirector({
       delete apiRef.current.currentAnimation
       delete apiRef.current.animationState
       delete apiRef.current.triggerAnimation
+      delete apiRef.current.animationUnlocked
+      delete apiRef.current.resetAnimationProgress
       delete apiRef.current.meshCatalog
     }
   }, [apiRef])

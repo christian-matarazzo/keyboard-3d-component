@@ -1,9 +1,18 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import styles from './AnimationEditor.module.css'
 import { ACTIONS, ACTION_GROUPS } from './animation/actions'
 import { EASING_NAMES } from './animation/easings'
 import { SELECTOR_KINDS } from './animation/selectors'
-import { buildWaves, newAnimation, newStep, normalizeAnimations } from './animation/animationSchema'
+import {
+  buildStepGroups,
+  buildWaves,
+  canRequire,
+  newAnimation,
+  newStep,
+  normalizeAnimations,
+  requireChain,
+} from './animation/animationSchema'
+import { cloneAnimation, cloneSteps, reverseAnimation } from './animation/animationTransforms'
 import { DEFAULT_MESH_GROUPS } from './materials/meshGroups'
 import { POSE_COORD, POSE_HUD_LABEL } from './poseGraph'
 
@@ -57,6 +66,16 @@ export default function AnimationEditor({
   const [jsonError, setJsonError] = useState(null)
   const [meshCatalog, setMeshCatalog] = useState([])
   const [collapsed, setCollapsed] = useState(false)
+  // Appunti di step: sopravvivono al cambio di animazione (il pannello resta
+  // montato), quindi sono anche il modo di portare un blocco da un'animazione
+  // a un'altra. Non vanno nel JSON: sono uno stato dell'attrezzo, non del dato.
+  const [clipboard, setClipboard] = useState(null)
+  // Gruppi di step sincronizzati chiusi a icona, per chiave del primo step.
+  const [foldedGroups, setFoldedGroups] = useState(() => new Set())
+  // Esito dell'ultima operazione di autorazione (inverso, incolla…): un
+  // inverso generato è un punto di partenza, e ciò che non ha saputo invertire
+  // va detto, non lasciato scoprire alla prima prova.
+  const [notice, setNotice] = useState(null)
 
   const items = animations?.items ?? []
   const current = items.find((a) => a.id === selectedId) ?? items[0] ?? null
@@ -115,6 +134,18 @@ export default function AnimationEditor({
     waves.forEach((wave, i) => wave.forEach((s) => map.set(s.id, i)))
     return map
   }, [waves])
+  // Blocchi VISIVI: la stessa partizione, ma sui soli step così come sono
+  // scritti, disabilitati compresi — è la scatola apribile/chiudibile
+  // dell'editor. Il numero di wave mostrato su ogni scheda continua ad arrivare
+  // da `waveOfStep`, che è la verità del runtime (vedi buildStepGroups).
+  const stepGroups = useMemo(() => buildStepGroups(current?.steps ?? []), [current])
+  // Posizione piatta di ogni step: i comandi ↑/↓ e i duplicati ragionano
+  // sull'indice nella lista, i blocchi no.
+  const indexOfStep = useMemo(() => {
+    const map = new Map()
+    ;(current?.steps ?? []).forEach((s, i) => map.set(s.id, i))
+    return map
+  }, [current])
 
   if (!DEBUG || editMode !== 'anim') return null
 
@@ -153,6 +184,55 @@ export default function AnimationEditor({
     patchStep(stepId, { ...fresh, id: stepId })
   }
 
+  // ── Copia di step e di blocchi ────────────────────────────────────────────
+  // `cloneSteps` rigenera gli id: sono la chiave delle istanze vive nel
+  // runtime, due step con lo stesso id nella stessa animazione si
+  // ruberebbero l'istanza a vicenda (vedi startStep in animationRuntime.js).
+
+  /** Inserisce delle copie subito DOPO l'ultimo step del blocco indicato. */
+  const insertAfter = (index, steps) => {
+    const next = [...current.steps]
+    next.splice(index + 1, 0, ...steps)
+    patchAnimation({ steps: next })
+  }
+
+  const duplicateStep = (index) => {
+    const src = current.steps[index]
+    // Duplicato in loco: eredita il `parallel` dell'originale, quindi resta
+    // dentro lo stesso blocco sincronizzato invece di aprirne uno nuovo.
+    insertAfter(index, [{ ...cloneSteps([src])[0], parallel: src.parallel === true }])
+  }
+
+  const duplicateGroup = (group) => {
+    const last = current.steps.findIndex((s) => s.id === group[group.length - 1].id)
+    insertAfter(last, cloneSteps(group))
+  }
+
+  const copyToClipboard = (steps, what) => {
+    setClipboard(steps.map((s) => structuredClone(s)))
+    setNotice(`${what} negli appunti (${steps.length} step)`)
+  }
+
+  const pasteClipboard = () => {
+    if (!clipboard?.length) return
+    // In coda: il punto d'inserimento preciso si raggiunge poi con ↑/↓, che è
+    // meno ambiguo di un "incolla qui" per ogni blocco.
+    patchAnimation({ steps: [...current.steps, ...cloneSteps(clipboard)] })
+    setNotice(`${clipboard.length} step incollati in fondo`)
+  }
+
+  const removeGroup = (group) => {
+    if (
+      group.length > 1 &&
+      !window.confirm(`Eliminare tutti i ${group.length} step di questo blocco?`)
+    ) {
+      return
+    }
+    const ids = new Set(group.map((s) => s.id))
+    patchAnimation({ steps: current.steps.filter((s) => !ids.has(s.id)) })
+  }
+
+  // ── Gestione del set ──────────────────────────────────────────────────────
   const createAnimation = () => {
     const anim = newAnimation(`Animazione ${items.length + 1}`)
     commit([...items, anim])
@@ -162,6 +242,44 @@ export default function AnimationEditor({
     if (!current) return
     commit(items.filter((a) => a.id !== current.id))
     setSelectedId(null)
+  }
+
+  /** Inserisce un'animazione derivata subito dopo quella corrente e ci si sposta. */
+  const insertDerived = (anim) => {
+    const at = items.findIndex((a) => a.id === current.id)
+    const next = [...items]
+    next.splice(at + 1, 0, anim)
+    commit(next)
+    setSelectedId(anim.id)
+  }
+
+  const duplicateAnimation = () => {
+    if (!current) return
+    insertDerived(cloneAnimation(current))
+    setNotice('copia creata: ora è quella selezionata')
+  }
+
+  /**
+   * Genera l'animazione che DISFA quella corrente (l'esploso che si ricompone).
+   * La posa di partenza passata al generatore è quella home: è da lì che parte
+   * ogni sessione di configurazione, quindi è l'unica posa di cui si sappia
+   * qualcosa senza eseguire la sequenza — vedi reverseAnimation.
+   */
+  const makeReverse = () => {
+    if (!current) return
+    const { animation, notes } = reverseAnimation(current, {
+      originPose: appConfig?.homePose ?? null,
+    })
+    if (animation.steps.length === 0) {
+      setNotice('nessuno step invertibile: l’inverso sarebbe vuoto')
+      return
+    }
+    insertDerived(animation)
+    setNotice(
+      notes.length > 0
+        ? `inverso creato · da correggere: ${notes.join(' · ')}`
+        : 'inverso creato: parte concatenato e a fine corsa rilascia tutto',
+    )
   }
 
   // ── Import / export del solo blocco animazioni ────────────────────────────
@@ -249,6 +367,12 @@ export default function AnimationEditor({
     (waves[0] ?? []).some(
       (s) => s.action === 'clearFocus' && s.params?.restoreOpacity !== false,
     )
+
+  // Catena di sequenza che porta a questa animazione (lei compresa) e anello
+  // che la precede: servono a mostrarla e a segnalare le due configurazioni che
+  // la renderebbero irraggiungibile.
+  const chain = current ? requireChain(items, current.id) : []
+  const requiredAnim = current?.requires ? items.find((a) => a.id === current.requires) : null
 
   const statusText = () => {
     if (!runState || runState.state === 'idle') return 'fermo'
@@ -343,6 +467,29 @@ export default function AnimationEditor({
           <button type="button" className={styles.btn} onClick={createAnimation}>
             + nuova
           </button>
+          {/* Duplica per farne una variante: stessi step, id nuovi, stesso
+              punto nella catena di sequenza (vedi cloneAnimation). */}
+          <button
+            type="button"
+            className={styles.btn}
+            onClick={duplicateAnimation}
+            disabled={!current}
+            title="Duplica questa animazione per farne una variante"
+          >
+            ⧉ duplica
+          </button>
+          {/* Genera l'animazione che la disfa. Nasce concatenata e con il
+              rilascio a fine sequenza — le due cose senza cui un rientro non
+              funziona (vedi reverseAnimation). */}
+          <button
+            type="button"
+            className={styles.btn}
+            onClick={makeReverse}
+            disabled={!current || current.steps.length === 0}
+            title="Crea l'animazione inversa (es. l'esploso che si ricompone)"
+          >
+            ⇄ inverso
+          </button>
           <button
             type="button"
             className={`${styles.btn} ${styles.btnDanger}`}
@@ -379,6 +526,24 @@ export default function AnimationEditor({
         </div>
       )}
 
+      {/* Esito dell'ultima operazione di autorazione. Non è un errore: un
+          inverso generato PARTE da qui e va rifinito, e ciò che non si è
+          saputo invertire (una rotazione continua, uno scambio di variante)
+          è meglio leggerlo subito che scoprirlo al primo play. */}
+      {!collapsed && notice && (
+        <div className={styles.notice} role="status">
+          <span className={styles.grow}>{notice}</span>
+          <button
+            type="button"
+            className={`${styles.btn} ${styles.btnIcon}`}
+            onClick={() => setNotice(null)}
+            aria-label="Chiudi"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {!collapsed && current && !showJson && (
         <>
           <div className={styles.header}>
@@ -396,31 +561,22 @@ export default function AnimationEditor({
               <option value="count">n volte</option>
             </select>
             {current.loop?.mode === 'count' && (
-              <input
-                type="number"
+              <NumberInput
                 className={`${styles.input} ${styles.numSmall}`}
                 value={current.loop.times ?? 1}
                 min={1}
-                onChange={(e) =>
-                  patchAnimation({
-                    loop: { ...current.loop, times: Number(e.target.value) || 1 },
-                  })
-                }
+                emptyValue={1}
+                onChange={(v) => patchAnimation({ loop: { ...current.loop, times: v } })}
               />
             )}
             {current.loop?.mode !== 'none' && (
               <>
                 <span className={styles.paramLabel}>da wave</span>
-                <input
-                  type="number"
+                <NumberInput
                   className={`${styles.input} ${styles.numSmall}`}
                   value={current.loop.from ?? 0}
                   min={0}
-                  onChange={(e) =>
-                    patchAnimation({
-                      loop: { ...current.loop, from: Number(e.target.value) || 0 },
-                    })
-                  }
+                  onChange={(v) => patchAnimation({ loop: { ...current.loop, from: v } })}
                 />
               </>
             )}
@@ -485,6 +641,68 @@ export default function AnimationEditor({
               a fine sequenza rilascia tutto
             </label>
           </div>
+
+          {/* ── Sequenza ────────────────────────────────────────────────────
+              Un gruppo ordinato di animazioni non è un contenitore a parte: è
+              una CATENA di prerequisiti, dove ogni anello conosce solo il
+              proprio predecessore. A2 dichiara A1 e diventa lanciabile solo
+              quando A1 è stata eseguita (arrivata a fine wave); A3 dichiara
+              A2, e così via. L'avanzamento vive nel runtime e si azzera a ogni
+              cambio di modalità di prodotto — una nuova sessione di
+              configurazione riparte dal primo anello.
+              ⚠️ Il vincolo lo fa rispettare l'HUD, non `play`: qui in ?debug il
+              ▶ lancia sempre, o non si potrebbe provare A3 senza rifare tutto. */}
+          <span className={styles.sectionLabel}>sequenza</span>
+          <div className={styles.header}>
+            <span
+              className={styles.paramLabel}
+              title="Questa animazione resterà spenta nell'HUD finché quella indicata non è stata eseguita"
+            >
+              solo dopo
+            </span>
+            <select
+              className={`${styles.select} ${styles.grow}`}
+              value={current.requires ?? ''}
+              onChange={(e) => patchAnimation({ requires: e.target.value })}
+            >
+              <option value="">— sempre disponibile —</option>
+              {items
+                // Niente anelli: si offre solo chi non discende già da questa.
+                .filter((a) => canRequire(items, current.id, a.id))
+                .map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.label}
+                  </option>
+                ))}
+            </select>
+          </div>
+          {chain.length > 1 && (
+            <div className={styles.chain}>
+              {chain.map((a, i) => (
+                <span key={a.id}>
+                  {i > 0 && <span className={styles.chainArrow}>→</span>}
+                  <span className={a.id === current.id ? styles.chainSelf : undefined}>
+                    {a.label}
+                  </span>
+                </span>
+              ))}
+            </div>
+          )}
+          {/* Due modi di rendere un anello irraggiungibile, entrambi silenziosi
+              a runtime: chi non finisce mai non sblocca nessuno, e chi non ha
+              un chip non può essere lanciato dall'utente. */}
+          {requiredAnim?.loop?.mode === 'forever' && (
+            <span className={styles.warning}>
+              ⚠ «{requiredAnim.label}» è in loop infinito: non arriva mai a fine
+              sequenza, quindi questa non si sbloccherà mai
+            </span>
+          )}
+          {requiredAnim?.hidden === true && (
+            <span className={styles.warning}>
+              ⚠ «{requiredAnim.label}» è nascosta nell’HUD: in produzione non c’è
+              un chip per eseguirla, quindi questa resta bloccata
+            </span>
+          )}
 
           {/* Binding variante → animazione di swap. Sta qui e non fra le
               opzioni dell'animazione perché è una proprietà della VARIANTE:
@@ -557,15 +775,12 @@ export default function AnimationEditor({
                 >
                   dissolvenza in uscita
                 </span>
-                <input
-                  type="number"
+                <NumberInput
                   className={`${styles.input} ${styles.numSmall}`}
                   value={appConfig.releaseDuration ?? 0.5}
                   min={0}
                   step={0.1}
-                  onChange={(e) =>
-                    onAppConfigChange({ releaseDuration: Math.max(0, Number(e.target.value) || 0) })
-                  }
+                  onChange={(v) => onAppConfigChange({ releaseDuration: Math.max(0, v) })}
                 />
                 <select
                   className={`${styles.select} ${styles.grow}`}
@@ -590,33 +805,124 @@ export default function AnimationEditor({
           )}
 
           <span className={styles.sectionLabel}>step</span>
+          {/* Gli step sono raggruppati per BLOCCO SINCRONIZZATO (la wave):
+              quelli in parallelo stanno dentro una scatola che si apre e si
+              chiude, e i comandi che valgono per tutto il blocco — play da
+              qui, duplica, copia, elimina — stanno sulla sua testata invece
+              che ripetuti su ogni scheda. */}
           <div className={styles.steps}>
             {current.steps.length === 0 && (
               <div className={styles.empty}>nessuno step — aggiungine uno qui sotto</div>
             )}
-            {current.steps.map((step, i) => (
-              <StepRow
-                key={step.id}
-                step={step}
-                index={i}
-                total={current.steps.length}
-                waveIndex={waveOfStep.get(step.id)}
-                running={
-                  isCurrentPlaying && waveOfStep.get(step.id) === runState?.waveIndex
-                }
-                meshGroups={meshGroups}
-                meshCatalog={meshCatalog}
-                meshVariants={meshVariants}
-                onPatch={(patch) => patchStep(step.id, patch)}
-                onPatchParam={(key, value) => patchParam(step.id, key, value)}
-                onChangeAction={(key) => changeAction(step.id, key)}
-                onMove={(d) => moveStep(i, d)}
-                onRemove={() => removeStep(step.id)}
-                onPlayFrom={() =>
-                  api?.playAnimation?.(current.id, { fromWave: waveOfStep.get(step.id) ?? 0 })
-                }
-              />
-            ))}
+            {stepGroups.map((group, gi) => {
+              const key = group[0].id
+              const folded = foldedGroups.has(key)
+              // Numero di wave del runtime: quello del primo step ABILITATO
+              // del blocco (una capofila disabilitata non apre nessuna wave).
+              const firstEnabled = group.find((s) => waveOfStep.has(s.id))
+              const wave = firstEnabled ? waveOfStep.get(firstEnabled.id) : null
+              return (
+                <div
+                  key={key}
+                  className={`${styles.wave} ${
+                    isCurrentPlaying && wave != null && wave === runState?.waveIndex
+                      ? styles.waveRunning
+                      : ''
+                  }`}
+                >
+                  <div className={styles.waveHead}>
+                    <button
+                      type="button"
+                      className={`${styles.btn} ${styles.btnIcon}`}
+                      onClick={() =>
+                        setFoldedGroups((prev) => {
+                          const next = new Set(prev)
+                          if (next.has(key)) next.delete(key)
+                          else next.add(key)
+                          return next
+                        })
+                      }
+                      title={folded ? 'Apri il blocco' : 'Comprimi il blocco'}
+                    >
+                      {folded ? '▸' : '▾'}
+                    </button>
+                    <span className={styles.waveTitle}>
+                      {wave != null ? `wave ${wave + 1}` : `blocco ${gi + 1}`}
+                      {group.length > 1 ? ` · ${group.length}` : ''}
+                    </span>
+                    {/* Da chiuso il blocco deve restare riconoscibile: le
+                        etichette delle azioni che contiene sono l'unica cosa
+                        che serve per ritrovarlo. */}
+                    {folded && (
+                      <span className={styles.waveSummary}>
+                        {group.map((s) => ACTIONS[s.action]?.label ?? s.action).join(' + ')}
+                      </span>
+                    )}
+                    <span className={styles.spacer} />
+                    <button
+                      type="button"
+                      className={`${styles.btn} ${styles.btnIcon}`}
+                      onClick={() => api?.playAnimation?.(current.id, { fromWave: wave ?? 0 })}
+                      disabled={wave == null}
+                      title="Play da questa wave"
+                    >
+                      ▶
+                    </button>
+                    <button
+                      type="button"
+                      className={`${styles.btn} ${styles.btnIcon}`}
+                      onClick={() => duplicateGroup(group)}
+                      title="Duplica il blocco qui sotto"
+                    >
+                      ⧉
+                    </button>
+                    <button
+                      type="button"
+                      className={`${styles.btn} ${styles.btnIcon}`}
+                      onClick={() => copyToClipboard(group, 'blocco')}
+                      title="Copia il blocco negli appunti (anche verso un'altra animazione)"
+                    >
+                      ⎘
+                    </button>
+                    <button
+                      type="button"
+                      className={`${styles.btn} ${styles.btnIcon} ${styles.btnDanger}`}
+                      onClick={() => removeGroup(group)}
+                      title="Elimina il blocco"
+                    >
+                      ×
+                    </button>
+                  </div>
+
+                  {!folded &&
+                    group.map((step) => {
+                      const i = indexOfStep.get(step.id)
+                      return (
+                        <StepRow
+                          key={step.id}
+                          step={step}
+                          index={i}
+                          total={current.steps.length}
+                          waveIndex={waveOfStep.get(step.id)}
+                          running={
+                            isCurrentPlaying && waveOfStep.get(step.id) === runState?.waveIndex
+                          }
+                          meshGroups={meshGroups}
+                          meshCatalog={meshCatalog}
+                          meshVariants={meshVariants}
+                          onPatch={(patch) => patchStep(step.id, patch)}
+                          onPatchParam={(key2, value) => patchParam(step.id, key2, value)}
+                          onChangeAction={(key2) => changeAction(step.id, key2)}
+                          onMove={(d) => moveStep(i, d)}
+                          onRemove={() => removeStep(step.id)}
+                          onDuplicate={() => duplicateStep(i)}
+                          onCopy={() => copyToClipboard([step], 'step')}
+                        />
+                      )
+                    })}
+                </div>
+              )
+            })}
           </div>
 
           <div className={styles.header}>
@@ -642,6 +948,22 @@ export default function AnimationEditor({
                 </optgroup>
               ))}
             </select>
+            {/* Gli appunti sopravvivono al cambio di animazione: è così che si
+                porta un blocco da una all'altra. Si incolla in fondo, poi si
+                colloca con ↑/↓. */}
+            <button
+              type="button"
+              className={styles.btn}
+              onClick={pasteClipboard}
+              disabled={!clipboard?.length}
+              title={
+                clipboard?.length
+                  ? `Incolla ${clipboard.length} step in fondo`
+                  : 'Nessuno step negli appunti'
+              }
+            >
+              ⎗ incolla{clipboard?.length ? ` (${clipboard.length})` : ''}
+            </button>
           </div>
         </>
       )}
@@ -681,7 +1003,8 @@ function StepRow({
   onChangeAction,
   onMove,
   onRemove,
-  onPlayFrom,
+  onDuplicate,
+  onCopy,
 }) {
   const action = ACTIONS[step.action]
   if (!action) return null
@@ -759,13 +1082,25 @@ function StepRow({
         >
           ∥
         </button>
+        {/* Duplicato in loco (resta nello stesso blocco sincronizzato) e copia
+            negli appunti, che è quella che attraversa le animazioni. Il play
+            da qui è salito sulla testata del blocco: è un comando di wave, non
+            di singolo step. */}
         <button
           type="button"
           className={`${styles.btn} ${styles.btnIcon}`}
-          onClick={onPlayFrom}
-          title="Play da questa wave"
+          onClick={onDuplicate}
+          title="Duplica questo step"
         >
-          ▶
+          ⧉
+        </button>
+        <button
+          type="button"
+          className={`${styles.btn} ${styles.btnIcon}`}
+          onClick={onCopy}
+          title="Copia questo step negli appunti"
+        >
+          ⎘
         </button>
         <button
           type="button"
@@ -816,13 +1151,12 @@ function StepRow({
         {(step.wait === 'duration' || action.durationDriven) && (
           <label className={styles.paramLabel}>
             durata
-            <input
-              type="number"
+            <NumberInput
               className={`${styles.input} ${styles.numSmall}`}
               value={step.duration}
               min={0}
               step={0.05}
-              onChange={(e) => onPatch({ duration: Number(e.target.value) || 0 })}
+              onChange={(v) => onPatch({ duration: v })}
             />
           </label>
         )}
@@ -846,17 +1180,73 @@ function StepRow({
 
         <label className={styles.paramLabel} title="Ritardo dall’inizio della propria wave">
           ritardo
-          <input
-            type="number"
+          <NumberInput
             className={`${styles.input} ${styles.numSmall}`}
             value={step.delay}
             min={0}
             step={0.05}
-            onChange={(e) => onPatch({ delay: Number(e.target.value) || 0 })}
+            onChange={(v) => onPatch({ delay: v })}
           />
         </label>
       </div>
     </div>
+  )
+}
+
+/* ── Campo numerico ──────────────────────────────────────────────────────── */
+/**
+ * Input numerico che accetta di restare VUOTO mentre lo si scrive.
+ *
+ * Il problema che risolve: il modello tiene numeri, non stringhe, quindi un
+ * campo controllato direttamente sul valore non ha modo di rappresentare
+ * "vuoto" — cancellando tutto ricompariva subito uno `0` da riselezionare
+ * prima di poter digitare. Qui il TESTO è stato locale e il vuoto vale
+ * `emptyValue` (0, oppure `null` per i parametri opzionali, dove significa
+ * "usa il valore autorato altrove"): il campo resta vuoto, il modello legge 0.
+ *
+ * La risincronizzazione dal valore esterno passa dall'updater funzionale e
+ * confronta il testo GIÀ INTERPRETATO: senza, scrivere '' → onChange(0) →
+ * value 0 → riscrittura del testo a "0" sarebbe un ciclo che rimette lo zero
+ * che si è appena tolto.
+ *
+ * ⚠️ Un `type="number"` restituisce '' per gli stati intermedi non validi
+ * ("-", "1."). Il testo diventa quindi vuoto per un attimo mentre si scrive un
+ * negativo o un decimale — ma il browser tiene le proprie cifre nel campo e
+ * React non lo riscrive (il valore del nodo è già ''), quindi a video non si
+ * vede nulla di strano e l'ultimo carattere completa il numero.
+ */
+function NumberInput({ value, onChange, emptyValue = 0, ...rest }) {
+  const [text, setText] = useState(() => (value == null ? '' : String(value)))
+  const parse = (t) => (t.trim() === '' ? emptyValue : Number(t))
+  const parseRef = useRef(parse)
+  parseRef.current = parse
+
+  useEffect(() => {
+    setText((prev) =>
+      parseRef.current(prev) === value ? prev : value == null ? '' : String(value),
+    )
+  }, [value])
+
+  return (
+    <input
+      type="number"
+      value={text}
+      onChange={(e) => {
+        const raw = e.target.value
+        setText(raw)
+        const parsed = parse(raw)
+        // Testo non interpretabile: si tiene a video e NON si tocca il
+        // modello, che resta all'ultimo valore buono.
+        if (parsed === null || Number.isFinite(parsed)) onChange(parsed)
+      }}
+      onBlur={() => {
+        const parsed = parse(text)
+        if (parsed !== null && !Number.isFinite(parsed)) {
+          setText(value == null ? '' : String(value))
+        }
+      }}
+      {...rest}
+    />
   )
 }
 
@@ -921,19 +1311,17 @@ function ParamField({ schema, value, allParams, meshGroups, meshCatalog, meshVar
       return (
         <label className={styles.paramLabel}>
           {label}{' '}
-          <input
-            type="number"
+          <NumberInput
             className={`${styles.input} ${styles.num}`}
-            value={value ?? ''}
+            value={value ?? null}
             min={schema.min}
             max={schema.max}
             step={schema.step ?? 0.01}
             // `optional` = campo vuoto significa "usa il valore autorato nel
             // FocusTuner", non "zero".
+            emptyValue={schema.optional ? null : 0}
             placeholder={schema.optional ? 'auto' : ''}
-            onChange={(e) =>
-              onChange(e.target.value === '' ? (schema.optional ? null : 0) : Number(e.target.value))
-            }
+            onChange={onChange}
           />
         </label>
       )
@@ -1030,17 +1418,16 @@ function ParamField({ schema, value, allParams, meshGroups, meshCatalog, meshVar
           {label}{' '}
           <span className={styles.vec}>
             {[0, 1, 2].map((i) => (
-              <input
+              <NumberInput
                 key={i}
-                type="number"
                 className={`${styles.input} ${styles.numSmall}`}
                 value={v[i] ?? 0}
                 min={schema.min}
                 max={schema.max}
                 step={schema.step ?? 0.05}
-                onChange={(e) => {
+                onChange={(n) => {
                   const next = [...v]
-                  next[i] = Number(e.target.value) || 0
+                  next[i] = n
                   onChange(next)
                 }}
               />

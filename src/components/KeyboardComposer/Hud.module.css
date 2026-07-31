@@ -180,6 +180,14 @@
   composes: chipDisabled;
 }
 
+/* Bloccato dalla SEQUENZA (il suo prerequisito non è ancora stato eseguito),
+   non dalla modalità Mesh: si distingue dallo spento generico col tratteggio,
+   perché è una condizione che l'utente può sciogliere da sé lanciando prima
+   l'animazione che serve. */
+.animChipLocked {
+  border-style: dashed;
+}
+
 /* ── Varianti di modello (il "layout") ─────────────────────────────────────
    Prima riga della pila, sopra le animazioni. A differenza di quelli i
    pulsanti qui sono un SELETTORE (uno acceso sempre, mutuamente esclusivi),

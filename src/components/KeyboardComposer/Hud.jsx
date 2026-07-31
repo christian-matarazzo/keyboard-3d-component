@@ -29,6 +29,12 @@ import { DEFAULT_MODEL_URL } from './KeyboardModel'
  * persistenti) e la si azzera solo lanciandone una autorata `startFrom:
  * 'reset'` o uscendo da config_mode (Escape, o "Chiudi").
  *
+ * ⚠️ Ed è QUI che si fa valere l'ordine delle sequenze: un'animazione che
+ * dichiara un prerequisito (`requires`, vedi animation/animationSchema.js) ha
+ * il chip spento finché quello non è stato eseguito. Il gate è nell'HUD e non
+ * nel runtime per la stessa ragione della modalità di prodotto: in ?debug si
+ * deve poter lanciare qualunque animazione mentre la si autora.
+ *
  * Ponti imperativi (ref popolati dentro il Canvas):
  *  - `poseApi` → `currentPoseKey()` per la vista attiva in telemetria (poll
  *    leggero), `playAnimation`/`animationState` per i chip.
@@ -57,7 +63,15 @@ export default function Hud({
 }) {
   const [poseKey, setPoseKey] = useState(null)
   const [locked, setLocked] = useState(false)
-  const [animState, setAnimState] = useState({ id: null, state: 'idle', waitingTrigger: null })
+  const [animState, setAnimState] = useState({
+    id: null,
+    state: 'idle',
+    waitingTrigger: null,
+    // Sequenze: id delle animazioni già eseguite in questa sessione. Sono
+    // quelle che sbloccano i chip di chi le dichiara come prerequisito.
+    completed: [],
+    completedKey: '',
+  })
   const [fps, setFps] = useState(0)
   const [modelMB, setModelMB] = useState(null)
   const [ramMB, setRamMB] = useState(null)
@@ -84,11 +98,14 @@ export default function Hud({
         id: anim && anim.state !== 'idle' ? anim.id : null,
         state: anim?.state ?? 'idle',
         waitingTrigger: anim?.waitingTrigger ?? null,
+        completed: anim?.completed ?? [],
+        completedKey: anim?.completedKey ?? '',
       }
       setAnimState((prev) =>
         prev.id === nextAnim.id &&
         prev.state === nextAnim.state &&
-        prev.waitingTrigger?.name === nextAnim.waitingTrigger?.name
+        prev.waitingTrigger?.name === nextAnim.waitingTrigger?.name &&
+        prev.completedKey === nextAnim.completedKey
           ? prev
           : nextAnim,
       )
@@ -303,15 +320,24 @@ export default function Hud({
         <nav className={styles.animBar} aria-label="Animazioni">
           {animItems.map((anim) => {
             const active = anim.id === animState.id
-            const disabled = locked
+            // Sequenza: un'animazione con un prerequisito resta spenta finché
+            // quello non è stato ESEGUITO (arrivato a fine wave) in questa
+            // sessione — l'avanzamento si azzera cambiando modalità. Lo stato
+            // arriva dal runtime, unico a sapere quando una sequenza finisce.
+            const before = anim.requires
+              ? (animations?.items ?? []).find((a) => a.id === anim.requires)
+              : null
+            const chainLocked = !!anim.requires && !animState.completed.includes(anim.requires)
+            const disabled = locked || chainLocked
             return (
               <button
                 key={anim.id}
                 type="button"
-                className={`${styles.animChip} ${active ? styles.animChipActive : ''} ${disabled ? styles.animChipDisabled : ''}`}
+                className={`${styles.animChip} ${active ? styles.animChipActive : ''} ${disabled ? styles.animChipDisabled : ''} ${chainLocked && !locked ? styles.animChipLocked : ''}`}
                 aria-pressed={active}
                 aria-disabled={disabled || undefined}
                 disabled={disabled}
+                title={chainLocked ? `Prima: ${before?.label ?? anim.requires}` : undefined}
                 onClick={() => {
                   if (disabled) return
                   // Anche sull'attiva: rilancia. Cosa succede a ciò che sta

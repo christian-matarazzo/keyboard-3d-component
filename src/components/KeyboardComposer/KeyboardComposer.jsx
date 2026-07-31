@@ -289,6 +289,13 @@ export default function KeyboardComposer({
     setAppMode(mode)
 
     const api = poseApi.current
+    // Le sequenze ripartono dal primo anello a ogni cambio di modalità, in
+    // ENTRAMBI i versi: è lo stesso ragionamento della posa home e dello
+    // smontaggio qui sotto — questo è l'unico punto in cui la scena torna a uno
+    // stato noto, quindi è l'unico in cui ha senso che "A1 è stata eseguita"
+    // decada. Prima del rientro autorato: anche quello è un play.
+    api?.resetAnimationProgress?.()
+
     // Rientro in idle con una transizione AUTORATA: se è stata indicata
     // un'animazione (tipicamente "GoIdle") è lei a riportare la scena a
     // riposo, e fa tutto da sé — zoom, opacità, posa.

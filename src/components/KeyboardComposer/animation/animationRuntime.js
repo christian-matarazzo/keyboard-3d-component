@@ -79,6 +79,17 @@ export function createAnimationRuntime(ctx) {
   let release = null
   // Play messo in coda perché è arrivato durante un rilascio.
   let pending = null
+  // SEQUENZE. Animazioni arrivate a fine wave in questa sessione: è ciò che
+  // sblocca chi le dichiara come prerequisito (`requires`, vedi
+  // animationSchema.js). Vive nel runtime e non nello stato React perché la
+  // condizione che lo riempie — "le wave sono finite" — è un fatto del
+  // sequencer, non un evento che qualcuno gli comunica.
+  //
+  // ⚠️ Il vincolo NON è imposto qui: `play()` lancia qualunque animazione. È
+  // l'HUD a tenere spenti i chip bloccati, per la stessa ragione per cui la
+  // modalità di prodotto è un gate dell'HUD — il ▶ dell'editor e la console di
+  // debug devono poter provare qualunque cosa mentre la si autora.
+  const completed = new Set()
 
   const isStepDone = (inst) => {
     const s = inst.step
@@ -147,6 +158,10 @@ export function createAnimationRuntime(ctx) {
       if (!canLoop) {
         state = 'finished'
         waveInstances = []
+        // Qui, e solo qui, un'animazione risulta ESEGUITA: non al play, che
+        // può essere sostituito a metà, ma a wave esaurite. Prima di
+        // `stopOnFinish`, che azzera `anim`.
+        if (anim) completed.add(anim.id)
         // Deroga esplicita a "fine ≠ smontaggio": un'animazione dichiarata
         // `stopOnFinish` esiste per riportare la scena a riposo (la
         // transizione verso idle), quindi si smonta da sola invece di lasciare
@@ -304,6 +319,10 @@ export function createAnimationRuntime(ctx) {
       if (ctx.debug) console.warn('[anim] animazione inesistente:', id)
       return false
     }
+    // Rigiocare un anello della catena riporta indietro la sequenza: da qui in
+    // poi non è più stato eseguito, e con lui decadono tutti quelli che ci
+    // stanno a valle. Senza, tornare a A1 lascerebbe A3 sbloccata.
+    invalidateProgressFrom(id)
     const chain = keep ?? next.startFrom === 'keep'
     if (chain) {
       // Il cursore riparte da capo ma NIENTE viene smontato: si azzera solo
@@ -346,6 +365,39 @@ export function createAnimationRuntime(ctx) {
     return true
   }
 
+  /** Toglie dagli "eseguiti" `id` e chiunque dipenda da lui, a qualunque distanza. */
+  const invalidateProgressFrom = (id) => {
+    const items = ctx.getAnimations()?.items ?? []
+    const dirty = new Set([id])
+    // Propagazione a punto fisso: la catena non è ordinata nell'array.
+    for (let grew = true; grew; ) {
+      grew = false
+      for (const a of items) {
+        if (!a.requires || dirty.has(a.id) || !dirty.has(a.requires)) continue
+        dirty.add(a.id)
+        grew = true
+      }
+    }
+    for (const d of dirty) completed.delete(d)
+  }
+
+  /** Prerequisito soddisfatto? Solo quello DIRETTO: la catena si fa valere da sé. */
+  const isUnlocked = (id) => {
+    const a = ctx.getAnimations()?.items?.find((x) => x.id === id)
+    if (!a?.requires) return true
+    return completed.has(a.requires)
+  }
+
+  /**
+   * Azzera l'avanzamento della sequenza. Lo chiama il cambio di modalità di
+   * prodotto (in entrambi i versi), che è l'unico punto in cui la scena torna a
+   * uno stato noto: una nuova sessione di configurazione riparte dal primo
+   * anello, come riparte dalla posa home.
+   */
+  const resetProgress = () => {
+    completed.clear()
+  }
+
   const trigger = (name) => {
     pendingTriggers.add(name)
   }
@@ -383,6 +435,11 @@ export function createAnimationRuntime(ctx) {
       waveIndex,
       waveCount: waves.length,
       waitingTrigger: waitingTrigger(),
+      // Avanzamento della sequenza: l'HUD ci decide quali chip sono ancora
+      // bloccati. `completedKey` è solo per il confronto del suo poll a 150 ms,
+      // che altrimenti vedrebbe un array nuovo a ogni giro.
+      completed: [...completed],
+      completedKey: [...completed].sort().join('|'),
       instances: instances.map((i) => ({
         step: i.step.id,
         action: i.step.action,
@@ -401,5 +458,16 @@ export function createAnimationRuntime(ctx) {
   /** Opzione richiesta dal chiamante per una variante, se l'ha indicata. */
   const variantTargetFor = (variantId) => variantTargets?.[variantId] ?? null
 
-  return { tick, play, stop, trigger, consumeTrigger, getState, currentId, variantTargetFor }
+  return {
+    tick,
+    play,
+    stop,
+    trigger,
+    consumeTrigger,
+    getState,
+    currentId,
+    variantTargetFor,
+    isUnlocked,
+    resetProgress,
+  }
 }

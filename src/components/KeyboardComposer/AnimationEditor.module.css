@@ -181,6 +181,45 @@
   text-align: center;
 }
 
+/* Un BLOCCO di step sincronizzati (una wave): scatola con testata propria, che
+   si comprime a icona. I comandi che valgono per tutti gli step insieme —
+   play da qui, duplica, copia, elimina — stanno sulla testata invece che
+   ripetuti su ogni scheda. */
+.wave {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 3px 0 4px 5px;
+  border-left: 2px solid rgb(255 255 255 / 10%);
+}
+
+.waveRunning {
+  border-left-color: #4dabf7;
+}
+
+.waveHead {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.waveTitle {
+  color: rgb(255 255 255 / 40%);
+  white-space: nowrap;
+}
+
+/* Solo da chiuso: le azioni contenute, per riconoscere il blocco senza
+   riaprirlo. Su una riga sola, troncato. */
+.waveSummary {
+  flex: 1 1 40px;
+  min-width: 0;
+  overflow: hidden;
+  color: rgb(255 255 255 / 30%);
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
 /* Uno step è una SCHEDA su più righe, non una riga sola: in una colonna
    stretta dieci controlli in fila andrebbero a capo a casaccio. Riga 1
    identità e comandi, riga 2 parametri, riga 3 tempi. */
@@ -337,6 +376,38 @@
 .jsonError {
   color: #ff8787;
   text-transform: none;
+}
+
+/* Esito di un'operazione di autorazione (inverso generato, step copiati…).
+   Neutro, non allarmante come .warning: non segnala una configurazione
+   incoerente, racconta cosa è appena successo. */
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 4px 4px 6px;
+  border-left: 2px solid #4dabf7;
+  background: rgb(77 171 247 / 10%);
+  color: rgb(255 255 255 / 75%);
+  line-height: 1.35;
+}
+
+/* Catena di sequenza: A1 → A2 → A3, con l'animazione corrente in evidenza. */
+.chain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  color: rgb(255 255 255 / 40%);
+}
+
+.chainArrow {
+  padding: 0 4px;
+  color: rgb(255 255 255 / 25%);
+}
+
+.chainSelf {
+  color: #fff;
 }
 
 @media (prefers-reduced-motion: reduce) {

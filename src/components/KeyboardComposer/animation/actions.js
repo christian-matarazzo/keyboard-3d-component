@@ -1,5 +1,7 @@
 import * as THREE from 'three'
 import { resolveSelector } from './selectors'
+import { groupCenterInScene } from './pivot'
+import { OFFSET_CHANNEL } from './pivotRegistry'
 import { ease, clamp01 } from './easings'
 import { variantOptionMeshes, forceVariantVisible } from '../materials/meshVariants'
 
@@ -18,7 +20,17 @@ import { variantOptionMeshes, forceVariantVisible } from '../materials/meshVaria
  *   start(inst, ctx), update(inst, ctx, dt), isSettled(inst, ctx),
  *   restart(inst, ctx),           // riavvio su un giro di loop (azioni persistenti)
  *   stop(inst, ctx),              // teardown, chiamato SOLO da stopAnimation()
+ *   inverse(step, ctx),           // AUTORAZIONE, non runtime: come si disfa
+ *   inverseNote,                  // perché non si disfa, se inverse() dà null
  * }
+ *
+ * `inverse` sta QUI e non nel generatore di animazioni inverse per la stessa
+ * ragione per cui ci stanno schema e implementazione: se la conoscenza di cosa
+ * un'azione fa e di come la si annulla vive in due file, i due divergono al
+ * primo parametro aggiunto. Riceve lo step AUTORATO (dato statico, non
+ * un'istanza viva) e restituisce `{ action?, params? }` — `action` assente vuol
+ * dire "stessa azione, altri parametri" — oppure `null` per "non invertibile,
+ * salta". Vedi animationTransforms.js.
  *
  * `inst` è l'istanza viva dello step: { step, action, params, elapsed, data }.
  * `ctx` è { getApi, getScene, groups, opacity, pivots, runtime, debug }.
@@ -44,77 +56,53 @@ const progress = (inst) => {
 }
 
 /**
- * Asse di rotazione di UN handle, espresso nel frame in cui il quaternion del
- * canale viene effettivamente applicato (cioè il locale del pivot).
+ * Acquisizione dei pivot per OGNI azione che trasforma geometria, rotatoria o
+ * no. Una forma sola: risolvi il selettore, prendi un handle per mesh (è
+ * l'unica granularità che esiste, vedi pivotRegistry.js) e apri su ognuno il
+ * canale di QUESTO step.
  *
- * ⚠️ Il punto delicato di tutte le azioni rotatorie. Un pivot di MESH SINGOLA
- * eredita l'orientamento proprio della mesh (vedi wrapMeshInPivot), che nei GLB
- * esportati da Maya è spesso inclinato rispetto al modello: "ruota attorno a Y"
- * nel frame locale può quindi voler dire un asse tutt'altro che verticale, e i
- * pezzi si vedono inclinarsi e compenetrare ciò che hanno attorno mentre
- * girano. Con `axisSpace: 'model'` l'asse viene invece preso nel frame della
- * scena GLTF e riportato dentro quello del pivot:
- *
- *   a_pivot = (Qparent · baseQuat)⁻¹ · Qscene · a
- *
- * — la coniugazione che rende `baseQuat · quat(a_pivot, θ)` equivalente a una
- * rotazione di θ attorno all'asse del modello. Calcolato una volta allo start:
- * l'orientamento a riposo del pivot non cambia in corsa.
+ * ⚠️ `perMesh` non cambia più quali pivot si prendono — cambia solo il CENTRO
+ * scritto nei canali: il centro proprio di ogni mesh (ognuna gira/si muove dove
+ * sta) oppure il centro comune del gruppo (le mesh si muovono come un corpo
+ * rigido, quindi orbitano e traslano). Prima erano due gerarchie diverse, ed è
+ * da lì che nasceva l'impossibilità di far convivere due step su insiemi che si
+ * sovrappongono solo in parte.
  */
-const axisInPivotFrame = (handle, axisName, space, ctx) => {
-  const axis = (AXIS_VEC[axisName] ?? AXIS_VEC.y).clone()
-  if (space === 'local') return axis
+const acquireHandles = (
+  inst,
+  ctx,
+  { perMesh = inst.params.perMesh, channelKey = inst.step.id } = {},
+) => {
   const scene = ctx.getScene()
-  if (!scene) return axis
-  const rel = handle.restWorldQuat
-    .clone()
-    .invert()
-    .multiply(scene.getWorldQuaternion(new THREE.Quaternion()))
-  return axis.applyQuaternion(rel).normalize()
+  const meshes = resolveSelector(scene, ctx.groups, inst.params.selector)
+  const handles = ctx.pivots.acquireAll(meshes)
+  if (handles.length === 0) return []
+  const center = perMesh ? null : groupCenterInScene(meshes, scene)
+  inst.data.channelKey = channelKey
+  inst.data.handles = handles.map((h, i) => ({
+    h,
+    ch: h.channel(channelKey, center),
+    // Segno alternato: mesh pari in un verso, dispari nell'altro.
+    sign: inst.params.alternate && i % 2 ? -1 : 1,
+  }))
+  return inst.data.handles
 }
 
-/**
- * Acquisizione dei pivot per le azioni ROTATORIE (spin, rotazione finita,
- * wobble), tutte con la stessa forma: risolvi il selettore, prendi un pivot per
- * mesh o uno solo per il gruppo, e registra nel canale rotatorio dell'handle un
- * quaternion PROPRIO dello step (chiave = step.id). È quella chiave che
- * permette a più azioni rotatorie di sommarsi sullo stesso bersaglio invece di
- * sovrascriversi — vedi pivotRegistry.js.
- */
-const acquireRotHandles = (inst, ctx, { perMesh = inst.params.perMesh } = {}) => {
-  const meshes = resolveSelector(ctx.getScene(), ctx.groups, inst.params.selector)
-  const stepId = inst.step.id
-  const space = inst.params.axisSpace ?? 'model'
-  const attach = (h, i) => {
-    if (!h) return null
-    const q = new THREE.Quaternion()
-    h.setRot(stepId, q)
-    return {
-      h,
-      q,
-      axis: axisInPivotFrame(h, inst.params.axis, space, ctx),
-      sign: inst.params.alternate && i % 2 ? -1 : 1,
-    }
+/** Asse di rotazione: gli assi del pivot SONO quelli del modello (vedi registry). */
+const axisOf = (inst) => AXIS_VEC[inst.params.axis] ?? AXIS_VEC.y
+
+/** Traslazione rigida `v · scale` su N handle, per lo scorrimento delle varianti. */
+const slideHandles = (handles, stepId, v, scale) => {
+  for (const h of handles ?? []) {
+    h.channel(stepId).translation.copy(v).multiplyScalar(scale)
+    h.compose()
   }
-  inst.data.handles = perMesh
-    ? meshes.map((m, i) => attach(ctx.pivots.acquireMesh(m), i)).filter(Boolean)
-    : [attach(ctx.pivots.acquireGroup(meshes), 0)].filter(Boolean)
-  inst.data.angle = 0
 }
 
-/** Schema del parametro condiviso dalle tre azioni rotatorie. */
-const AXIS_SPACE_PARAM = {
-  key: 'axisSpace',
-  type: 'select',
-  options: ['model', 'local'],
-  default: 'model',
-  label: 'Asse nel frame',
-}
-
-const releaseRotHandles = (inst) => {
-  const stepId = inst.step.id
+const releaseHandles = (inst) => {
+  const key = inst.data.channelKey ?? inst.step.id
   for (const { h } of inst.data.handles ?? []) {
-    h.clearRot(stepId)
+    h.clear(key)
     h.compose() // rimette la posa senza questo contributo prima di mollare
     h.release()
   }
@@ -138,6 +126,14 @@ export const ACTIONS = {
     isSettled(inst, ctx) {
       return ctx.getApi()?.isPoseSettled?.() ?? true
     },
+    // L'inverso di "vai a P" è "torna dove eri", e dov'eri lo dice il
+    // `goToPose` che precede questo nella sequenza — per il primo, la posa da
+    // cui l'animazione è partita, che il generatore passa qui (la home: è il
+    // punto di partenza di entrambe le modalità di prodotto). Non conoscendola
+    // si resta sulla propria, che è meglio di una posa a caso.
+    inverse: (step, ctx) => ({
+      params: { poseKey: ctx?.previousPose ?? step.params?.poseKey },
+    }),
   },
 
   focusGroup: {
@@ -162,6 +158,11 @@ export const ACTIONS = {
     isSettled(inst, ctx) {
       return ctx.getApi()?.isFocusSettled?.() ?? true
     },
+    // ⚠️ Con `restoreOpacity` spento di proposito: in un'inverso generato ci
+    // sono già gli inversi espliciti dei singoli `setOpacity`, e il ripristino
+    // globale scriverebbe sugli stessi materiali nello stesso frame — due
+    // scrittori senza un vincitore definito.
+    inverse: () => ({ action: 'clearFocus', params: { restoreOpacity: false } }),
   },
 
   // Non è solo l'inverso di focusGroup: è il "torna com'era" completo, quindi
@@ -217,6 +218,8 @@ export const ACTIONS = {
       if (opts?.keepOpacity) return
       inst.data.restore?.finish()
     },
+    inverse: () => null,
+    inverseNote: 'non si sa quale gruppo re-inquadrare',
   },
 
   // ── Materiali ─────────────────────────────────────────────────────────────
@@ -268,6 +271,11 @@ export const ACTIONS = {
       inst.data.handle?.release()
       inst.data.handle = null
     },
+    // ⚠️ Torna a 1, NON al valore fotografato all'acquire: quello lo conosce
+    // solo il registry a runtime, mentre uno step autorato è un dato statico.
+    // Su un materiale del GLB autorato semitrasparente l'inverso va corretto a
+    // mano (o si usa "Torna all'insieme", che ripristina la fotografia).
+    inverse: () => ({ params: { opacity: 1 } }),
   },
 
   // ── Trasformazioni ────────────────────────────────────────────────────────
@@ -280,23 +288,23 @@ export const ACTIONS = {
     params: [
       { key: 'selector', type: 'selector', default: { kind: 'group', groupId: 'rotors' }, label: 'Mesh' },
       { key: 'axis', type: 'select', options: ['x', 'y', 'z'], default: 'y', label: 'Asse' },
-      AXIS_SPACE_PARAM,
       { key: 'speedDeg', type: 'number', default: 90, min: -720, max: 720, step: 1, label: '°/s' },
       { key: 'alternate', type: 'boolean', default: true, label: 'Segno alternato' },
       { key: 'rampIn', type: 'number', default: 0.3, min: 0, max: 5, step: 0.05, label: 'Rampa (s)', advanced: true },
     ],
     start(inst, ctx) {
-      // Sempre UN pivot PER MESH, non il pivot di gruppo: "ruota attorno al
-      // proprio centro" è il ramo mesh-singola applicato N volte. Il pivot di
-      // gruppo farebbe girare i rotori attorno al loro baricentro comune, che è
-      // tutt'altra animazione (e per quella c'è rotateBy con perMesh spento).
-      acquireRotHandles(inst, ctx, { perMesh: true })
+      // Sempre sul PROPRIO centro: "gira su se stessa" è tutto il senso di
+      // questa azione. Attorno al baricentro comune ci si va con rotateBy a
+      // `perMesh` spento, che è tutt'altra animazione.
+      acquireHandles(inst, ctx, { perMesh: true })
+      inst.data.angle = 0
     },
     update(inst, ctx, dt) {
       const ramp = inst.params.rampIn > 0 ? clamp01(inst.elapsed / inst.params.rampIn) : 1
       inst.data.angle += THREE.MathUtils.degToRad(inst.params.speedDeg) * ramp * dt
-      for (const { h, sign, q, axis } of inst.data.handles ?? []) {
-        q.setFromAxisAngle(axis, inst.data.angle * sign)
+      const axis = axisOf(inst)
+      for (const { h, ch, sign } of inst.data.handles ?? []) {
+        ch.quat.setFromAxisAngle(axis, inst.data.angle * sign)
         h.compose()
       }
     },
@@ -304,8 +312,11 @@ export const ACTIONS = {
     // invece di scattare a zero.
     restart() {},
     stop(inst) {
-      releaseRotHandles(inst)
+      releaseHandles(inst)
     },
+    inverse: () => null,
+    inverseNote:
+      'una rotazione continua non ha un inverso: la chiude il rilascio di fine sequenza',
   },
 
   // Rotazione FINITA, contrapposta a spinGroup: gira di un angolo dato e si
@@ -322,7 +333,6 @@ export const ACTIONS = {
     params: [
       { key: 'selector', type: 'selector', default: { kind: 'group', groupId: '' }, label: 'Mesh' },
       { key: 'axis', type: 'select', options: ['x', 'y', 'z'], default: 'y', label: 'Asse' },
-      AXIS_SPACE_PARAM,
       { key: 'angleDeg', type: 'number', default: 180, min: -1440, max: 1440, step: 1, label: 'Angolo°' },
       // ⚠️ Distinzione che si sbaglia facilmente, e che con più mesh dà due
       // risultati completamente diversi: spento, le mesh ruotano RIGIDAMENTE
@@ -335,7 +345,7 @@ export const ACTIONS = {
       { key: 'alternate', type: 'boolean', default: false, label: 'Segno alternato' },
     ],
     start(inst, ctx) {
-      acquireRotHandles(inst, ctx)
+      acquireHandles(inst, ctx)
     },
     update(inst) {
       // A regime si smette: l'istanza è persistente (tiene i pivot), quindi il
@@ -344,8 +354,9 @@ export const ACTIONS = {
       if (inst.data.settled) return
       const k = progress(inst)
       const angle = THREE.MathUtils.degToRad(inst.params.angleDeg) * k
-      for (const { h, sign, q, axis } of inst.data.handles ?? []) {
-        q.setFromAxisAngle(axis, angle * sign)
+      const axis = axisOf(inst)
+      for (const { h, ch, sign } of inst.data.handles ?? []) {
+        ch.quat.setFromAxisAngle(axis, angle * sign)
         h.compose()
       }
       if (k >= 1) inst.data.settled = true
@@ -354,8 +365,13 @@ export const ACTIONS = {
       inst.data.settled = false
     },
     stop(inst) {
-      releaseRotHandles(inst)
+      releaseHandles(inst)
     },
+    // Angolo opposto. Funziona anche a canali distinti: lo step diretto tiene
+    // il suo (fermo, a regime non riscrive più) e questo ne apre uno nuovo —
+    // due rotazioni opposte attorno allo STESSO centro si compongono
+    // nell'identità (vedi compose() in pivotRegistry.js).
+    inverse: (step) => ({ params: { angleDeg: -(step.params?.angleDeg ?? 0) } }),
   },
 
   // Oscillazione smorzata attorno a un asse: il "wobble" da vetrina, quello che
@@ -370,7 +386,6 @@ export const ACTIONS = {
     params: [
       { key: 'selector', type: 'selector', default: { kind: 'group', groupId: '' }, label: 'Mesh' },
       { key: 'axis', type: 'select', options: ['x', 'y', 'z'], default: 'z', label: 'Asse' },
-      AXIS_SPACE_PARAM,
       { key: 'amplitudeDeg', type: 'number', default: 8, min: 0, max: 180, step: 0.5, label: 'Ampiezza°' },
       { key: 'frequency', type: 'number', default: 1.6, min: 0.05, max: 12, step: 0.05, label: 'Frequenza (Hz)' },
       { key: 'decay', type: 'number', default: 1.2, min: 0, max: 20, step: 0.1, label: 'Smorzamento (s, 0 = mai)' },
@@ -382,17 +397,18 @@ export const ACTIONS = {
       { key: 'phasePerMesh', type: 'number', default: 0, min: 0, max: 360, step: 5, label: 'Sfasamento per mesh°' },
     ],
     start(inst, ctx) {
-      acquireRotHandles(inst, ctx)
+      acquireHandles(inst, ctx)
     },
     update(inst) {
       const amp = THREE.MathUtils.degToRad(inst.params.amplitudeDeg)
       const decay = inst.params.decay > 0 ? Math.exp(-inst.elapsed / inst.params.decay) : 1
       const w = 2 * Math.PI * inst.params.frequency * inst.elapsed
       const phase = THREE.MathUtils.degToRad(inst.params.phasePerMesh ?? 0)
+      const axis = axisOf(inst)
       const handles = inst.data.handles ?? []
       for (let i = 0; i < handles.length; i++) {
-        const { h, q, axis } = handles[i]
-        q.setFromAxisAngle(axis, amp * decay * Math.sin(w + i * phase))
+        const { h, ch } = handles[i]
+        ch.quat.setFromAxisAngle(axis, amp * decay * Math.sin(w + i * phase))
         h.compose()
       }
     },
@@ -401,8 +417,10 @@ export const ACTIONS = {
     // che serve qui — l'inviluppo di smorzamento riparte da capo invece di
     // trovarsi già spento.
     stop(inst) {
-      releaseRotHandles(inst)
+      releaseHandles(inst)
     },
+    inverse: () => null,
+    inverseNote: 'l’oscillazione si spegne da sé',
   },
 
   transformOffset: {
@@ -421,16 +439,16 @@ export const ACTIONS = {
       { key: 'rotation', type: 'vec3', default: [0, 0, 0], min: -180, max: 180, step: 1, unit: '°', label: 'Rotazione' },
     ],
     start(inst, ctx) {
-      const meshes = resolveSelector(ctx.getScene(), ctx.groups, inst.params.selector)
-      if (meshes.length === 0) return
-      inst.data.handles = inst.params.perMesh
-        ? meshes.map((m) => ctx.pivots.acquireMesh(m)).filter(Boolean)
-        : [ctx.pivots.acquireGroup(meshes)].filter(Boolean)
-      // Si interpola DA dove il canale è ora (potrebbe già portare l'offset di
-      // uno step precedente sullo stesso bersaglio), non da zero.
-      inst.data.from = inst.data.handles.map((h) => ({
-        pos: h.channels.offsetPos.clone(),
-        quat: h.channels.offsetQuat.clone(),
+      // Canale CONDIVISO fra tutti gli offset (vedi OFFSET_CHANNEL): è ciò che
+      // rende `position: [0,0,0]` un vero "torna alla posa di riposo".
+      if (acquireHandles(inst, ctx, { channelKey: OFFSET_CHANNEL }).length === 0) return
+      // Si interpola DA dove il canale è ORA: uno step che risolve mesh già
+      // spostate da uno step precedente lo ritrova a metà strada e ci riparte.
+      // Col possesso per mesh questo vale anche quando i due bersagli si
+      // sovrappongono solo in parte — il caso che prima era irrealizzabile.
+      inst.data.from = inst.data.handles.map(({ ch }) => ({
+        pos: ch.translation.clone(),
+        quat: ch.quat.clone(),
       }))
       const [rx, ry, rz] = inst.params.rotation ?? [0, 0, 0]
       inst.data.targetPos = new THREE.Vector3(...(inst.params.position ?? [0, 0, 0]))
@@ -448,30 +466,29 @@ export const ACTIONS = {
       const k = progress(inst)
       const handles = inst.data.handles ?? []
       for (let i = 0; i < handles.length; i++) {
-        const h = handles[i]
+        const { h, ch } = handles[i]
         const from = inst.data.from[i]
-        h.channels.offsetPos.lerpVectors(from.pos, inst.data.targetPos, k)
-        h.channels.offsetQuat.slerpQuaternions(from.quat, inst.data.targetQuat, k)
+        ch.translation.lerpVectors(from.pos, inst.data.targetPos, k)
+        ch.quat.slerpQuaternions(from.quat, inst.data.targetQuat, k)
         h.compose()
       }
       if (k >= 1) inst.data.settled = true
     },
     restart(inst) {
-      inst.data.from = (inst.data.handles ?? []).map((h) => ({
-        pos: h.channels.offsetPos.clone(),
-        quat: h.channels.offsetQuat.clone(),
+      inst.data.from = (inst.data.handles ?? []).map(({ ch }) => ({
+        pos: ch.translation.clone(),
+        quat: ch.quat.clone(),
       }))
       inst.data.settled = false
     },
     stop(inst) {
-      for (const h of inst.data.handles ?? []) {
-        h.channels.offsetPos.set(0, 0, 0)
-        h.channels.offsetQuat.identity()
-        h.compose()
-        h.release()
-      }
-      inst.data.handles = null
+      releaseHandles(inst)
     },
+    // ⚠️ Il canale degli offset è CONDIVISO (OFFSET_CHANNEL) e si interpola da
+    // dove lo si trova: riportarlo a zero è letteralmente "torna alla posa di
+    // riposo". È il motivo per cui l'inverso di un esploso è questo e non un
+    // offset di segno opposto, che invece raddoppierebbe lo spostamento.
+    inverse: () => ({ params: { position: [0, 0, 0], rotation: [0, 0, 0] } }),
   },
 
   // ── Varianti ──────────────────────────────────────────────────────────────
@@ -502,6 +519,7 @@ export const ACTIONS = {
    * MeshController e di `transformOffset` — non in unità-scena. Su questo
    * asset il fattore è ~0.0096, quindi un centesimo di unità mondo vale circa
    * un'unità qui: si tarano a occhio, non a calcolo.
+   *
    */
   setVariant: {
     label: 'Cambia variante',
@@ -545,19 +563,18 @@ export const ACTIONS = {
       inst.data.outFrom = inst.data.outHandle?.readCurrent()
       inst.data.inHandle.set(0)
 
-      // Traslazione opzionale. I pivot si prendono solo se serve davvero.
+      // Traslazione opzionale. I pivot si prendono solo se serve davvero:
+      // reparentare mesh per traslare di zero sarebbe lavoro e rischio gratuiti.
+      // Traslazione pura, quindi il centro dei canali è indifferente.
       const vIn = new THREE.Vector3(...(inst.params.offsetIn ?? [0, 0, 0]))
       const vOut = new THREE.Vector3(...(inst.params.offsetOut ?? [0, 0, 0]))
       if (vIn.lengthSq() > 0) {
-        inst.data.inPivot = ctx.pivots.acquireGroup(incoming)
+        inst.data.inPivots = ctx.pivots.acquireAll(incoming)
         inst.data.vIn = vIn
-        if (inst.data.inPivot) {
-          inst.data.inPivot.channels.offsetPos.copy(vIn)
-          inst.data.inPivot.compose()
-        }
+        slideHandles(inst.data.inPivots, inst.step.id, vIn, 1)
       }
       if (vOut.lengthSq() > 0 && outgoing.length) {
-        inst.data.outPivot = ctx.pivots.acquireGroup(outgoing)
+        inst.data.outPivots = ctx.pivots.acquireAll(outgoing)
         inst.data.vOut = vOut
       }
     },
@@ -567,14 +584,8 @@ export const ACTIONS = {
       inst.data.inHandle?.set(k)
       inst.data.outHandle?.lerpTo(inst.data.outFrom, 0, k)
       // L'entrante va da `offsetIn` a zero, l'uscente da zero a `offsetOut`.
-      if (inst.data.inPivot) {
-        inst.data.inPivot.channels.offsetPos.copy(inst.data.vIn).multiplyScalar(1 - k)
-        inst.data.inPivot.compose()
-      }
-      if (inst.data.outPivot) {
-        inst.data.outPivot.channels.offsetPos.copy(inst.data.vOut).multiplyScalar(k)
-        inst.data.outPivot.compose()
-      }
+      slideHandles(inst.data.inPivots, inst.step.id, inst.data.vIn, 1 - k)
+      slideHandles(inst.data.outPivots, inst.step.id, inst.data.vOut, k)
       if (k >= 1) {
         inst.data.settled = true
         inst.action.finish(inst, ctx)
@@ -586,17 +597,16 @@ export const ACTIONS = {
       inst.data.done = true
       inst.data.inHandle?.release()
       inst.data.outHandle?.release()
-      // I pivot vanno azzerati PRIMA del rilascio: l'unwind ripristina la
+      // Il canale va tolto PRIMA del rilascio: l'unwind ripristina la
       // trasformata locale fotografata al wrap, ma il canale è roba nostra e
       // un handle condiviso con un'altra azione se lo ritroverebbe sporco.
-      for (const p of [inst.data.inPivot, inst.data.outPivot]) {
-        if (!p) continue
-        p.channels.offsetPos.set(0, 0, 0)
-        p.compose()
-        p.release()
+      for (const h of [...(inst.data.inPivots ?? []), ...(inst.data.outPivots ?? [])]) {
+        h.clear(inst.step.id)
+        h.compose()
+        h.release()
       }
-      inst.data.inPivot = null
-      inst.data.outPivot = null
+      inst.data.inPivots = null
+      inst.data.outPivots = null
       if (inst.data.outgoing) forceVariantVisible(inst.data.outgoing, false)
       ctx?.getApi?.()?.releaseVariantHold?.(inst.data.variantId)
     },
@@ -623,6 +633,11 @@ export const ACTIONS = {
       if (inst.data.skip) return
       inst.action.finish(inst, ctx)
     },
+    // Stessa asimmetria di `stop()`: la scelta della variante è stato
+    // dell'utente, non un effetto dell'animazione, quindi un'inverso non la
+    // rimette indietro.
+    inverse: () => null,
+    inverseNote: 'la scelta della variante è dell’utente, non la si annulla',
   },
 
   // ── Flusso ────────────────────────────────────────────────────────────────
@@ -632,6 +647,7 @@ export const ACTIONS = {
     group: 'flusso',
     defaults: { wait: 'duration', duration: 1 },
     params: [],
+    inverse: () => ({}), // una pausa è uguale a sé stessa all'indietro
   },
 
   waitTrigger: {
@@ -645,6 +661,8 @@ export const ACTIONS = {
     isSettled(inst, ctx) {
       return ctx.runtime.consumeTrigger(inst.params.name)
     },
+    inverse: () => null,
+    inverseNote: 'un rientro non deve restare in attesa di un evento',
   },
 }
 

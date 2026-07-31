@@ -128,6 +128,8 @@ subtree and the DOM overlays, so it travels as an ordinary prop — only the
   reaches them is an authored animation.
 
 Transitions (`changeAppMode` in `KeyboardComposer.jsx`): **both** directions
+`resetAnimationProgress()` (sequence progress — see "Sequences" — restarts from
+the first link, for the same reason the pose does), then
 `clearFocus()`, `stopAnimation()` and `goTo(homePoseKey)` — the home pose is
 where *both* modes start, so an authored animation always begins from the same
 known state instead of wherever the user left the model while turning it by
@@ -251,7 +253,8 @@ replacing it wholesale:
   `isFocusSettled`; its cleanup `delete`s exactly those seven keys.
 - `AnimationDirector.jsx` (also inside `<Canvas>`) — `playAnimation`,
   `stopAnimation`, `currentAnimation`, `animationState`, `triggerAnimation`,
-  `meshCatalog`; same `delete`-only cleanup.
+  `animationUnlocked`, `resetAnimationProgress`, `meshCatalog`; same
+  `delete`-only cleanup.
 - `LightRig.jsx` (also inside `<Canvas>`) — `saveConfigJSON`/`loadConfigJSON`,
   thin wrappers over a per-render-updated ref (same idiom as the focus methods
   above) so the two handlers, which are the only code that sees `configsRef`,
@@ -421,7 +424,10 @@ KeyboardComposer.jsx        DOM shell: canvas fade-in, Leva panel host (DebugPan
                                 view, visible only in ?debug + editMode 'anim'
 
 animation/                     (no React except the two components above)
-├─ animationSchema.js          data shape, defaults, normalize/migrate, buildWaves
+├─ animationSchema.js          data shape, defaults, normalize/migrate, buildWaves,
+│                               buildStepGroups, validazione dei prerequisiti
+├─ animationTransforms.js      authoring-only: clone di step/blocchi/animazioni e
+│                               generazione dell'inverso (no React, no runtime)
 ├─ actions.js                  ACTIONS — param schema + runtime impl, one source of truth
 ├─ animationRuntime.js         the wave sequencer (pure JS, ticked by the Director)
 ├─ selectors.js                resolveSelector: all / group / allExcept / meshes
@@ -1156,7 +1162,10 @@ can differ) and removes the pivot. A group pivot stays a group pivot even
 with a single member (identity quaternion, under `scene`), never collapsing
 into the oriented single-mesh branch — otherwise the same authored rotation
 would turn around different axes depending on how many meshes the group
-happens to contain.
+happens to contain. ⚠️ The animation registry now leans on exactly that: it
+wraps **every** mesh through this branch, one at a time, and the identity
+orientation is what makes an authored axis mean the model's axis (see
+"Pivots"). The oriented `wrapMeshInPivot` branch is this editor's alone.
 
 In both branches the **Pos X/Y/Z (`±100`, step `0.05`) / Rot X/Y/Z°
 (`±180`, step `1`) sliders are a relative offset from that center**
@@ -1302,6 +1311,8 @@ stays a clean presence check:
 // Animation
 { "id": "rotors", "label": "Rotori", "hidden": false,
   "loop": { "mode": "none" },     // "none" | "forever" | "count" (+ times, from)
+  "requires": "",                 // sequenza: id dell'animazione che deve essere
+                                  // stata ESEGUITA perché questa sia lanciabile
   "restoreOnStop": true, "steps": [ /* Step[] */ ] }
 
 // Step
@@ -1513,6 +1524,38 @@ anyway).
 `__animState()`, `__animStats()` (owned materials / clones / pivots — the
 counters the teardown assertions check).
 
+#### Sequences (`requires`)
+
+"A group of animations in a fixed order" is **not** a container — it is a
+**chain of prerequisites**, one field: `requires`, the id of the animation that
+must have been *executed* before this one can be launched. `A1 ← A2 ← A3` is the
+whole feature; each link knows only its predecessor, and the order is the chain.
+A first-class `sequences` list would need its own JSON section, its own editor
+and its own HUD grouping to express exactly the same constraint.
+
+- **"Executed" means "ran out of waves"** — the runtime adds the id to a
+  `completed` Set inside `advanceWave()`, at the same point that sets
+  `'finished'` and *before* `stopOnFinish` clears `anim`. Not at `play()`, which
+  can be replaced mid-flight. ⚠️ Consequence: **a `forever`-loop animation never
+  unlocks anything**, and neither does one blocked on a `waitTrigger` nobody
+  triggers. `AnimationEditor` warns about the first, and about a prerequisite
+  that is `hidden` (no chip in production = no way to satisfy it).
+- **Replaying a link walks the sequence back**: `play(id)` removes `id` *and
+  everything that transitively requires it* from `completed`. Without that,
+  going back to A1 would leave A3 unlocked.
+- **The progress is per-session and resets on `changeAppMode`**, both
+  directions — the one place the scene returns to a known state, so it is the
+  one place "A1 has been executed" should decay.
+- ⚠️ **The gate is the HUD, not the runtime**, exactly as for app mode:
+  `play()` launches anything. `Hud.jsx` disables a chip whose prerequisite is
+  missing (dashed border, `title` naming what to run first); the editor's ▶ and
+  the `?debug` console keep working, or authoring A3 would mean replaying the
+  whole chain every time.
+- Cycles are impossible by construction on two fronts: `normalizeAnimations`
+  breaks the closing edge of any cycle (and drops a `requires` pointing at a
+  missing id or at itself), and the editor's dropdown only offers candidates
+  that don't already descend from the current animation (`canRequire`).
+
 #### Action registry (`animation/actions.js`)
 
 **One `ACTIONS` object is the single source of truth**, holding the parameter
@@ -1528,8 +1571,27 @@ makes it appear in the editor with no UI code.
   params: [ { key, type, label, default, … } ],   // type: number|boolean|string|
                                                   // select|vec3|selector|group|pose|easing
   start(inst, ctx), update(inst, ctx, dt), isSettled(inst, ctx),
-  restart(inst, ctx), stop(inst, ctx) }
+  restart(inst, ctx), stop(inst, ctx),
+  inverse(step, ctx), inverseNote }   // authoring: come si disfa, o perché no
 ```
+
+⚠️ **`inverse` lives here, not in the generator that uses it** — same argument
+as schema-next-to-implementation: if "what this action does" and "how you undo
+it" lived in two files they would diverge at the first parameter added. It takes
+the **authored step** (static data, not a live instance) and returns
+`{ action?, params? }` — a missing `action` means "same action, different
+params" — or `null` for "not invertible, skip", with `inverseNote` saying why.
+The ones that return `null` and the reason: `clearFocus` (nothing says which
+group to re-frame), `spinGroup` (a continuous rotation has no inverse; the
+end-of-sequence release closes it), `wobble` (self-damping), `setVariant` (the
+choice is user state — the same asymmetry `stop()` obeys) and `waitTrigger` (a
+return must not sit waiting for a human). Two whose inverse is *not* the obvious
+mirror: `transformOffset` goes to `[0,0,0]` rather than to the opposite offset,
+because `OFFSET_CHANNEL` is shared and interpolates from wherever it is — the
+opposite offset would double the displacement; and `focusGroup` inverts into a
+`clearFocus` with **`restoreOpacity: false`**, since a generated inverse already
+carries the explicit inverse of each `setOpacity` and the two would write the
+same materials in the same frame.
 
 Shipped set: `goToPose`, `focusGroup`, `clearFocus`, `setOpacity` (fade-in and
 fade-out are the same action with `opacity` 1 or 0), `spinGroup`, `rotateBy`,
@@ -1569,29 +1631,14 @@ than as a case of `transformOffset` because a single-axis + angle UI is a very
 different authoring act from a rotation vec3 — and because "show me the other
 side of this part" is a thing you want one control for.
 
-⚠️ **All three take an `axisSpace` (`'model'` by default, `'local'`), and it
-is not a nicety.** A *single-mesh* pivot inherits the mesh's own world
-orientation (see `wrapMeshInPivot`), which in this Maya-exported GLB is often
-tilted with respect to the model — so "rotate about Y" in the pivot's local
-frame is not the model's vertical, and parts visibly tip over and
-interpenetrate their neighbours as they turn (observed on `rotors` vs the
-plate). `axisInPivotFrame` conjugates the requested axis into the pivot's
-frame:
-
-```
-a_pivot = (Qparent · baseQuat)⁻¹ · Qscene · a
-```
-
-using `handle.restWorldQuat` (the pivot's world orientation at rest, captured
-once in `pivotRegistry`). Computed once at `start()` — the rest orientation
-doesn't change mid-run. Group pivots have an identity `baseQuaternion`, so the
-two spaces coincide there.
-
-Measured on this asset: every mesh node carries an **identity** quaternion (the
-GLB bakes placement into vertices), and `scene.getWorldQuaternion()` is identity
-too — the model genuinely never rotates, only the camera orbits. So on *this*
-GLB `'model'` and `'local'` produce the same axis and `axisSpace` is a no-op;
-it exists for assets whose nodes carry real rotations.
+**The axis is simply the model's axis** — `'y'` means the model's vertical, no
+parameter, no conversion. That is a property of the pivot being identity-
+oriented under `scene` (see "Pivots"), not something the actions do. They used
+to carry an `axisSpace` (`'model'`/`'local'`) plus an `axisInPivotFrame`
+conjugation, because a single-mesh pivot then inherited the mesh's own — often
+tilted — orientation and "rotate about Y" was not the model's vertical. Choosing
+the orientation correctly removed the parameter and the machinery both; don't
+reintroduce either.
 
 ⚠️ **`perMesh` is the parameter that actually bites, and it is not a nuance.**
 With it off, N meshes rotate as one rigid body about their *common* centre — so
@@ -1605,6 +1652,10 @@ rotation at every sampled angle, and the world AABB's `minY` never moves. With
 `0`. `rotateBy` and `wobble` therefore default to `perMesh: true`;
 `transformOffset` keeps `false`, because a rigid group translation *is* the
 normal intent there and per-mesh is the explode case you ask for explicitly.
+What it selects today is the **centre** written into each mesh's channel, not a
+different pivot — see "Pivots". One consequence worth having: mixing
+granularities on overlapping meshes (a rigid group offset plus a per-mesh spin)
+now simply composes, where it used to be refused.
 
 **Duration-driven persistent actions stop writing once complete**
 (`inst.data.settled`). They hold pivots/materials so the runtime keeps ticking
@@ -1752,8 +1803,8 @@ difference is negligible either way (measured 14.95 vs 15.57 ms/frame).
 
 #### Pivots (`animation/pivot.js`, `animation/pivotRegistry.js`)
 
-`pivot.js` is `MeshController`'s wrap machinery, extracted verbatim and now
-used by both (see "Mesh editor"). The registry adds shared ownership.
+`pivot.js` is `MeshController`'s wrap machinery, extracted verbatim and used by
+both (see "Mesh editor"). The registry adds shared ownership.
 
 ⚠️ **The teardown semantics differ, and this is the single biggest trap in the
 whole system.** `MeshController` unwinds with `restore({ bake: true })` —
@@ -1765,45 +1816,77 @@ bakes**: every mesh's `{parent, position, quaternion, scale}` is snapshotted at
 wrap time and rewritten at unwind with `parent.add(mesh)` — not `attach()`,
 which would be a matrix round-trip, i.e. float drift.
 
-**Refcount + composed channels.** Two actions on the same target share one
-handle and compose:
+**One pivot per mesh, always — there is no such thing as a group pivot here.**
+A rigid group transform is a shared **centre** written into each mesh's channel,
+not a different container. Everything else in this section follows from that.
 
-```js
-compose() {
-  this.pivot.position.copy(this.basePosition).add(this.channels.offsetPos)
-  const q = this.pivot.quaternion.copy(this.baseQuaternion)
-    .multiply(this.channels.offsetQuat)          // authored placement first…
-  for (const r of this.channels.rot.values()) q.multiply(r)   // …then rotations
-}
-```
+⚠️ **It used to be otherwise, and the difference is worth knowing because the
+old model is what most of the surrounding design was working around.** An
+acquire's target could be a mesh *or a set of meshes*, and the set was the
+handle's key. Two targets that overlapped without coinciding were therefore two
+pivots contending for the same children — whichever unwound first would reparent
+meshes that by then lived under the other — so the registry **refused** them,
+via a `meshOwner` map, a `canClaim` check and a `console.warn`. Correct, and
+unusable while authoring: "move 105 meshes, then bring 4 of them back" was
+refused, the step then did nothing at all (a rejected acquire returns `null`,
+`start()` ends up with `handles: []`, `update()` iterates over nothing, the step
+completes on its `duration` and the wave advances — no error, no effect), and
+getting the effect meant hand-splitting the selector into two disjoint sets
+(4 and 101) *knowing why*. With per-mesh ownership partial overlap cannot exist:
+two steps touching common meshes simply share those meshes' handles. Gone with
+it: `canClaim`, `meshOwner`, the set key, the warning, and the static
+`pivotConflicts.js` analysis that had been added to the editor to anticipate it.
 
-That order means "rotate on its own axis *after* being moved out" — the
-explode-and-rotate case.
+**Channels.** A handle carries a `Map` of contributions. Each is a rigid motion
+in the scene's local space — `x ↦ c + T + Q·(x − c)` — with a centre, a
+translation and a rotation. The centre is the whole of `perMesh`: the mesh's own
+centre ("each on its own centre") versus the group's common centre ("the set as
+a rigid body", so members orbit and translate). **`perMesh` no longer changes
+which pivots are taken, only what centre goes into the channels.**
 
-`channels.rot` is a **`Map` keyed by `step.id`**, not a fixed `spin` field:
-three actions rotate (`spinGroup`, `rotateBy`, `wobble`) and two steps of the
-same kind can legitimately target the same meshes, so named fields would have
-them silently overwrite each other. Rotating actions all go through the shared
-`acquireRotHandles`/`releaseRotHandles` helpers in `actions.js`, which register
-one quaternion per step under that key and `clearRot(stepId)` + recompose on
-teardown. Adding a fourth rotating action needs no change to `pivotRegistry.js`.
+Keys: rotating actions use `step.id`, so two rotating steps on the same mesh add
+up instead of overwriting each other and a fourth rotating action needs no
+change to `pivotRegistry.js`. `transformOffset` deliberately uses **one shared
+key** (`OFFSET_CHANNEL`) instead — ⚠️ and that is what makes `position: [0,0,0]`
+mean *"back to the rest pose"*: a later step finds the channel part-way and
+resumes from it (`inst.data.from` reads the channel, not zero). With a per-step
+channel the second step would start from zero and move nothing.
 
-`spinGroup` uses **one pivot per mesh** (`acquireMesh`), never the group pivot:
-"rotate about its own center" is the single-mesh branch applied N times, while
-a group pivot would swing the rotors around their common barycenter.
+⚠️ **`compose()` applies rotations first and translations last**, and it is not
+a detail: it means "spin on its own axis *after* being moved out" — the
+explode-and-rotate case. Fold the channels in insertion order instead and a
+rotation registered after an offset makes the mesh orbit the point it started
+from. Verified in the A/B harness, and note it is **invisible** unless the
+translation is off the rotation axis: with `[0,30,0]` and a spin about Y,
+`Q·T = T` and both orders agree.
 
-⚠️ **Partially-overlapping targets are refused, not merged.** A per-mesh spin
-plus a rigid *group* offset over the same meshes would be two pivots fighting
-for the same children, and whichever unwinds first would reparent meshes that
-now live under the other. The registry keeps a `meshOwner` map and **rejects
-(with a `console.warn`) an acquire that partially overlaps an existing one**
-rather than silently corrupting the hierarchy. To get that effect, author both
-steps at the same granularity (`perMesh`), which then share one handle.
+The rotations themselves compose as **true rigid motions**, each about its own
+centre (`R ← Q·R`, `t ← c + Q·(t − c)`), not by summing positions and
+multiplying quaternions separately — those agree only when every channel shares
+one centre, and two rigid group rotations about the same centre would come out
+wrong.
+
+⚠️ **The per-mesh pivot is identity-oriented under `scene`, not aligned to the
+mesh**, and that is load-bearing: the pivot's axes *are* the model's, so "rotate
+about Y" means the model's Y by construction. The old single-mesh pivot
+inherited the mesh's own orientation — often tilted in this Maya-exported GLB —
+which required conjugating the requested axis into the pivot's frame
+(`axisSpace`, `restWorldQuat`, `axisInPivotFrame`, plus a user-facing parameter).
+All of it existed to repair an orientation choice, and all of it is gone.
+`pivot.js` keeps the oriented single-mesh branch for `MeshController`, whose
+gizmo must show the mesh's own orientation.
 
 Animation pivots are named `__animPivot`, distinct from `__meshEditorPivot`, so
 the "exactly one editor pivot at a time" browser assertion still holds and gains
 a sibling. No `__editorHelper` tag is needed — a pivot is a `Group`, and both
 `collectMeshGroups` and `measureModelBox` filter on `isMesh`.
+
+⚠️ **A JSON predating this carries `axisSpace` on its rotating steps.**
+`normalizeAnimations` rebuilds each step's `params` from the action's schema, so
+the key is dropped on the round trip with no migration needed — and on this
+asset it was a no-op anyway (measured: every mesh node carries an identity
+quaternion, and `scene.getWorldQuaternion()` is identity too, so `'model'` and
+`'local'` resolved to the same axis).
 
 #### Persistence
 
@@ -1885,8 +1968,58 @@ belt-and-braces for browsers that do honour them.
 A step is a **card of three lines** (identity + commands / parameters / timing),
 not a single row — ten controls in a row would wrap arbitrarily in a narrow
 column. Reordering uses `↑`/`↓` buttons, not HTML5 drag-and-drop: more reliable
-and keyboard-accessible. The `∥` toggle is disabled on the first step. `▶` on a
-card is "play from this wave".
+and keyboard-accessible. The `∥` toggle is disabled on the first step.
+
+**Cards are grouped into collapsible blocks, one per synchronized set** (the
+`parallel` run — i.e. a wave). The header carries the commands that apply to all
+of them at once: `▶` play from this wave (it moved off the individual cards —
+it was always a wave-level command), `⧉` duplicate the block, `⎘` copy it to
+the clipboard, `×` delete it, and the `▾`/`▸` fold. Folded, it shows the
+contained action labels so it stays recognizable.
+⚠️ The grouping is `buildStepGroups` (**all** steps, disabled included), not
+`buildWaves` (enabled only) — an editor that hid a disabled step would be
+lying about the list you are editing. The two disagree when a block's leader is
+disabled, so the **wave number badge on each card still comes from
+`buildWaves`**, which is the runtime's truth.
+
+**Copy, in three scopes.** `⧉` on a card duplicates that step in place (keeping
+its `parallel`, so it stays inside its block); `⧉` on a block header duplicates
+the whole block below it; `⎘` on either puts it in an in-editor **clipboard**
+that survives switching animation — which is the only way to move a block from
+one animation to another. Paste appends at the end (then place it with `↑`/`↓`:
+an explicit "paste here" on every block would be more buttons and more
+ambiguity). Every path goes through `cloneSteps`, which **regenerates ids** —
+they are the key of the live instances, and two steps sharing one would steal
+each other's instance (see `startStep` in `animationRuntime.js`).
+
+**`⧉ duplica` / `⇄ inverso`** sit in the set-management row, next to
+`+ nuova`. Cloning keeps `requires`: a variant of A2 belongs at A2's place in
+the chain, not at the start. The inverse (`reverseAnimation`) is the "explode
+that reassembles" — and two things about it are mechanics, not taste:
+- **the order reverses by BLOCK, not by step**: a synchronized set stays
+  synchronized and keeps its internal order. Reversing the flat list would
+  scatter it and send the leader to the back;
+- **the pose chain shifts by one**: "go to P2" inverts into "go back where you
+  came from", i.e. the `goToPose` before it; the first one returns to the
+  entry pose, for which the editor passes `app.homePose` — the only pose known
+  without executing the sequence, since both product modes start there.
+
+  It is generated with **`startFrom: 'keep'` + `stopOnFinish: true`**, the same
+  obligatory pair as the idle-return transition (a reset play would tear down
+  the very state the inverse exists to undo; starting chained it inherits live
+  instances that nothing else would release), and with `requires` pointing at
+  the original. It reports what it could not invert in a notice bar — **a
+  generated inverse is a starting point to refine, not a finished result**.
+
+**Number fields (`NumberInput`) may be left empty; empty reads as 0.** Clearing
+one used to snap an immediate `0` back into the box that had to be selected
+away before typing. The text is now local state and only the *parsed* value goes
+to the model, so `''` stays `''` on screen while the model reads
+`emptyValue` — `0` normally, `null` for the `optional` params (`focusGroup`'s
+`radiusFactor`/offsets), where empty means "use the `FocusTuner`'s authored
+value", not zero. ⚠️ Resync from the outside compares the *parsed* text, never
+the raw string: comparing strings would turn `'' → onChange(0) → value 0 →
+text "0"` into a loop that puts back the zero just deleted.
 
 Two parameter types get real UI:
 - `selector` — a `kind` select, plus group toggle chips, plus (for
@@ -1898,6 +2031,10 @@ Two parameter types get real UI:
   dedup-suffixed labels but stores node **names**.
 - `pose` — `label · key` disambiguation, because `POSE_HUD_LABEL` has
   intentional duplicates (same reason as `LOCKED_POSE_OPTIONS` in `Scene.jsx`).
+
+**A "sequenza" block** holds the one `requires` dropdown plus the derived chain
+(`A1 → A2 → **A3**`) and the two warnings that make a link unreachable (a
+`forever` prerequisite, a `hidden` one). See "Sequences" above.
 
 **A "transizioni" block sits next to the variant-swap bindings**, and for the
 same reason: what it edits is not a property of one animation but of how the
@@ -1988,6 +2125,13 @@ console helpers, the automatic stop on entering Mesh mode). When a
 `waitTrigger` step is blocking, one **extra chip** appears carrying that
 step's authored label and calling `triggerAnimation(name)` — that chip is the
 product surface for "optionally, an event makes the rotors spin."
+
+⚠️ **This row is also where sequence order is enforced**: a chip whose
+animation declares a `requires` stays disabled (dashed border, `title` naming
+what to run first) until that prerequisite has been *executed* in this session.
+The set of executed ids rides on `animationState()` in the same 150 ms poll —
+`completedKey` exists purely so that poll's identity check doesn't see a fresh
+array every tick. The gate is here and **not** in `play()`; see "Sequences".
 
 ⚠️ **The rows (variants, animations, and the mode button) live in ONE flex
 column, `.chipStack`**, anchored bottom-centre at `--chip-row-bottom`; the

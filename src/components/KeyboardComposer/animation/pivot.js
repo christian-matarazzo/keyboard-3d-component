@@ -96,29 +96,44 @@ export function wrapMeshInPivot(mesh, { name = '__animPivot' } = {}) {
 }
 
 /**
- * Pivot sul centro dell'UNIONE dei bounding box world-space di N mesh, parentato
- * sotto la root della scena GLTF (l'unico contenitore comune stabile quando le
- * mesh hanno parent diversi fra loro).
+ * Centro dell'UNIONE dei bounding box world-space di N mesh, espresso nello
+ * spazio LOCALE di `scene`.
  *
  * `scene` non ha rotazione/scala proprie ma NON è a identity in world space
  * (eredita rotazione di posa e scala TARGET_WIDTH dai `<group>` antenati in
  * KeyboardModel.jsx): il centro world-space va comunque convertito con
  * `scene.worldToLocal`, esattamente come il ramo mesh-singola fa col proprio
  * `parent`.
+ *
+ * Esportata perché serve in DUE punti che devono per forza essere d'accordo: la
+ * collocazione del pivot qui sotto, e il centro attorno a cui un'azione fa
+ * ruotare RIGIDAMENTE un gruppo di mesh che però hanno un pivot ciascuna (vedi
+ * pivotRegistry.js).
  */
-export function wrapGroupInPivot(meshes, scene, { name = '__animPivot' } = {}) {
-  if (!meshes || meshes.length === 0 || !scene) return null
-
+export function groupCenterInScene(meshes, scene) {
+  if (!meshes?.length || !scene) return null
   meshes.forEach((m) => m.updateWorldMatrix(true, false))
   const box = new THREE.Box3()
   for (const m of meshes) box.union(new THREE.Box3().setFromObject(m))
   if (box.isEmpty()) return null
-  const worldCenter = box.getCenter(new THREE.Vector3())
+  return scene.worldToLocal(box.getCenter(new THREE.Vector3()))
+}
+
+/**
+ * Pivot sul centro dell'UNIONE dei bounding box di N mesh, parentato sotto la
+ * root della scena GLTF (l'unico contenitore comune stabile quando le mesh
+ * hanno parent diversi fra loro).
+ */
+export function wrapGroupInPivot(meshes, scene, { name = '__animPivot' } = {}) {
+  if (!meshes || meshes.length === 0 || !scene) return null
+
+  const center = groupCenterInScene(meshes, scene)
+  if (!center) return null
 
   const pivot = new THREE.Group()
   pivot.name = name
   scene.add(pivot)
-  pivot.position.copy(scene.worldToLocal(worldCenter.clone()))
+  pivot.position.copy(center)
   // Quaternion lasciato a identity: con più mesh di orientamento diverso non
   // esiste un singolo "orientamento del gruppo" ben definito — la rotazione
   // rigida in blocco funziona comunque via composizione parent/figlio di
