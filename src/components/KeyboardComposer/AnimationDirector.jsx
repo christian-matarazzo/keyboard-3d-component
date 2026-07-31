@@ -2,8 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { useGLTF } from '@react-three/drei'
 import { DRACO_PATH } from './KeyboardModel'
-import { collectMeshList, DEFAULT_MESH_GROUPS } from './materials/meshGroups'
-import { DEFAULT_MESH_VARIANTS } from './materials/meshVariants'
+import { collectMeshList } from './materials/meshGroups'
 import { createAnimationRuntime } from './animation/animationRuntime'
 import { createOpacityRegistry } from './animation/opacityRegistry'
 import { createPivotRegistry } from './animation/pivotRegistry'
@@ -35,8 +34,8 @@ export default function AnimationDirector({
   apiRef,
   animations,
   editMode = 'none',
-  meshGroups = DEFAULT_MESH_GROUPS,
-  meshVariants = DEFAULT_MESH_VARIANTS,
+  meshGroups,
+  meshVariants,
   // Tempi del RIENTRO di uscita (lo smontaggio morbido di `stop()`, vedi
   // animationRuntime.js): `{ duration, easing }` per l'opacità e
   // `{ transforms, transformsDuration, transformsEasing }` per la posa delle

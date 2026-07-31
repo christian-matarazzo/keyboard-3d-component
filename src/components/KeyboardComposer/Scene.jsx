@@ -8,18 +8,15 @@ import LightRig from './LightRig'
 import MeshController from './MeshController'
 import AnimationDirector from './AnimationDirector'
 import VariantController from './VariantController'
-import { DEFAULT_MESH_VARIANTS } from './materials/meshVariants'
 import { prepareGroupMaterials, applyMaterialProps } from './materials/groupMaterials'
-import { DEFAULT_MESH_GROUPS } from './materials/meshGroups'
-import { POSE_COORD, POSE_HUD_LABEL } from './poseGraph'
 
-// POSE_HUD_LABEL ha etichette duplicate per design (più pose condividono la
-// stessa label breve, es. 'TL'/'TR'/'CFB' → '3/4 FT') — non può essere usata
-// da sola come chiave dell'options Leva, si disambigua accodando la chiave
-// posa. Costruito una sola volta a livello di modulo.
-const HOME_POSE_OPTIONS = Object.fromEntries(
-  Object.keys(POSE_COORD).map((key) => [`${POSE_HUD_LABEL[key] ?? key} · ${key}`, key])
-)
+// Le etichette dell'HUD sono duplicate per design (più pose condividono la
+// stessa label breve, es. 'TL'/'TR'/'CFB' → '3/4 FT') — non possono essere
+// usate da sole come chiave dell'options Leva, si disambigua accodando la
+// chiave posa. Costruito per PRODOTTO (non più una volta a livello di modulo):
+// le pose sono dati del prodotto attivo.
+const homePoseOptions = (poseGraph) =>
+  Object.fromEntries(poseGraph.keys.map((key) => [`${poseGraph.label(key)} · ${key}`, key]))
 
 function Loader() {
   const { progress } = useProgress()
@@ -131,7 +128,7 @@ function FocusGroupTuner({ group, onChange }) {
  * lo passa al hook della camera. Un groupId assente da un JSON vecchio ricade
  * semplicemente sul focus calcolato.
  */
-function FocusTuner({ groups = DEFAULT_MESH_GROUPS, onChange }) {
+function FocusTuner({ groups, onChange }) {
   const [focusState, setFocusState] = useState({})
   const handleGroupChange = useCallback((groupId, values) => {
     setFocusState((prev) => ({ ...prev, [groupId]: values }))
@@ -149,14 +146,14 @@ function FocusTuner({ groups = DEFAULT_MESH_GROUPS, onChange }) {
 
 /**
  * Un folder Leva per gruppo di mesh, instanziato a runtime dall'elenco
- * `groups` (default `DEFAULT_MESH_GROUPS`, vedi materials/meshGroups.js).
+ * `groups` del prodotto attivo (vedi products/).
  * Carica il GLB in proprio (stessa cache di drei condivisa con
  * KeyboardModel.jsx/MeshController.jsx, nessun fetch aggiuntivo) e scopre i
  * materiali via `prepareGroupMaterials` — idempotente, quindi indipendente
  * dall'ordine in cui questo componente e KeyboardModel.jsx montano i propri
  * effetti (sono fratelli sotto Scene.jsx, non genitore/figlio).
  */
-function MaterialTuner({ modelUrl, groups = DEFAULT_MESH_GROUPS }) {
+function MaterialTuner({ modelUrl, groups }) {
   const { scene } = useGLTF(modelUrl, DRACO_PATH)
   const materialsByGroup = useMemo(() => prepareGroupMaterials(scene, groups), [scene, groups])
 
@@ -175,11 +172,12 @@ function MaterialTuner({ modelUrl, groups = DEFAULT_MESH_GROUPS }) {
 }
 
 export default function Scene({
-  modelUrl,
+  // Prodotto già risolto e congelato da KeyboardComposer.jsx: GLB, JSON di
+  // configurazione, grafo delle pose, gruppi e varianti. Scende intero fino a
+  // chi ne ha bisogno invece di essere spacchettato in quattro prop.
+  product,
   apiRef,
-  meshGroups = DEFAULT_MESH_GROUPS,
   animations,
-  meshVariants = DEFAULT_MESH_VARIANTS,
   variantSelection,
   // Modalità di prodotto ('idle' | 'config'): lo stato vive in
   // KeyboardComposer.jsx (rende sia il Canvas sia gli overlay DOM), qui serve
@@ -192,6 +190,8 @@ export default function Scene({
   // salvata: risale a KeyboardComposer.jsx, unico scrittore di __STATE_APP.
   onHomePoseChange,
 }) {
+  const { modelUrl, meshGroups, meshVariants, poseGraph } = product
+
   const [modelSize, setModelSize] = useState(null)
   const [selectedMesh, setSelectedMesh] = useState(null)
   // Inquadrature autorate dei gruppi (vedi FocusTuner): raccolte qui perché
@@ -225,7 +225,14 @@ export default function Scene({
       value: 'none',
       label: 'Modalità',
     },
-    homePose: { options: HOME_POSE_OPTIONS, value: 'TL', label: 'Posa home' },
+    // Opzioni e valore iniziale vengono dal grafo del prodotto attivo: era
+    // `value: 'TL'`, cioè una chiave di ARRAY_MODEL_L scritta a mano.
+    homePose: {
+      options: homePoseOptions(poseGraph),
+      value: poseGraph.findPoseKey(poseGraph.entryLandscape.x, poseGraph.entryLandscape.y) ??
+        poseGraph.keys[0],
+      label: 'Posa home',
+    },
   }), { collapsed: false })
 
   // La posa home è stato di prodotto, non di tuning: va nel JSON globale come
@@ -239,12 +246,12 @@ export default function Scene({
 
   useEffect(() => {
     const handler = (e) => {
-      if (e.detail?.homePose && POSE_COORD[e.detail.homePose])
+      if (e.detail?.homePose && poseGraph.has(e.detail.homePose))
         setModeControls({ homePose: e.detail.homePose })
     }
     window.addEventListener('app-load-app', handler)
     return () => window.removeEventListener('app-load-app', handler)
-  }, [setModeControls])
+  }, [setModeControls, poseGraph])
 
   // Entrando in modalità Mesh (o cambiando la posa home mentre già ci si
   // è dentro), snappa/ri-snappa alla posa home configurabile (non più
@@ -290,7 +297,7 @@ export default function Scene({
         {/* Modello centrato: ruotando su X i bordi non escono dal frame. */}
         <group position={[0, 0.1, 0]}>
           <KeyboardModel
-            url={modelUrl}
+            product={product}
             apiRef={apiRef}
             onSizeComputed={setModelSize}
             onSelectMesh={setSelectedMesh}
@@ -308,7 +315,6 @@ export default function Scene({
             editMode={editMode}
             homePoseKey={homePose}
             appMode={appMode}
-            meshGroups={meshGroups}
             focusOverrides={focusOverrides}
           />
         </group>
@@ -320,7 +326,7 @@ export default function Scene({
             (key/spot) con gizmo di editing. Sostituisce lo studio fotografico
             camera-solidale + Environment/Lightformer della vecchia versione:
             è l'unica sorgente di luce della scena. */}
-        <LightRig modelSize={modelSize} apiRef={apiRef} editMode={editMode} modelUrl={modelUrl} />
+        <LightRig modelSize={modelSize} apiRef={apiRef} editMode={editMode} product={product} />
         {/* AGGIUNGI IL CONTROLLER */}
         <MeshController
           modelUrl={modelUrl}

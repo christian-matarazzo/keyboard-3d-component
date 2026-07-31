@@ -3,17 +3,8 @@ import { useEffect, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { useControls } from 'leva'
 import { easing } from 'maath'
-import {
-  DEG,
-  stepTo,
-  findPoseKey,
-  wrapYaw,
-  POSE_COORD,
-  ENTRY_LANDSCAPE,
-  PORTRAIT_YAW_OFFSET,
-} from './poseGraph'
+import { DEG, wrapYaw } from './poseGraph'
 import { measureGroupFraming } from './focusFraming'
-import { DEFAULT_MESH_GROUPS } from './materials/meshGroups'
 
 // La rotella è uno STRUMENTO DI AUTHORING, non un'interazione di prodotto: in
 // produzione lo zoom è solo quello autorato sui gruppi (vedi focusGroup). Il
@@ -179,16 +170,21 @@ const softClamp = (raw, lo, hi, factor, cap) => {
  *    continua a girare attorno al dettaglio con drag/frecce/pulsantiera.
  *  - il modello non viene mai ruotato: è la camera a orbitare (vedi useFrame),
  *    quindi l'hook NON riceve alcun ref al <group> del modello.
- *  - mobile portrait: ingresso nella posa top verticale (pitch 90° + yaw 90°,
- *    manopole in alto); l'intero grafo è traslato di +90° in yaw
- *    (PORTRAIT_YAW_OFFSET) per il fit su schermo alto, per il resto identico.
+ *  - mobile portrait: ingresso nella posa verticale dichiarata dal prodotto;
+ *    l'intero grafo è traslato in yaw di `poseGraph.portraitYawOffset` per il
+ *    fit su schermo alto, per il resto identico.
  *    La traslazione è dedotta dalla POSA d'ingresso e congelata (frame ref):
  *    un resize non la sposta mai sotto i piedi della posa corrente.
  */
 export function useComposerControls(
   {
     focalLength = 200, // mm equivalenti (35mm): tele spinto, effetto commercial
-    initialRotation = { x: ENTRY_LANDSCAPE.x, y: ENTRY_LANDSCAPE.y },
+    // Grafo delle pose del prodotto attivo (obbligatorio): pose, adiacenza,
+    // etichette, ingressi e offset portrait. Era importato staticamente da
+    // poseGraph.js, quindi il componente poteva navigare un solo modello —
+    // vedi products/productSchema.js.
+    poseGraph,
+    initialRotation = poseGraph?.entryLandscape ?? { x: 0, y: 0 },
     // Ref opzionale su cui esporre `{ goTo(poseKey) }`: serve alla
     // pulsantiera delle viste, che vive nel DOM FUORI dal Canvas e non può
     // quindi raggiungere questi ref altrimenti.
@@ -211,10 +207,11 @@ export function useComposerControls(
     // materials/meshGroups.js), `focusOverrides` sono le inquadrature autorate
     // in ?debug e ricaricate dal JSON di produzione
     // (`{ [groupId]: { radiusFactor, offsetX, offsetY, offsetZ } }`).
-    meshGroups = DEFAULT_MESH_GROUPS,
+    meshGroups,
     focusOverrides = null,
   } = {},
 ) {
+  if (!poseGraph) throw new Error('[useComposerControls] serve `poseGraph` (vedi products/)')
   const gl = useThree((s) => s.gl)
   const camera = useThree((s) => s.camera)
   const size = useThree((s) => s.size)
@@ -236,6 +233,12 @@ export function useComposerControls(
   meshGroupsRef.current = meshGroups
   const focusOverridesRef = useRef(focusOverrides)
   focusOverridesRef.current = focusOverrides
+  // Stesso specchio per il grafo: `goTo`/`currentPoseKey` vivono in una closure
+  // creata una volta sola (deps [apiRef]) e i listener del drag/delle frecce
+  // sono registrati una volta sola. Un prodotto che cambiasse a caldo
+  // lascerebbe quelle closure sul grafo vecchio senza questa ref.
+  const poseGraphRef = useRef(poseGraph)
+  poseGraphRef.current = poseGraph
 
   // NUOVO: Svincoliamo l'interpolazione dal group 3D
   const curAngles = useRef({ pitch: initialRotation.x, yaw: initialRotation.y })
@@ -454,7 +457,7 @@ export function useComposerControls(
     // rimpiazzare l'oggetto intero.
     Object.assign(apiRef.current, {
       goTo(key) {
-        const c = POSE_COORD[key]
+        const c = poseGraphRef.current.poses[key]
         if (!c) return
         // Lock: in Mesh la navigazione ESTERNA (pulsantiera HUD, o qualunque
         // altro chiamante) resta congelata sulla posa home. L'unica goTo
@@ -485,7 +488,7 @@ export function useComposerControls(
       // ricalcola al volo dai ref, così vale anche per frecce e drag, non solo
       // per goTo.
       currentPoseKey() {
-        return findPoseKey(
+        return poseGraphRef.current.findPoseKey(
           pose.current.pitch,
           pose.current.yaw,
           frame.current.yawOffset,
@@ -587,9 +590,9 @@ export function useComposerControls(
     // TL (canonico → offset 0); portrait entra a (90°, 90°), che è TOP solo
     // guardandolo traslato di +90°. Nessuna dipendenza dal viewport.
     frame.current.yawOffset =
-      findPoseKey(initialRotation.x, initialRotation.y, 0) != null
+      poseGraph.findPoseKey(initialRotation.x, initialRotation.y, 0) != null
         ? 0
-        : PORTRAIT_YAW_OFFSET
+        : poseGraph.portraitYawOffset
   }
 
   // Fit responsive a distanza fissa (nessuno zoom utente), camera LIVELLATA
@@ -703,7 +706,7 @@ export function useComposerControls(
     // rilascio, seminata dalla velocità implicita della cadenza di pressione
     // (vedi seedKeyBounce). Se il vicino non esiste, non committa nulla.
     const commitStep = (dir) => {
-      const target = stepTo(p.pitch, p.yaw, dir, frame.current.yawOffset)
+      const target = poseGraphRef.current.stepTo(p.pitch, p.yaw, dir, frame.current.yawOffset)
       if (!target) return
       const dPitch = target.pitch - p.pitch
       const dYaw = target.yaw - p.yaw
@@ -826,7 +829,7 @@ export function useComposerControls(
           : yawDelta > 0
             ? 'left'
             : 'right'
-        d.step = stepTo(d.pitch0, d.yaw0, dir, frame.current.yawOffset)
+        d.step = poseGraphRef.current.stepTo(d.pitch0, d.yaw0, dir, frame.current.yawOffset)
       }
 
       const f = feelRef.current
@@ -1051,7 +1054,11 @@ export function useComposerControls(
     const lockedKey = homePoseKeyRef.current
     const curKey =
       mode === 'lights' && lockedKey != null
-        ? findPoseKey(pose.current.pitch, pose.current.yaw, frame.current.yawOffset)
+        ? poseGraphRef.current.findPoseKey(
+            pose.current.pitch,
+            pose.current.yaw,
+            frame.current.yawOffset,
+          )
         : null
     const qualifies = mode === 'lights' && lockedKey != null && curKey === lockedKey
     if (qualifies && !dynamicFitActiveRef.current) {

@@ -1,16 +1,17 @@
 /**
  * VARIANTI DI MODELLO — insiemi di mesh alternative fra cui l'utente finale
- * sceglie (layout ISO/ANSI oggi, in futuro il rialzo o altro).
+ * sceglie (layout ISO/ANSI oggi, in futuro il rialzo o altro). Qui c'è solo la
+ * MACCHINA: gli elenchi sono dati di prodotto e vivono in `products/`
+ * (`products/arrayModelL/meshVariants.js` per il primo modello).
  *
  * Stessa forma e stesse regole di `meshGroups.js`, ed è deliberato: un elenco
- * dichiarativo esportato come default, classificazione per SOTTOSTRINGA del
- * nome nodo, e la lista passata come prop attraverso tutto l'albero
- * (`meshVariants`), così chi integra il componente con un GLB diverso descrive
- * le proprie varianti senza toccare nessun consumatore.
+ * dichiarativo, classificazione per SOTTOSTRINGA del nome nodo, e la lista
+ * passata attraverso tutto l'albero dentro `product`, così un GLB diverso
+ * descrive le proprie varianti senza toccare nessun consumatore.
  *
- * ⚠️ Nel GLB attuale le quattro mesh `S05_{L,R}_{ISO,ANSI}` esistono tutte e
- * quattro e finora venivano disegnate INSIEME, compenetrandosi. Applicare una
- * selezione non è quindi solo una feature: è ciò che rende il modello corretto.
+ * ⚠️ `variants` non ha un default: ricadere sulle varianti di ARRAY_MODEL_L
+ * significherebbe, con più prodotti, cercare mesh ISO/ANSI in un modello che
+ * non ne ha — silenziosamente, perché nessun match non è un errore.
  *
  * ⚠️ Le mesh nascoste vengono marcate `userData.__variantHidden = true`, ed è
  * quel tag — non `.visible` — che il resto del componente deve controllare per
@@ -19,24 +20,20 @@
  * spento da chiunque per motivi loro, il tag dice *perché*.
  */
 
-export const DEFAULT_MESH_VARIANTS = [
-  {
-    id: 'layout',
-    label: 'Layout',
-    // Opzione mostrata quando non c'è nulla di salvato né di autorato.
-    defaultOption: 'iso',
-    // Id di un'animazione (facoltativo, autorabile): se presente il comando di
-    // layout dell'HUD lancia QUESTA. Se manca non si scambia di scatto — si
-    // gioca l'animazione integrata (`BUILTIN_VARIANT_SWAP_ID` in
-    // animation/animationSchema.js), un incrocio morbido in dissolvenza. Vedi
-    // Hud.jsx.
-    swapAnimation: null,
-    options: [
-      { id: 'iso', label: 'ISO', nameTokens: ['S05_L_ISO', 'S05_R_ISO'] },
-      { id: 'ansi', label: 'ANSI', nameTokens: ['S05_L_ANSI', 'S05_R_ANSI'] },
-    ],
-  },
-]
+/**
+ * @typedef {Object} MeshVariantOption
+ * @property {string} id
+ * @property {string} label
+ * @property {string[]} nameTokens - substring dei nomi nodo di questa opzione
+ *
+ * @typedef {Object} MeshVariant
+ * @property {string} id - chiave stabile: la usano la selezione utente
+ *   (sessionStorage), i binding di swap nel JSON e lo step `setVariant`.
+ * @property {string} label
+ * @property {string} [defaultOption] - opzione accesa senza nulla di salvato
+ * @property {string|null} [swapAnimation] - id dell'animazione di scambio
+ * @property {MeshVariantOption[]} options
+ */
 
 const matches = (name, tokens) => (tokens ?? []).some((t) => name.includes(t))
 
@@ -44,7 +41,7 @@ const matches = (name, tokens) => (tokens ?? []).some((t) => name.includes(t))
  * Tutte le mesh di ogni opzione di ogni variante.
  * @returns {{ [variantId]: { [optionId]: THREE.Mesh[] } }}
  */
-export function collectVariantMeshes(scene, variants = DEFAULT_MESH_VARIANTS) {
+export function collectVariantMeshes(scene, variants) {
   const out = {}
   for (const v of variants) {
     out[v.id] = {}
@@ -63,7 +60,7 @@ export function collectVariantMeshes(scene, variants = DEFAULT_MESH_VARIANTS) {
 }
 
 /** Riempie i buchi di una selezione parziale con i default dichiarati. */
-export function normalizeVariantSelection(raw, variants = DEFAULT_MESH_VARIANTS) {
+export function normalizeVariantSelection(raw, variants) {
   const out = {}
   for (const v of variants) {
     const wanted = raw?.[v.id]
@@ -85,7 +82,7 @@ export function normalizeVariantSelection(raw, variants = DEFAULT_MESH_VARIANTS)
  */
 export function applyVariantVisibility(
   scene,
-  variants = DEFAULT_MESH_VARIANTS,
+  variants,
   selection = {},
   holds = null,
 ) {

@@ -3,3 +3,6 @@ dist
 assets-src/
 *.obj
 *.local
+
+# Claude Code auto-memory
+.claude/auto-memory/dirty-files*

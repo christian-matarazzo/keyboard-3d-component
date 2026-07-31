@@ -13,18 +13,15 @@ import {
   requireChain,
 } from './animation/animationSchema'
 import { cloneAnimation, cloneSteps, reverseAnimation } from './animation/animationTransforms'
-import { DEFAULT_MESH_GROUPS } from './materials/meshGroups'
-import { POSE_COORD, POSE_HUD_LABEL } from './poseGraph'
 
 const DEBUG = new URLSearchParams(window.location.search).has('debug')
 
-// POSE_HUD_LABEL ha etichette duplicate per design (più pose condividono la
-// stessa label breve): si disambigua accodando la chiave, come
-// HOME_POSE_OPTIONS in Scene.jsx.
-const POSE_OPTIONS = Object.keys(POSE_COORD).map((key) => ({
-  key,
-  label: `${POSE_HUD_LABEL[key] ?? key} · ${key}`,
-}))
+// Le etichette dell'HUD sono duplicate per design (più pose condividono la
+// stessa label breve): si disambigua accodando la chiave, come in Scene.jsx.
+// Derivate dal grafo del PRODOTTO attivo, non più da una costante di modulo:
+// le pose selezionabili in uno step `goToPose` sono quelle di questo modello.
+const poseOptionsOf = (poseGraph) =>
+  poseGraph.keys.map((key) => ({ key, label: `${poseGraph.label(key)} · ${key}` }))
 
 const WAIT_LABEL = { settle: 'attendi', duration: 'durata', none: 'subito' }
 
@@ -49,8 +46,9 @@ export default function AnimationEditor({
   poseApi,
   animations,
   onChange,
-  meshGroups = DEFAULT_MESH_GROUPS,
-  meshVariants = [],
+  // Prodotto attivo: gruppi di mesh, varianti e grafo delle pose che gli step
+  // autorati possono citare (vedi products/).
+  product,
   variantAnimations = {},
   onVariantAnimationsChange,
   // Sezione `app` del JSON: animazione di rientro in idle e tempi della
@@ -58,6 +56,9 @@ export default function AnimationEditor({
   appConfig = null,
   onAppConfigChange,
 }) {
+  const { meshGroups, meshVariants, poseGraph } = product
+  const poseOptions = useMemo(() => poseOptionsOf(poseGraph), [poseGraph])
+
   const [editMode, setEditMode] = useState(null)
   const [runState, setRunState] = useState(null)
   const [selectedId, setSelectedId] = useState(null)
@@ -966,6 +967,7 @@ export default function AnimationEditor({
                           meshGroups={meshGroups}
                           meshCatalog={meshCatalog}
                           meshVariants={meshVariants}
+                          poseOptions={poseOptions}
                           onPatch={(patch) => patchStep(step.id, patch)}
                           onPatchParam={(key2, value) => patchParam(step.id, key2, value)}
                           onChangeAction={(key2) => changeAction(step.id, key2)}
@@ -1054,6 +1056,7 @@ function StepRow({
   meshGroups,
   meshCatalog,
   meshVariants,
+  poseOptions,
   onPatch,
   onPatchParam,
   onChangeAction,
@@ -1180,6 +1183,7 @@ function StepRow({
               meshGroups={meshGroups}
               meshCatalog={meshCatalog}
               meshVariants={meshVariants}
+              poseOptions={poseOptions}
               onChange={(v) => onPatchParam(schema.key, v)}
             />
           ))}
@@ -1307,7 +1311,7 @@ function NumberInput({ value, onChange, emptyValue = 0, ...rest }) {
 }
 
 /* ── Un campo parametro, disegnato dallo schema del registry ────────────── */
-function ParamField({ schema, value, allParams, meshGroups, meshCatalog, meshVariants, onChange }) {
+function ParamField({ schema, value, allParams, meshGroups, meshCatalog, meshVariants, poseOptions, onChange }) {
   const label = schema.label ?? schema.key
 
   switch (schema.type) {
@@ -1443,7 +1447,7 @@ function ParamField({ schema, value, allParams, meshGroups, meshCatalog, meshVar
             value={value ?? ''}
             onChange={(e) => onChange(e.target.value)}
           >
-            {POSE_OPTIONS.map((p) => (
+            {poseOptions.map((p) => (
               <option key={p.key} value={p.key}>
                 {p.label}
               </option>

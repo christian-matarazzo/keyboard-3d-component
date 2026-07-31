@@ -1,22 +1,23 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useProgress } from '@react-three/drei'
 import { Leva } from 'leva'
 import styles from './KeyboardComposer.module.css'
 import Scene from './Scene'
 import Hud from './Hud'
 import AnimationEditor from './AnimationEditor'
-import { DEFAULT_MODEL_URL } from './KeyboardModel'
-import { DEFAULT_MESH_GROUPS } from './materials/meshGroups'
-import { DEFAULT_MESH_VARIANTS, normalizeVariantSelection } from './materials/meshVariants'
+import { normalizeVariantSelection } from './materials/meshVariants'
+import { DEFAULT_PRODUCT_ID, resolveProduct } from './products'
 import { EMPTY_ANIMATIONS, normalizeAnimations } from './animation/animationSchema'
 
 // Scelta delle varianti ricordata per la SESSIONE della scheda: sopravvive a un
 // reload, si azzera chiudendo la scheda, che è dove riparte il default autorato.
-const VARIANT_STORAGE_KEY = 'keyboardComposer.variants'
+// La chiave è per PRODOTTO: due modelli hanno varianti diverse, e una scelta
+// ricordata dall'uno non ha significato per l'altro.
+const variantStorageKey = (productId) => `keyboardComposer.variants.${productId}`
 
-const readStoredVariants = () => {
+const readStoredVariants = (productId) => {
   try {
-    return JSON.parse(sessionStorage.getItem(VARIANT_STORAGE_KEY)) ?? null
+    return JSON.parse(sessionStorage.getItem(variantStorageKey(productId))) ?? null
   } catch {
     return null // sessionStorage può essere negato (Safari privato, iframe)
   }
@@ -37,8 +38,11 @@ const readStoredVariants = () => {
 //    istantaneo di prima). Il terzo pezzo del rientro, lo zoom-out, ha la sua
 //    manopola gemella nella folder Leva `Rotazione` (`focusOutDamp`), perché è
 //    feel di camera e viaggia con `rotation`.
+//
+// ⚠️ `homePose` non è qui dentro: è una CHIAVE DI POSA, quindi dipende dal
+// prodotto (vedi defaultHomePose). Un letterale 'TL' funzionava solo finché il
+// grafo era uno solo.
 const DEFAULT_APP_CONFIG = {
-  homePose: 'TL',
   idleAnimation: '',
   releaseDuration: 0.5,
   releaseEasing: 'easeInOutCubic',
@@ -46,6 +50,16 @@ const DEFAULT_APP_CONFIG = {
   releaseTransformsDuration: 0.7,
   releaseTransformsEasing: 'easeInOutCubic',
 }
+
+/**
+ * Posa home di partenza di un prodotto: la posa d'ingresso landscape dichiarata
+ * nel suo grafo, o la prima dichiarata se quell'ingresso non cade esattamente
+ * su una posa. È solo il valore INIZIALE — la home vera si autora in ?debug e
+ * arriva dalla sezione `app` del JSON di configurazione.
+ */
+const defaultHomePose = (poseGraph) =>
+  poseGraph.findPoseKey(poseGraph.entryLandscape.x, poseGraph.entryLandscape.y) ??
+  poseGraph.keys[0]
 
 // Pannello di tuning (luci, materiali, resa) visibile solo con `?debug`
 // nell'URL: in produzione il canvas resta pulito, a tutto schermo.
@@ -211,16 +225,32 @@ function DebugPanel({ poseApi }) {
  * 45°; in vista frontale trascina in orizzontale per i ±45° laterali.
  */
 export default function KeyboardComposer({
-  modelUrl = DEFAULT_MODEL_URL,
-  // Elenco dei gruppi logici di mesh (classificazione per nome nodo, label,
-  // vedi materials/meshGroups.js). Chi integra il componente con un GLB
-  // dalle convenzioni di naming diverse può passare qui il proprio elenco.
-  meshGroups = DEFAULT_MESH_GROUPS,
-  // Insiemi di mesh alternative fra cui l'utente sceglie (layout ISO/ANSI e,
-  // in futuro, altro). Stessa logica di `meshGroups`: elenco dichiarativo
-  // sostituibile da chi integra il componente — vedi materials/meshVariants.js.
-  meshVariants = DEFAULT_MESH_VARIANTS,
+  // PRODOTTO — l'unità sostituibile del configuratore: GLB, JSON di
+  // configurazione, grafo delle pose, gruppi di mesh e varianti in un solo
+  // oggetto (vedi products/productSchema.js per il perché stanno insieme).
+  // Tre forme accettate:
+  //   product="ARRAY_MODEL_L"      id enumerativo del registro (PRODUCT_IDS)
+  //   product={ARRAY_MODEL_L}      prodotto già definito
+  //   product={{ ...ARRAY_MODEL_L, modelUrl: '…' }}   definizione derivata
+  product = DEFAULT_PRODUCT_ID,
+  // Override puntuali, precedenti al concetto di prodotto e ancora supportati
+  // come scorciatoia: sovrascrivono il campo omonimo del prodotto risolto.
+  // Per un modello nuovo si dichiara un prodotto, non si passano queste tre.
+  modelUrl,
+  meshGroups,
+  meshVariants,
 }) {
+  // Un solo punto di risoluzione, memoizzato: il prodotto risolto è dipendenza
+  // di effetti e di useMemo in tutto l'albero, quindi la sua IDENTITÀ deve
+  // essere stabile fra i render. Senza override e con un id del registro,
+  // `resolveProduct` restituisce lo stesso oggetto congelato ogni volta.
+  const resolved = useMemo(
+    () => resolveProduct(product, { modelUrl, meshGroups, meshVariants }),
+    [product, modelUrl, meshGroups, meshVariants],
+  )
+  // Gli altri campi del prodotto scendono dentro `resolved`: qui servono solo
+  // il grafo (posa home di default) e le varianti (selezione utente).
+  const { poseGraph, meshVariants: activeMeshVariants } = resolved
   const { progress } = useProgress()
   // Stato (non derivato al volo da `progress`): con l'asset già in cache
   // (visita successiva, mobile o desktop) `progress` può essere 100 già al
@@ -277,7 +307,10 @@ export default function KeyboardComposer({
   // (?debug) e salvate nella sezione `app` del JSON globale, insieme alla posa
   // home che arriva qui da Scene.jsx (unico scrittore di window.__STATE_APP:
   // così non ci sono due mani sullo stesso oggetto).
-  const [appConfig, setAppConfig] = useState(DEFAULT_APP_CONFIG)
+  const [appConfig, setAppConfig] = useState(() => ({
+    ...DEFAULT_APP_CONFIG,
+    homePose: defaultHomePose(poseGraph),
+  }))
   const appConfigRef = useRef(appConfig)
   appConfigRef.current = appConfig
   const animationsRef = useRef(EMPTY_ANIMATIONS)
@@ -416,7 +449,7 @@ export default function KeyboardComposer({
   //
   // Il seed legge sessionStorage una sola volta.
   const [variantSelection, setVariantSelection] = useState(() =>
-    normalizeVariantSelection(readStoredVariants(), meshVariants),
+    normalizeVariantSelection(readStoredVariants(resolved.id), activeMeshVariants),
   )
   // Binding variante → animazione di swap, autorato e salvato nel JSON.
   const [variantAnimations, setVariantAnimations] = useState({})
@@ -425,11 +458,11 @@ export default function KeyboardComposer({
   // si azzera chiudendo la scheda, e non lascia traccia nel JSON globale.
   useEffect(() => {
     try {
-      sessionStorage.setItem(VARIANT_STORAGE_KEY, JSON.stringify(variantSelection))
+      sessionStorage.setItem(variantStorageKey(resolved.id), JSON.stringify(variantSelection))
     } catch {
       /* storage negato: la scelta resta valida per il solo tempo di vita della pagina */
     }
-  }, [variantSelection])
+  }, [variantSelection, resolved.id])
 
   // Nel JSON globale finiscono i soli binding: `__STATE_VARIANTS` NON porta
   // più `selection`. Se un giorno servisse rimetterla, va rimessa anche la
@@ -458,14 +491,14 @@ export default function KeyboardComposer({
       currentVariants: () => variantSelection,
       variantSwapAnimation: (variantId) =>
         variantAnimations?.[variantId] ??
-        meshVariants.find((v) => v.id === variantId)?.swapAnimation ??
+        activeMeshVariants.find((v) => v.id === variantId)?.swapAnimation ??
         null,
       setVariant: (variantId, optionId) =>
         setVariantSelection((prev) =>
           prev[variantId] === optionId ? prev : { ...prev, [variantId]: optionId },
         ),
     })
-  }, [variantSelection, variantAnimations, meshVariants])
+  }, [variantSelection, variantAnimations, activeMeshVariants])
 
   return (
     <section className={styles.section}>
@@ -474,11 +507,9 @@ export default function KeyboardComposer({
         className={`${styles.canvasWrap} ${loaded ? styles.canvasWrapLoaded : ''}`}
       >
         <Scene
-          modelUrl={modelUrl}
+          product={resolved}
           apiRef={poseApi}
-          meshGroups={meshGroups}
           animations={animations}
-          meshVariants={meshVariants}
           variantSelection={variantSelection}
           appMode={appMode}
           // Tempi del rientro di uscita, per il runtime delle animazioni: la
@@ -498,7 +529,7 @@ export default function KeyboardComposer({
         <Hud
           poseApi={poseApi}
           animations={animations}
-          meshVariants={meshVariants}
+          product={resolved}
           variantSelection={variantSelection}
           appMode={appMode}
           onAppModeChange={changeAppMode}
@@ -507,9 +538,7 @@ export default function KeyboardComposer({
           poseApi={poseApi}
           animations={animations}
           onChange={setAnimations}
-          meshGroups={meshGroups}
-          modelUrl={modelUrl}
-          meshVariants={meshVariants}
+          product={resolved}
           variantAnimations={variantAnimations}
           onVariantAnimationsChange={setVariantAnimations}
           appConfig={appConfig}

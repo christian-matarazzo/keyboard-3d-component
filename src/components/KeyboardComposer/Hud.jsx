@@ -1,7 +1,5 @@
 import { useEffect, useState } from 'react'
 import styles from './Hud.module.css'
-import { POSE_HUD_LABEL } from './poseGraph'
-import { DEFAULT_MODEL_URL } from './KeyboardModel'
 import { BUILTIN_VARIANT_SWAP_ID } from './animation/animationSchema'
 
 /**
@@ -52,7 +50,9 @@ import { BUILTIN_VARIANT_SWAP_ID } from './animation/animationSchema'
 export default function Hud({
   poseApi,
   animations,
-  meshVariants = [],
+  // Prodotto attivo: da qui vengono le varianti mostrate nei chip, le etichette
+  // di posa del readout e l'URL del GLB di cui pesare i byte scaricati.
+  product,
   variantSelection = {},
   // Modalità di prodotto: `idle` mostra il solo modello (si gira a mano),
   // `config` mostra la pulsantiera — layout e animazioni — mentre drag/frecce
@@ -62,6 +62,8 @@ export default function Hud({
   appMode = 'idle',
   onAppModeChange,
 }) {
+  const { meshVariants, poseGraph, modelUrl } = product
+
   const [poseKey, setPoseKey] = useState(null)
   const [locked, setLocked] = useState(false)
   const [animState, setAnimState] = useState({
@@ -167,7 +169,7 @@ export default function Hud({
     const read = () => {
       const entry = performance
         .getEntriesByType('resource')
-        .find((e) => e.name.includes(DEFAULT_MODEL_URL))
+        .find((e) => e.name.includes(modelUrl))
       // encodedBodySize = byte del corpo (il file glb); transferSize può
       // essere 0 se servito da cache → fallback su encoded/decoded.
       const bytes =
@@ -180,7 +182,7 @@ export default function Hud({
     read()
     id = setInterval(read, 300)
     return () => clearInterval(id)
-  }, [])
+  }, [modelUrl])
 
   // RAM usata dalla tab per far girare il modello: `performance.memory`
   // (heap JS, non VRAM) esiste solo su Chrome/Edge — su Firefox/Safari resta
@@ -193,7 +195,7 @@ export default function Hud({
     return () => clearInterval(id)
   }, [])
 
-  const viewLabel = POSE_HUD_LABEL[poseKey] ?? '—'
+  const viewLabel = poseKey ? poseGraph.label(poseKey) : '—'
   const memLabel = modelMB != null ? `${modelMB.toFixed(2)} MB` : '— MB'
   const fpsLabel = fps.toFixed(2)
   const ramLabel = ramMB != null ? `RAM ${Math.round(ramMB)} MB` : 'RAM —'

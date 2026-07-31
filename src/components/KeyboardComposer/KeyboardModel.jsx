@@ -8,12 +8,14 @@ import {
   programSignature,
   warmTransparentPrograms,
 } from './materials/warmupTransparency'
-import { DEFAULT_MESH_GROUPS } from './materials/meshGroups'
 import { useComposerControls } from './useComposerControls'
-import { ENTRY_LANDSCAPE, ENTRY_PORTRAIT, POSE_COORD } from './poseGraph'
+import { ARRAY_MODEL_L } from './products/arrayModelL'
 
 export const DRACO_PATH = '/draco/'
-export const DEFAULT_MODEL_URL = '/models/keyboard.glb'
+// Compatibilità: il GLB del primo prodotto. Il percorso vero arriva sempre da
+// `product.modelUrl` (vedi products/), questa costante resta solo perché è
+// esportata e usata come default da chi non passa nulla (Hud.jsx, preload).
+export const DEFAULT_MODEL_URL = ARRAY_MODEL_L.modelUrl
 
 // Selezione mesh/gruppo (gizmo di trasformazione, MeshController.jsx) è uno
 // strumento di authoring: attivo solo con ?debug E in editMode === 'meshes'
@@ -26,8 +28,9 @@ const DEBUG = new URLSearchParams(window.location.search).has('debug')
 // del file sorgente (l'OBJ è in centimetri).
 const TARGET_WIDTH = 3.2
 
-export function KeyboardModel({ url = DEFAULT_MODEL_URL, apiRef, onSizeComputed, onSelectMesh, controlsDisabled, editMode = 'none', homePoseKey = null, appMode = 'idle', meshGroups = DEFAULT_MESH_GROUPS, focusOverrides = null }) {
-  const { scene } = useGLTF(url, DRACO_PATH)
+export function KeyboardModel({ product, apiRef, onSizeComputed, onSelectMesh, controlsDisabled, editMode = 'none', homePoseKey = null, appMode = 'idle', focusOverrides = null }) {
+  const { modelUrl, meshGroups, poseGraph } = product
+  const { scene } = useGLTF(modelUrl, DRACO_PATH)
 
   // Auto-fit: centra il modello e lo scala a TARGET_WIDTH, così camera e
   // ombre funzionano qualunque siano le unità dell'asset.
@@ -102,27 +105,31 @@ export function KeyboardModel({ url = DEFAULT_MODEL_URL, apiRef, onSizeComputed,
   }, [scene, gl, rootScene, camera])
 
   // Posa d'ingresso: su desktop è la POSA HOME autorata in ?debug e salvata
-  // nel JSON (default TL, il corner "initial position" del cliente — pitch
-  // 35.264° + yaw 45°, stop ViewCube, vedi poseGraph.js). Su mobile portrait
-  // la vista verticale (faccia tasti alla camera, asse lungo verticale,
-  // manopole in alto) resta pitch 90° + yaw 90° (Rx·Ry, ordine 'XYZ'): il fit
-  // su schermo alto è la ragione per cui quell'ingresso è una scelta di
-  // layout, non una posa di prodotto, quindi la home NON lo sostituisce.
+  // nel JSON (di default l'ingresso landscape dichiarato dal prodotto — per
+  // ARRAY_MODEL_L il corner "initial position" del cliente, pitch 35.264° +
+  // yaw 45°, stop ViewCube). Su mobile portrait vale invece l'ingresso
+  // portrait del prodotto (per ARRAY_MODEL_L: pitch 90° + yaw 90°, faccia
+  // tasti alla camera, asse lungo verticale): il fit su schermo alto è la
+  // ragione per cui quell'ingresso è una scelta di layout, non una posa di
+  // prodotto, quindi la home NON lo sostituisce.
   // Niente roll su wrapper esterno: così il pitch resta sull'asse orizzontale
   // dello schermo e lo swipe verticale trascina il modello seguendo il dito,
   // identico al desktop.
-  const homeCoord = POSE_COORD[homePoseKey] ?? null
+  const homeCoord = poseGraph.poses[homePoseKey] ?? null
   useComposerControls({
     initialRotation: portrait
-      ? { x: ENTRY_PORTRAIT.x, y: ENTRY_PORTRAIT.y }
+      ? { x: poseGraph.entryPortrait.x, y: poseGraph.entryPortrait.y }
       : homeCoord
         ? { x: homeCoord.pitch, y: homeCoord.yaw }
-        : { x: ENTRY_LANDSCAPE.x, y: ENTRY_LANDSCAPE.y },
+        : { x: poseGraph.entryLandscape.x, y: poseGraph.entryLandscape.y },
     apiRef, // esposto alla pulsantiera delle viste, che sta fuori dal Canvas
     disabled: controlsDisabled,
     editMode,
     homePoseKey,
     scene, // per il fit dinamico in Luci sulla posa bloccata (vedi useComposerControls.js)
+    // Navigazione: il grafo del prodotto attivo (pose, adiacenza, offset
+    // portrait) — era importato staticamente, ora scende da qui.
+    poseGraph,
     // Zoom sui gruppi: `meshGroups` classifica le mesh da misurare,
     // `focusOverrides` porta le inquadrature autorate (Scene.jsx/FocusTuner).
     meshGroups,
@@ -168,7 +175,10 @@ export function KeyboardModel({ url = DEFAULT_MODEL_URL, apiRef, onSizeComputed,
   )
 }
 
-/** Da chiamare il prima possibile nel sito host per anticipare il fetch. */
-export function preloadKeyboardModel(url = DEFAULT_MODEL_URL) {
-  useGLTF.preload(url, DRACO_PATH)
+/**
+ * Da chiamare il prima possibile nel sito host per anticipare il fetch.
+ * Accetta l'URL di un GLB o direttamente un prodotto (`products/`).
+ */
+export function preloadKeyboardModel(source = DEFAULT_MODEL_URL) {
+  useGLTF.preload(typeof source === 'string' ? source : source.modelUrl, DRACO_PATH)
 }

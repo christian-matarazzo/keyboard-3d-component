@@ -1,4 +1,4 @@
-import { collectMeshGroups, DEFAULT_MESH_GROUPS } from '../materials/meshGroups'
+import { collectMeshGroups } from '../materials/meshGroups'
 
 /**
  * Selettore di mesh condiviso da ogni azione che tocca la geometria o i
@@ -23,8 +23,8 @@ import { collectMeshGroups, DEFAULT_MESH_GROUPS } from '../materials/meshGroups'
 
 export const SELECTOR_KINDS = ['all', 'group', 'allExcept', 'meshes']
 
-export function resolveSelector(scene, groups = DEFAULT_MESH_GROUPS, selector) {
-  if (!scene || !selector) return []
+export function resolveSelector(scene, groups, selector) {
+  if (!scene || !selector || !groups) return []
   const byGroup = collectMeshGroups(scene, groups)
 
   switch (selector.kind) {
@@ -53,7 +53,7 @@ export function resolveSelector(scene, groups = DEFAULT_MESH_GROUPS, selector) {
 }
 
 /** Etichetta leggibile di un selettore, per l'editor e i log del runtime. */
-export function describeSelector(selector, groups = DEFAULT_MESH_GROUPS) {
+export function describeSelector(selector, groups = []) {
   const label = (id) => groups.find((g) => g.id === id)?.label ?? id
   switch (selector?.kind) {
     case 'all': return 'tutto'

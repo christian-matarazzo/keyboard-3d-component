@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { collectMeshGroups, DEFAULT_MESH_GROUPS } from './materials/meshGroups'
+import { collectMeshGroups } from './materials/meshGroups'
 
 /**
  * Misura geometrica di un gruppo di mesh per lo zoom di prodotto ("focus").
@@ -31,8 +31,8 @@ import { collectMeshGroups, DEFAULT_MESH_GROUPS } from './materials/meshGroups'
  * @returns {{ center: THREE.Vector3, radius: number } | null} null se il
  *   gruppo non esiste, è vuoto o non ha volume.
  */
-export function measureGroupFraming(scene, groups = DEFAULT_MESH_GROUPS, groupId) {
-  if (!scene || !groupId) return null
+export function measureGroupFraming(scene, groups, groupId) {
+  if (!scene || !groupId || !groups) return null
 
   const meshes = collectMeshGroups(scene, groups)[groupId]
   if (!meshes || meshes.length === 0) return null

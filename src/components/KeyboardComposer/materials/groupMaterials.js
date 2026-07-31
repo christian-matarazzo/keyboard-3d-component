@@ -1,4 +1,4 @@
-import { collectMeshGroups, DEFAULT_MESH_GROUPS } from './meshGroups'
+import { collectMeshGroups } from './meshGroups'
 
 /**
  * Scopre e clona i materiali reali del GLB per ciascun gruppo, invece di
@@ -18,7 +18,7 @@ import { collectMeshGroups, DEFAULT_MESH_GROUPS } from './meshGroups'
  * `scene` via cache di useGLTF) non ri-clona né duplica materiali GPU: chi
  * arriva dopo trova i cloni già pronti e li riusa.
  */
-export function prepareGroupMaterials(scene, groups = DEFAULT_MESH_GROUPS, fallbackGroupId) {
+export function prepareGroupMaterials(scene, groups, fallbackGroupId) {
   const meshGroups = collectMeshGroups(scene, groups, fallbackGroupId)
   const materialsByGroup = {}
 

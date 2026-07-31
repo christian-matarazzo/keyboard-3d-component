@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useGLTF } from '@react-three/drei'
 import { DRACO_PATH } from './KeyboardModel'
-import { DEFAULT_MESH_VARIANTS, applyVariantVisibility } from './materials/meshVariants'
+import { applyVariantVisibility } from './materials/meshVariants'
 
 /**
  * Applica la selezione delle varianti all'albero reale del GLB.
@@ -23,7 +23,7 @@ import { DEFAULT_MESH_VARIANTS, applyVariantVisibility } from './materials/meshV
 export default function VariantController({
   modelUrl,
   apiRef,
-  variants = DEFAULT_MESH_VARIANTS,
+  variants,
   selection,
 }) {
   const { scene } = useGLTF(modelUrl, DRACO_PATH)

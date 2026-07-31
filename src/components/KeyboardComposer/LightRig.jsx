@@ -9,8 +9,8 @@ import { Html, useHelper, TransformControls, useGLTF } from '@react-three/drei'
 import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js'
 RectAreaLightUniformsLib.init()
 
-import { POSE_COORD, wrapYaw } from './poseGraph'
-import { DRACO_PATH, DEFAULT_MODEL_URL } from './KeyboardModel'
+import { wrapYaw } from './poseGraph'
+import { DRACO_PATH } from './KeyboardModel'
 
 const RIG_POSITION = [0, 0.1, 0]
 const DEBUG = new URLSearchParams(window.location.search).has('debug')
@@ -306,7 +306,12 @@ function ShadowSpotLight({ debug, lightsActive }) {
   )
 }
 
-export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUrl = DEFAULT_MODEL_URL } = {}) {
+export default function LightRig({ modelSize, apiRef, editMode = 'none', product } = {}) {
+  // GLB, grafo delle pose e percorso del JSON autorato vengono tutti dal
+  // prodotto attivo: le luci sono indicizzate PER CHIAVE DI POSA, quindi un
+  // file di configurazione ha senso solo insieme al grafo che lo indicizza
+  // (vedi products/productSchema.js).
+  const { modelUrl, poseGraph, configUrl } = product
   // Stessa cache di drei condivisa con KeyboardModel/MeshController/
   // MaterialTuner: nessun fetch aggiuntivo, è la STESSA istanza di scena su
   // cui l'editor mesh applica le sue trasformate — che è esattamente ciò che
@@ -464,12 +469,14 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
   }, [selectedLight, setControls])
   // --- FINE IMPLEMENTAZIONE UNDO ---
 
-  // Fetch automatico in produzione (fuori dal debug)
+  // Fetch automatico in produzione (fuori dal debug). Il percorso è quello del
+  // PRODOTTO attivo (`configUrl`): luci per posa, materiali e focus sono
+  // indicizzati da chiavi che appartengono a quel modello, quindi non esiste un
+  // file condiviso fra prodotti.
   useEffect(() => {
     // Eseguiamo il fetch solo fuori dal debug
     if (!DEBUG) {
-      // Usa il nuovo nome del file che comprende tutto lo stato
-      fetch('/lightconfig/app-state-config.json')
+      fetch(configUrl)
         .then((res) => {
           if (!res.ok) throw new Error('File di configurazione non trovato')
           return res.json()
@@ -510,7 +517,7 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
           console.warn('Nessun JSON personalizzato trovato, applico i default di sistema:', err.message)
         })
     }
-  }, [setControls])
+  }, [setControls, configUrl])
 
   // Slider → config della posa attiva. Il runtime legge questi valori da Leva
   // (currentControlsRef), quindi questo effetto è ciò che li rende persistenti:
@@ -636,8 +643,8 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
     const poseKey = apiRef?.current?.currentPoseKey?.()
     
     if (poseKey && poseKey !== activePoseRef.current) {
-      const targetCoord = POSE_COORD[poseKey]
-      const prevCoord = POSE_COORD[activePoseRef.current] || targetCoord
+      const targetCoord = poseGraph.poses[poseKey]
+      const prevCoord = poseGraph.poses[activePoseRef.current] || targetCoord
       if (targetCoord && prevCoord) {
         const totalDist = Math.hypot(
           wrapYaw(targetCoord.yaw - prevCoord.yaw),
@@ -943,7 +950,10 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', modelUr
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = 'app-state-config.json'
+    // Stesso nome del file che il prodotto si aspetta di trovare servito: si
+    // scarica e si ricopia in `public/` al percorso di `configUrl`, senza
+    // rinominarlo a mano.
+    a.download = configUrl.split('/').pop() || 'app-state-config.json'
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
