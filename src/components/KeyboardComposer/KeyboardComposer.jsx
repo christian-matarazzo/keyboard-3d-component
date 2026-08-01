@@ -1,13 +1,24 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useProgress } from '@react-three/drei'
-import { Leva } from 'leva'
 import styles from './KeyboardComposer.module.css'
 import Scene from './Scene'
 import Hud from './Hud'
-import AnimationEditor from './AnimationEditor'
+import { setDracoPath } from './KeyboardModel'
 import { normalizeVariantSelection } from './materials/meshVariants'
 import { DEFAULT_PRODUCT_ID, resolveProduct } from './products'
-import { EMPTY_ANIMATIONS, normalizeAnimations } from './animation/animationSchema'
+import { EMPTY_ANIMATIONS } from './animation/animationSchema'
+import ConfigLoader from './runtime/ConfigLoader'
+import { createPublicApi } from './runtime/publicApi'
+import { useEscapeToIdle } from './runtime/useEscapeToIdle'
+import { createComposerStore } from './state/composerStore'
+import { createInitialState } from './state/defaults'
+import { useComposerSection } from './state/useComposerSection'
+import { isDebug } from './state/debug'
+
+// ⚠️ L'UNICO import dinamico del componente, e il motivo per cui l'authoring
+// non pesa in produzione. Stesso specificatore usato da Scene.jsx per la metà
+// 3D: un chunk solo per entrambi.
+const AuthoringDom = lazy(() => import('./authoring').then((m) => ({ default: m.AuthoringDom })))
 
 // Scelta delle varianti ricordata per la SESSIONE della scheda: sopravvive a un
 // reload, si azzera chiudendo la scheda, che è dove riparte il default autorato.
@@ -23,33 +34,10 @@ const readStoredVariants = (productId) => {
   }
 }
 
-// Sezione `app` del JSON globale: ciò che non è né luce né materiale né
-// animazione, ma governa come il componente si comporta.
-//  - `homePose` arriva da Scene.jsx (è una Leva, vedi lì) e passa da qui solo
-//    per essere salvata: un solo scrittore di window.__STATE_APP.
-//  - `idleAnimation` è l'animazione autorata che riporta la scena a riposo
-//    uscendo da config_mode ('' = transizione secca).
-//  - `release*` sono velocità e curva del RIENTRO di uscita, cioè come la scena
-//    torna com'era quando un'animazione viene fermata o sostituita da un'altra
-//    (vedi lo smontaggio morbido in animation/animationRuntime.js). Due binari
-//    indipendenti perché hanno tempi naturali diversi: l'opacità
-//    (`releaseDuration`/`releaseEasing`) e la POSA delle mesh traslate o ruotate
-//    (`releaseTransforms*`, spegnibile — da spento si torna allo scatto
-//    istantaneo di prima). Il terzo pezzo del rientro, lo zoom-out, ha la sua
-//    manopola gemella nella folder Leva `Rotazione` (`focusOutDamp`), perché è
-//    feel di camera e viaggia con `rotation`.
-//
-// ⚠️ `homePose` non è qui dentro: è una CHIAVE DI POSA, quindi dipende dal
-// prodotto (vedi defaultHomePose). Un letterale 'TL' funzionava solo finché il
-// grafo era uno solo.
-const DEFAULT_APP_CONFIG = {
-  idleAnimation: '',
-  releaseDuration: 0.5,
-  releaseEasing: 'easeInOutCubic',
-  releaseTransforms: true,
-  releaseTransformsDuration: 0.7,
-  releaseTransformsEasing: 'easeInOutCubic',
-}
+// La sezione `app` del JSON globale (`idleAnimation`, i tempi del rientro) e i
+// suoi default abitano in state/defaults.js insieme a tutti gli altri: qui resta
+// solo il pezzo che dipende dal PRODOTTO e che quindi non poteva stare in una
+// costante — la posa home. Vedi lì per il perché di ogni campo.
 
 /**
  * Posa home di partenza di un prodotto: la posa d'ingresso landscape dichiarata
@@ -61,163 +49,6 @@ const defaultHomePose = (poseGraph) =>
   poseGraph.findPoseKey(poseGraph.entryLandscape.x, poseGraph.entryLandscape.y) ??
   poseGraph.keys[0]
 
-// Pannello di tuning (luci, materiali, resa) visibile solo con `?debug`
-// nell'URL: in produzione il canvas resta pulito, a tutto schermo.
-const DEBUG = new URLSearchParams(window.location.search).has('debug')
-
-// Larghezza del pannello Leva: default della libreria e limiti del resize a
-// trascinamento (vedi DebugPanel). Il tool di debug ha pose con label lunghe,
-// allargarlo aiuta a leggerle senza troncamenti.
-const PANEL_WIDTH_DEFAULT = 280
-const PANEL_WIDTH_MIN = 240
-const PANEL_WIDTH_MAX = 640
-
-const clamp = (v, min, max) => Math.max(min, Math.min(max, v))
-
-// Altezza della pulsantiera JSON agganciata sotto Leva (padding + titolo +
-// una riga di pulsanti, vedi `.jsonDock` nel CSS module). Costante e non
-// misurata: il riquadro ha contenuto fisso, e serve solo a tenerlo dentro il
-// viewport quando il pannello Leva è più alto della finestra.
-const JSON_DOCK_H = 60
-
-/**
- * Pannello Leva con bordo sinistro trascinabile per allargarlo/stringerlo, più
- * la pulsantiera "salva/carica configurazione" agganciata sotto di esso.
- * Il pannello è ancorato in alto a destra: trascinando l'handle verso sinistra
- * cresce. La larghezza è controllata via `theme.sizes.rootWidth` (Leva 0.10),
- * l'handle è un grip fisso allineato al bordo sinistro (offset = width + 10px
- * di margine del pannello).
- *
- * `<Leva>` va SEMPRE montato (anche fuori da `?debug`): Leva crea comunque un
- * pannello di default appena una `useControls` è in uso (LightRig, i controlli,
- * ecc.), e `hidden={!DEBUG}` è l'unico modo per nasconderlo in produzione. Solo
- * l'handle di resize e la pulsantiera JSON sono condizionati a DEBUG.
- *
- * ⚠️ Il `<div style={{display:'contents'}}>` attorno a `<Leva>` NON è
- * decorativo: serve a poter misurare il pannello (`firstElementChild` è il suo
- * root, reso in loco — Leva 0.10 non usa portali quando `<Leva>` è montato
- * esplicitamente) per agganciarci sotto la pulsantiera. `display: contents`
- * toglie del tutto la scatola del wrapper, quindi non diventa un item della
- * flexbox di `.section` e non altera nulla del layout.
- */
-function DebugPanel({ poseApi }) {
-  const [width, setWidth] = useState(PANEL_WIDTH_DEFAULT)
-  const dragRef = useRef({ pointerId: null, startX: 0, startW: 0 })
-  const levaHostRef = useRef(null)
-  // Quota a cui agganciare la pulsantiera: bordo inferiore + bordi laterali
-  // del pannello Leva, in coordinate di viewport (il pannello è `fixed`).
-  const [dock, setDock] = useState(null)
-
-  // Il pannello Leva si collassa, si espande folder per folder, si trascina e
-  // lo si ridimensiona: invece di indovinarne l'ingombro lo si MISURA. Poll
-  // leggero (200ms, stesso idioma dell'HUD e dell'editor animazioni) e non un
-  // ResizeObserver, perché deve reagire anche allo SPOSTAMENTO del pannello —
-  // un drag per la barra del titolo non cambia le dimensioni e un
-  // ResizeObserver non lo vedrebbe.
-  useEffect(() => {
-    if (!DEBUG) return
-    const read = () => {
-      const el = levaHostRef.current?.firstElementChild
-      const r = el?.getBoundingClientRect()
-      // width 0 = pannello nascosto (Leva mette display:none quando non ci
-      // sono controlli visibili): niente da agganciare.
-      if (!r || !r.width) return setDock((prev) => (prev === null ? prev : null))
-      // Con abbastanza folder aperte il pannello Leva supera l'altezza della
-      // finestra: agganciata rigidamente sotto, la pulsantiera finirebbe fuori
-      // schermo e irraggiungibile. Si tiene dentro il viewport — nel caso
-      // limite copre l'ultima riga del pannello (stesso z-index, vince l'ordine
-      // nel DOM), che è il male minore.
-      const top = Math.min(r.bottom + 8, window.innerHeight - JSON_DOCK_H - 10)
-      const next = {
-        top: Math.round(Math.max(10, top)),
-        right: Math.round(window.innerWidth - r.right),
-        width: Math.round(r.width),
-      }
-      setDock((prev) =>
-        prev && prev.top === next.top && prev.right === next.right && prev.width === next.width
-          ? prev
-          : next,
-      )
-    }
-    read()
-    const id = setInterval(read, 200)
-    return () => clearInterval(id)
-  }, [])
-
-  const onPointerDown = (e) => {
-    dragRef.current = { pointerId: e.pointerId, startX: e.clientX, startW: width }
-    e.currentTarget.setPointerCapture?.(e.pointerId)
-    e.preventDefault()
-  }
-  const onPointerMove = (e) => {
-    const d = dragRef.current
-    if (d.pointerId !== e.pointerId) return
-    // Trascinare a sinistra (clientX cala) allarga: startX - clientX > 0.
-    setWidth(clamp(d.startW + (d.startX - e.clientX), PANEL_WIDTH_MIN, PANEL_WIDTH_MAX))
-  }
-  const onPointerUp = (e) => {
-    const d = dragRef.current
-    if (d.pointerId !== e.pointerId) return
-    if (e.currentTarget.hasPointerCapture?.(e.pointerId))
-      e.currentTarget.releasePointerCapture(e.pointerId)
-    dragRef.current = { pointerId: null, startX: 0, startW: 0 }
-  }
-
-  return (
-    <>
-      <div ref={levaHostRef} style={{ display: 'contents' }}>
-        <Leva hidden={!DEBUG} collapsed theme={{ sizes: { rootWidth: `${width}px` } }} />
-      </div>
-      {DEBUG && (
-        <div
-          className={styles.debugResize}
-          style={{ right: `${width + 10}px` }}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp}
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Ridimensiona pannello debug"
-        />
-      )}
-
-      {/* ── Stato tunabile: salva / carica ────────────────────────────────
-          Vive qui e non più come overlay `<Html>` sul canvas (dov'era, in alto
-          a sinistra, sopra il lockup del cliente): i due pulsanti sono la
-          scrittura e la lettura di TUTTO ciò che si autora dai pannelli Leva,
-          quindi stanno attaccati a quelli — stessa larghezza, stesso margine
-          destro, stessa palette. Gli handler vivono in LightRig.jsx (è il solo
-          a vedere `configsRef`) e arrivano qui dal ponte imperativo. */}
-      {DEBUG && dock && (
-        <div
-          className={styles.jsonDock}
-          style={{ top: `${dock.top}px`, right: `${dock.right}px`, width: `${dock.width}px` }}
-        >
-          <div className={styles.jsonTitle}>Stato · configurazione</div>
-          <div className={styles.jsonRow}>
-            <button
-              type="button"
-              className={`${styles.jsonBtn} ${styles.jsonBtnPrimary}`}
-              onClick={() => poseApi?.current?.saveConfigJSON?.()}
-              title="Scarica app-state-config.json con tutto lo stato autorato"
-            >
-              Salva
-            </button>
-            <button
-              type="button"
-              className={styles.jsonBtn}
-              onClick={() => poseApi?.current?.loadConfigJSON?.()}
-              title="Carica un app-state-config.json e applicalo alla scena"
-            >
-              Carica
-            </button>
-          </div>
-        </div>
-      )}
-    </>
-  )
-}
 
 /**
  * Vetrina 3D della tastiera a piena vista: nessun pannello di configurazione,
@@ -239,7 +70,35 @@ export default function KeyboardComposer({
   modelUrl,
   meshGroups,
   meshVariants,
+  // --- Integrazione -------------------------------------------------------
+  // Chiamata UNA volta quando il componente è pronto a ricevere comandi, con
+  // la facciata di runtime/publicApi.js. È il contratto consigliato: `poseApi`
+  // viene riempito da sette scrittori in momenti diversi, quindi non esiste un
+  // istante in cui "è pronto" che il chiamante possa indovinare da fuori — un
+  // pulsante che chiamasse `play` troppo presto fallirebbe in silenzio.
+  onReady,
+  // Stessa facciata, per chi preferisce un ref React. Si può usare insieme a
+  // `onReady`: sono due viste dello stesso oggetto.
+  apiRef: externalApiRef,
+  // Overlay DOM di prodotto (chip, selettori, telemetria). Spento di default:
+  // chi integra il componente disegna i propri pulsanti e li collega all'API.
+  // Il playground lo accende.
+  hud = false,
+  // `{ logoUrl, version, footer }` per l'HUD. Vuoto = nessun lockup: il
+  // marchio interno non deve viaggiare dentro il pacchetto.
+  branding = null,
+  // Escape esce da `config`. È l'unica uscita da tastiera e NON dipende
+  // dall'HUD: senza, chi non monta l'HUD lascia l'utente in una modalità con
+  // drag e frecce spenti.
+  escapeToIdle = true,
+  // Carica l'ambiente di authoring (pannelli, editor, gizmo). Di default segue
+  // `?debug` nell'URL; un integratore può forzarlo per aprire l'editor su una
+  // propria rotta. Valutato UNA volta: il confine è un `import()`, non un
+  // ramo di render.
+  authoring: authoringProp,
 }) {
+  const authoringRef = useRef(authoringProp ?? isDebug())
+  const authoring = authoringRef.current
   // Un solo punto di risoluzione, memoizzato: il prodotto risolto è dipendenza
   // di effetti e di useMemo in tutto l'albero, quindi la sua IDENTITÀ deve
   // essere stabile fra i render. Senza override e con un id del registro,
@@ -251,6 +110,17 @@ export default function KeyboardComposer({
   // Gli altri campi del prodotto scendono dentro `resolved`: qui servono solo
   // il grafo (posa home di default) e le varianti (selezione utente).
   const { poseGraph, meshVariants: activeMeshVariants } = resolved
+  // Specchio del prodotto risolto per i getter della facciata pubblica, che è
+  // costruita una volta sola e non può chiudere su un valore di render.
+  const productRef = useRef(resolved)
+  productRef.current = resolved
+
+  // ⚠️ Prima di qualunque `useGLTF`, e quindi in fase di render e non in un
+  // effetto: il percorso del decoder Draco entra nella chiave di cache di drei,
+  // e cambiarlo dopo il primo caricamento significherebbe un secondo decoder e
+  // un secondo scaricamento del GLB. Idempotente e senza stato React — vedi
+  // setDracoPath in KeyboardModel.jsx per il perché è globale.
+  setDracoPath(resolved.dracoPath)
   const { progress } = useProgress()
   // Stato (non derivato al volo da `progress`): con l'asset già in cache
   // (visita successiva, mobile o desktop) `progress` può essere 100 già al
@@ -279,6 +149,29 @@ export default function KeyboardComposer({
   // garantito fra loro.
   const poseApi = useRef({})
 
+  // --- Stato autorato -----------------------------------------------------
+  // Il gemello del ponte imperativo, per i DATI: luci, materiali, feel della
+  // camera, inquadrature, animazioni. Nasce qui — nello stesso punto in cui
+  // nasce `poseApi`, e per la stessa ragione: questo componente è l'unico
+  // antenato comune del Canvas e degli overlay DOM.
+  //
+  // Creato una volta sola e mai ricreato (il ref lazy invece di useState): la
+  // sua identità è dipendenza di effetti in tutto l'albero, e uno store nuovo a
+  // metà sessione butterebbe via lo stato autorato appena caricato. Vedi
+  // state/composerStore.js per il perché di uno store al posto degli otto
+  // `window.__STATE_*` e degli otto CustomEvent che c'erano prima.
+  const storeRef = useRef(null)
+  if (storeRef.current === null) {
+    // La posa home compare in due sezioni e non è una svista: in `app` perché
+    // è stato di prodotto e si salva, in `ui` perché è anche la manopola
+    // dell'editor. Scene tiene allineate le due (vedi syncHomePose lì).
+    const homePose = defaultHomePose(poseGraph)
+    storeRef.current = createComposerStore(
+      createInitialState({ app: { homePose }, ui: { homePose } }),
+    )
+  }
+  const store = storeRef.current
+
   // --- Modalità di prodotto ('idle' | 'config') ---------------------------
   // `idle` è il modello nudo: si gira a mano (drag/frecce) e basta — nessun
   // chip, nessuna paginazione, nessuna animazione. `config` è il contrario:
@@ -303,23 +196,25 @@ export default function KeyboardComposer({
   appModeRef.current = appMode
 
   // Configurazione dell'app che non è né luce né materiale: l'animazione di
-  // rientro in idle e i tempi della dissolvenza di uscita. Autorate nell'editor
-  // (?debug) e salvate nella sezione `app` del JSON globale, insieme alla posa
-  // home che arriva qui da Scene.jsx (unico scrittore di window.__STATE_APP:
-  // così non ci sono due mani sullo stesso oggetto).
-  const [appConfig, setAppConfig] = useState(() => ({
-    ...DEFAULT_APP_CONFIG,
-    homePose: defaultHomePose(poseGraph),
-  }))
+  // rientro in idle, i tempi della dissolvenza di uscita e la posa home.
+  // Autorate nell'editor (?debug) e salvate nella sezione `app` del JSON.
+  const appConfig = useComposerSection(store, 'app')
   const appConfigRef = useRef(appConfig)
   appConfigRef.current = appConfig
   const animationsRef = useRef(EMPTY_ANIMATIONS)
 
+  // Aggiornamento PARZIALE: le chiavi che questa chiamata non nomina restano
+  // quelle di prima — è il comportamento che serve sia all'editor (che tocca
+  // una manopola per volta) sia al caricamento di un JSON più vecchio della
+  // sezione, dove le chiavi mancanti devono restare ai default.
+  const patchAppConfig = useCallback((patch) => store.set('app', patch), [store])
+
   // Identità stabile: Scene la usa come dipendenza di un effetto, e una
   // funzione ricreata a ogni render lo farebbe rigirare a vuoto.
-  const handleHomePoseChange = useCallback((homePose) => {
-    setAppConfig((prev) => (prev.homePose === homePose ? prev : { ...prev, homePose }))
-  }, [])
+  const handleHomePoseChange = useCallback(
+    (homePose) => store.set('app', { homePose }),
+    [store],
+  )
 
   const changeAppMode = useCallback((next) => {
     const mode = next === 'config' ? 'config' : 'idle'
@@ -386,47 +281,16 @@ export default function KeyboardComposer({
     })
   }, [appMode, changeAppMode])
 
-  // Animazioni autorate. Lo stato vive QUI e non dietro un ponte imperativo
-  // perché questo componente rende sia il sottoalbero del Canvas (<Scene>) sia
-  // gli overlay DOM (<Hud>, <AnimationEditor>): i DATI scendono come prop
-  // normali, solo i COMANDI hanno bisogno di `poseApi`.
-  const [animations, setAnimations] = useState(EMPTY_ANIMATIONS)
+  // Animazioni autorate. Vengono dallo store e scendono come PROP normali sia
+  // nel sottoalbero del Canvas (<Scene>) sia negli overlay DOM (<Hud>,
+  // <AnimationEditor>): solo i COMANDI hanno bisogno di `poseApi`.
+  // La normalizzazione di schema avviene una volta all'ingresso, in
+  // runtime/productConfig.js, non a ogni lettura.
+  const animations = useComposerSection(store, 'animations')
+  const setAnimations = useCallback((next) => store.replace('animations', next), [store])
   // Letto dentro `changeAppMode` (closure stabile) per verificare che
   // l'animazione di rientro esista davvero prima di lanciarla.
   animationsRef.current = animations
-
-  // Pubblicato per il salvataggio JSON globale (LightRig.jsx le legge da qui
-  // insieme a __STATE_MATERIALS/__STATE_ROTATION/…).
-  useEffect(() => {
-    window.__STATE_ANIMATIONS = animations
-  }, [animations])
-
-  // Sezione `app`: un solo scrittore per il globale, anche se il valore di
-  // `homePose` nasce dalla Leva di Scene.jsx e risale da lì.
-  useEffect(() => {
-    window.__STATE_APP = appConfig
-  }, [appConfig])
-
-  useEffect(() => {
-    const handler = (e) => {
-      if (!e.detail) return
-      // Le chiavi assenti da un JSON più vecchio restano ai default: la
-      // sezione è nata dopo il resto dello stato salvato.
-      setAppConfig((prev) => ({ ...prev, ...e.detail }))
-    }
-    window.addEventListener('app-load-app', handler)
-    return () => window.removeEventListener('app-load-app', handler)
-  }, [])
-
-  // Contropartita del salvataggio: sia "Carica JSON" sia il fetch di
-  // produzione emettono questo evento (vedi LightRig.jsx).
-  useEffect(() => {
-    const handler = (e) => {
-      if (e.detail) setAnimations(normalizeAnimations(e.detail))
-    }
-    window.addEventListener('app-load-animations', handler)
-    return () => window.removeEventListener('app-load-animations', handler)
-  }, [])
 
   // --- Varianti -----------------------------------------------------------
   // ⚠️ Le due metà della sezione `variants` hanno natura OPPOSTA e da qui in
@@ -452,7 +316,11 @@ export default function KeyboardComposer({
     normalizeVariantSelection(readStoredVariants(resolved.id), activeMeshVariants),
   )
   // Binding variante → animazione di swap, autorato e salvato nel JSON.
-  const [variantAnimations, setVariantAnimations] = useState({})
+  const variantAnimations = useComposerSection(store, 'variants').swapAnimations
+  const setVariantAnimations = useCallback(
+    (swapAnimations) => store.set('variants', { swapAnimations }),
+    [store],
+  )
 
   // La selezione vive SOLO qui e in sessionStorage: sopravvive a un reload,
   // si azzera chiudendo la scheda, e non lascia traccia nel JSON globale.
@@ -464,25 +332,11 @@ export default function KeyboardComposer({
     }
   }, [variantSelection, resolved.id])
 
-  // Nel JSON globale finiscono i soli binding: `__STATE_VARIANTS` NON porta
-  // più `selection`. Se un giorno servisse rimetterla, va rimessa anche la
-  // precedenza "scelta di sessione sopra il default caricato" nel listener qui
-  // sotto — è quella che impediva a un caricamento di configurazione di
-  // ributtare l'utente sul layout di partenza.
-  useEffect(() => {
-    window.__STATE_VARIANTS = { swapAnimations: variantAnimations }
-  }, [variantAnimations])
-
-  useEffect(() => {
-    const handler = (e) => {
-      if (!e.detail) return
-      // Di proposito NON si legge `e.detail.selection`: un JSON salvato prima
-      // di questa decisione può ancora contenerla, e va ignorata, non migrata.
-      setVariantAnimations(e.detail.swapAnimations ?? {})
-    }
-    window.addEventListener('app-load-variants', handler)
-    return () => window.removeEventListener('app-load-variants', handler)
-  }, [])
+  // Nella sezione `variants` finiscono i soli binding, mai `selection`: è
+  // `normalizeConfig` (runtime/productConfig.js) a scartarla in ingresso. Se un
+  // giorno servisse rimetterla, va rimessa anche la precedenza "scelta di
+  // sessione sopra il default caricato" — è quella che impediva a un
+  // caricamento di configurazione di ributtare l'utente sul layout di partenza.
 
   // Comandi delle varianti sul ponte condiviso: li usano sia i toggle dell'HUD
   // sia l'azione `setVariant` del sequencer, che vive dentro il Canvas.
@@ -500,15 +354,72 @@ export default function KeyboardComposer({
     })
   }, [variantSelection, variantAnimations, activeMeshVariants])
 
+  // --- Superficie pubblica -------------------------------------------------
+  // Costruita una volta sola: legge tutto attraverso getter, quindi non va
+  // ricreata quando cambiano animazioni, varianti o modalità — e un'identità
+  // stabile è ciò che permette a chi la riceve di tenersela.
+  const publicApi = useRef(null)
+  if (publicApi.current === null) {
+    publicApi.current = createPublicApi({
+      apiRef: poseApi,
+      getAnimations: () => animationsRef.current,
+      getVariants: () => productRef.current.meshVariants,
+      getPoseGraph: () => productRef.current.poseGraph,
+    })
+  }
+  if (externalApiRef) externalApiRef.current = publicApi.current
+
+  // `onReady` scatta quando il modello è caricato E il ponte ha i comandi che
+  // servono: prima di quel momento un `play` cadrebbe nel vuoto senza dirlo.
+  // Una volta sola, come si conviene a un contratto d'inizializzazione.
+  const readyRef = useRef(false)
+  useEffect(() => {
+    if (readyRef.current || !loaded || !onReady) return
+    if (!poseApi.current.playAnimation || !poseApi.current.goTo) return
+    readyRef.current = true
+    onReady(publicApi.current)
+  }, [loaded, onReady])
+
+  // Uscita da `config` con Escape: vive fuori dall'HUD perché l'HUD è
+  // opzionale e l'uscita no.
+  useEscapeToIdle({
+    apiRef: poseApi,
+    appMode,
+    onAppModeChange: changeAppMode,
+    enabled: escapeToIdle,
+  })
+
   return (
     <section className={styles.section}>
-      <DebugPanel poseApi={poseApi} />
+      {/* Scarica il JSON autorato e idrata lo store. Parte al primo mount,
+          prima del Canvas: con uno store l'ordine non conta più. */}
+      <ConfigLoader store={store} product={resolved} />
+      {/* Tutto l'authoring — pannelli Leva, editor animazioni, editor mesh e
+          `leva` con le sue dipendenze — sta dietro questo `import()`. In
+          produzione non viene scaricato: vedi authoring/index.jsx. */}
+      {authoring && (
+        <Suspense fallback={null}>
+          <AuthoringDom
+            store={store}
+            poseApi={poseApi}
+            product={resolved}
+            animations={animations}
+            onAnimationsChange={setAnimations}
+            variantAnimations={variantAnimations}
+            onVariantAnimationsChange={setVariantAnimations}
+            appConfig={appConfig}
+            onAppConfigChange={patchAppConfig}
+          />
+        </Suspense>
+      )}
       <div
         className={`${styles.canvasWrap} ${loaded ? styles.canvasWrapLoaded : ''}`}
       >
         <Scene
           product={resolved}
           apiRef={poseApi}
+          store={store}
+          authoring={authoring}
           animations={animations}
           variantSelection={variantSelection}
           appMode={appMode}
@@ -526,24 +437,18 @@ export default function KeyboardComposer({
           // essere salvata insieme al resto della sezione `app`.
           onHomePoseChange={handleHomePoseChange}
         />
-        <Hud
-          poseApi={poseApi}
-          animations={animations}
-          product={resolved}
-          variantSelection={variantSelection}
-          appMode={appMode}
-          onAppModeChange={changeAppMode}
-        />
-        <AnimationEditor
-          poseApi={poseApi}
-          animations={animations}
-          onChange={setAnimations}
-          product={resolved}
-          variantAnimations={variantAnimations}
-          onVariantAnimationsChange={setVariantAnimations}
-          appConfig={appConfig}
-          onAppConfigChange={(patch) => setAppConfig((prev) => ({ ...prev, ...patch }))}
-        />
+        {hud && (
+          <Hud
+            poseApi={poseApi}
+            store={store}
+            animations={animations}
+            product={resolved}
+            variantSelection={variantSelection}
+            appMode={appMode}
+            onAppModeChange={changeAppMode}
+            branding={branding}
+          />
+        )}
       </div>
     </section>
   )

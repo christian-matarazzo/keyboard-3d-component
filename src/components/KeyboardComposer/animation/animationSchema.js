@@ -55,9 +55,29 @@ export function newStep(actionKey) {
   }
 }
 
+/**
+ * Etichetta → slug: `GoToRotors` diventa `go-to-rotors`.
+ *
+ * ⚠️ Serve a chi INTEGRA il componente, non a chi autora. Gli `id` sono
+ * generati (`anim_ms5z8skh8hv8s`) e vanno benissimo come chiave interna, ma
+ * sono illeggibili e nascono da un timestamp: un pulsante dell'e-commerce che
+ * dovesse citarli sarebbe impossibile da rileggere e cambierebbe se
+ * l'animazione venisse ricreata. Lo slug è la superficie pubblica.
+ */
+export const slugify = (label) =>
+  String(label ?? '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '') // via gli accenti: le label sono in italiano
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2') // CamelCase → camel-case
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+
 export function newAnimation(label = 'Nuova animazione') {
   return {
     id: uid('anim'),
+    // Nome stabile e leggibile con cui l'esterno lancia questa animazione.
+    slug: slugify(label),
     label,
     hidden: false,
     loop: { mode: 'none' },
@@ -119,9 +139,13 @@ function normalizeAnimation(raw) {
   if (!raw || typeof raw !== 'object') return null
   const steps = Array.isArray(raw.steps) ? raw.steps.map(normalizeStep).filter(Boolean) : []
   const loopMode = ['none', 'forever', 'count'].includes(raw.loop?.mode) ? raw.loop.mode : 'none'
+  const label = typeof raw.label === 'string' && raw.label ? raw.label : 'Senza nome'
   return {
     id: typeof raw.id === 'string' && raw.id ? raw.id : uid('anim'),
-    label: typeof raw.label === 'string' && raw.label ? raw.label : 'Senza nome',
+    label,
+    // Derivato dalla label quando manca: i JSON salvati prima degli slug si
+    // caricano e ne ottengono uno leggibile senza dover essere migrati a mano.
+    slug: typeof raw.slug === 'string' && raw.slug ? slugify(raw.slug) : slugify(label),
     hidden: raw.hidden === true,
     loop: {
       mode: loopMode,
@@ -166,6 +190,20 @@ export function normalizeAnimations(raw) {
     while (seen.has(anim.id)) anim.id = uid('anim')
     seen.add(anim.id)
     normalized.push(anim)
+  }
+  // Gli slug devono essere unici per la stessa ragione degli id, ma con una
+  // conseguenza in più: sono la chiave che i PULSANTI ESTERNI citano. Due label
+  // che collidono (`Vista Alto` e `vista-alto`) darebbero lo stesso slug, e il
+  // secondo si prenderebbe i click del primo. Il suffisso numerico è brutto ma
+  // visibile nell'editor, quindi l'autore se ne accorge.
+  const slugs = new Set()
+  for (const anim of normalized) {
+    if (!anim.slug) anim.slug = slugify(anim.label) || anim.id
+    let candidate = anim.slug
+    let n = 2
+    while (slugs.has(candidate)) candidate = `${anim.slug}-${n++}`
+    anim.slug = candidate
+    slugs.add(candidate)
   }
   sanitizeRequires(normalized)
   return { version: ANIMATIONS_VERSION, items: normalized }
@@ -222,13 +260,21 @@ export const BUILTIN_ANIMATIONS = normalizeAnimations([
 ]).items
 
 /**
- * Cerca un'animazione per id fra quelle AUTORATE e, solo se non c'è, fra le
- * integrate. L'ordine è il punto: un id autorato ha sempre la precedenza.
+ * Cerca un'animazione per id O per slug, fra quelle AUTORATE e — solo se non
+ * c'è — fra le integrate. L'ordine è il punto: un id autorato ha sempre la
+ * precedenza.
+ *
+ * ⚠️ L'id viene provato PRIMA dello slug, su tutte le fonti. Così ogni
+ * chiamata già esistente (`requires`, `idleAnimation`, i binding di swap:
+ * tutte relazioni interne, tutte per id) continua a funzionare identica, e lo
+ * slug è solo una seconda porta d'ingresso — quella per l'esterno.
  */
-export function findAnimation(items, id) {
+export function findAnimation(items, key) {
   return (
-    (items ?? []).find((a) => a.id === id) ??
-    BUILTIN_ANIMATIONS.find((a) => a.id === id) ??
+    (items ?? []).find((a) => a.id === key) ??
+    BUILTIN_ANIMATIONS.find((a) => a.id === key) ??
+    (items ?? []).find((a) => a.slug === key) ??
+    BUILTIN_ANIMATIONS.find((a) => a.slug === key) ??
     null
   )
 }

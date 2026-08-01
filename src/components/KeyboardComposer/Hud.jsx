@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import styles from './Hud.module.css'
-import { BUILTIN_VARIANT_SWAP_ID } from './animation/animationSchema'
+import { cycleVariant } from './runtime/variantCommands'
 
 /**
  * HUD di prodotto — l'overlay grafico consegnato dal cliente (Dither, screen
@@ -49,6 +49,7 @@ import { BUILTIN_VARIANT_SWAP_ID } from './animation/animationSchema'
  */
 export default function Hud({
   poseApi,
+  store,
   animations,
   // Prodotto attivo: da qui vengono le varianti mostrate nei chip, le etichette
   // di posa del readout e l'URL del GLB di cui pesare i byte scaricati.
@@ -61,6 +62,9 @@ export default function Hud({
   // Canvas e overlay, quindi è un DATO, non un comando.
   appMode = 'idle',
   onAppModeChange,
+  // `{ logoUrl, logoAlt, version, footer: [string] }`. Assente = nessun
+  // marchio: il lockup del cliente non viaggia dentro il pacchetto.
+  branding = null,
 }) {
   const { meshVariants, poseGraph, modelUrl } = product
 
@@ -122,21 +126,8 @@ export default function Hud({
   // un'altra che riparte da zero (`startFrom: 'reset'`) o uscire da
   // config_mode — che è esattamente ciò che Escape fa qui quando ce n'è una
   // attiva, saltando il gradino intermedio dello zoom (che appartiene a lei).
-  // Su `window` e non sul canvas: il focus si attiva cliccando un chip
-  // dell'HUD, che porta via il fuoco dal canvas — un listener sul canvas non
-  // riceverebbe mai il tasto subito dopo il click.
-  useEffect(() => {
-    const onKeyDown = (e) => {
-      if (e.key !== 'Escape') return
-      const api = poseApi.current
-      if (api?.currentAnimation?.()) {
-        if (appMode === 'config') onAppModeChange?.('idle')
-      } else if (api?.currentFocus?.()) api.clearFocus?.()
-      else if (appMode === 'config') onAppModeChange?.('idle')
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [poseApi, appMode, onAppModeChange])
+  // L'uscita con Escape non è più qui: sta in runtime/useEscapeToIdle.js,
+  // chiamato da KeyboardComposer. L'HUD è opzionale, l'uscita da `config` no.
 
   // FPS reali del browser: conto i frame di rAF e ricalcolo ogni ~500ms.
   // Questo è il refresh effettivo del browser (60, 120, 144, 240…), non un
@@ -167,9 +158,14 @@ export default function Hud({
   useEffect(() => {
     let id
     const read = () => {
+      // ⚠️ Si confronta il solo NOME DEL FILE, non l'URL intero. `modelUrl` può
+      // essere assoluto (una CDN) o avere un hash di build, e in quel caso non
+      // compare mai per intero dentro `e.name` — la telemetria mostrava
+      // "0.00 MB" senza dire perché.
+      const fileName = String(modelUrl).split('/').pop()
       const entry = performance
         .getEntriesByType('resource')
-        .find((e) => e.name.includes(modelUrl))
+        .find((e) => e.name.endsWith(fileName))
       // encodedBodySize = byte del corpo (il file glb); transferSize può
       // essere 0 se servito da cache → fallback su encoded/decoded.
       const bytes =
@@ -218,46 +214,29 @@ export default function Hud({
   // altrimenti l'integrata (`BUILTIN_VARIANT_SWAP_ID`, un incrocio morbido in
   // dissolvenza — vedi animationSchema.js). Lo scatto resta solo come rete di
   // sicurezza per quando il runtime non c'è ancora o l'id non si risolve.
-  const cycleVariant = (variant) => {
-    const api = poseApi.current
-    const options = variant?.options ?? []
-    if (!api || options.length < 2) return
-    // `Math.max(i, 0)` come nel render: una selezione irriconoscibile (non
-    // dovrebbe capitare, `normalizeVariantSelection` la garantisce) si legge
-    // come la prima opzione in entrambi i posti, così il titolo "Passa a …"
-    // non promette qualcosa di diverso da ciò che il clic fa.
-    const i = options.findIndex((o) => o.id === variantSelection[variant.id])
-    const next = options[(Math.max(i, 0) + 1) % options.length]
-    if (!next || next.id === variantSelection[variant.id]) return
-
-    const authored = api.variantSwapAnimation?.(variant.id)
-    const animId =
-      authored && (animations?.items ?? []).some((a) => a.id === authored)
-        ? authored
-        : BUILTIN_VARIANT_SWAP_ID
-    // L'intento va passato al runtime: lo step `setVariant` lascia vuoti
-    // variante e opzione e li prende da qui, così una sola animazione copre
-    // tutti i versi (ed è ciò che rende generica quella integrata).
-    const played = api.playAnimation?.(animId, {
-      variantTarget: { [variant.id]: next.id },
-    })
-    if (!played) api.setVariant?.(variant.id, next.id)
-  }
+  // La regola dello scambio (animazione autorata → integrata → scatto secco)
+  // vive in runtime/variantCommands.js: era l'unico posto del codice che la
+  // conoscesse, ed era dentro un overlay opzionale.
+  const handleCycleVariant = (variant) =>
+    cycleVariant(poseApi.current, variant, variantSelection, animations)
 
   return (
     <div className={styles.hud} aria-hidden="false">
       {/* ── Riga superiore ──────────────────────────────────────────────── */}
       <header className={styles.top}>
+        {/* ⚠️ Il lockup NON è più cablato qui. Era il logo del cliente, con la
+            sua URL assoluta: un pacchetto che se lo porta dietro lo spedisce a
+            chiunque lo installi. Ora arriva dalla prop `branding`, e senza
+            quella prop semplicemente non c'è marchio. */}
         <div className={styles.brand}>
-          {/* Il logo è il lockup completo del cliente: "Dither" + barcode +
-              "Array Keyboard Series / ® Model L". Niente testo duplicato a
-              fianco — basta il solo SVG. */}
-          <img
-            className={styles.logo}
-            src="/brand/Logo_System.svg"
-            alt="Dither — Array Keyboard Series, Model L"
-            draggable="false"
-          />
+          {branding?.logoUrl && (
+            <img
+              className={styles.logo}
+              src={branding.logoUrl}
+              alt={branding.logoAlt ?? ''}
+              draggable="false"
+            />
+          )}
         </div>
 
         <div className={styles.telemetry}>
@@ -270,7 +249,7 @@ export default function Hud({
           <span>{ramLabel}</span>
         </div>
 
-        <div className={styles.version}>V 0.2 Configurator Playground</div>
+        <div className={styles.version}>{branding?.version ?? ''}</div>
       </header>
 
       {/* ── Pila dei chip ──────────────────────────────────────────────────
@@ -327,7 +306,7 @@ export default function Hud({
                   title={single ? undefined : `Passa a ${next.label}`}
                   onClick={() => {
                     if (disabled) return
-                    cycleVariant(variant)
+                    handleCycleVariant(variant)
                   }}
                 >
                   <span>{current.label}</span>
@@ -432,16 +411,17 @@ export default function Hud({
       </nav>
       </div>
 
-      {/* ── Riga inferiore ──────────────────────────────────────────────── */}
-      <footer className={styles.bottom}>
-        <span>
-          IT - EU <span className={styles.copyright}>©</span>
-        </span>
-        <span>For internal use only, do not share</span>
-        <span>
-          Instruments of Becoming 2026<span className={styles.copyright}>©</span>
-        </span>
-      </footer>
+      {/* ── Riga inferiore ──────────────────────────────────────────────────
+          Tre celle libere, vuote se non c'è `branding.footer`: le diciture
+          interne ("For internal use only") appartengono al playground, non a
+          un componente che finisce dentro il sito di qualcun altro. */}
+      {branding?.footer?.length > 0 && (
+        <footer className={styles.bottom}>
+          {branding.footer.map((cell, i) => (
+            <span key={i}>{cell}</span>
+          ))}
+        </footer>
+      )}
     </div>
   )
 }

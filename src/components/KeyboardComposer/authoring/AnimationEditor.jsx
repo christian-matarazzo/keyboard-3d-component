@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import styles from './AnimationEditor.module.css'
-import { ACTIONS, ACTION_GROUPS } from './animation/actions'
-import { EASING_NAMES } from './animation/easings'
-import { SELECTOR_KINDS } from './animation/selectors'
+import { ACTIONS, ACTION_GROUPS } from '../animation/actions'
+import { EASING_NAMES } from '../animation/easings'
+import { SELECTOR_KINDS } from '../animation/selectors'
 import {
   buildStepGroups,
   buildWaves,
@@ -11,8 +11,9 @@ import {
   newStep,
   normalizeAnimations,
   requireChain,
-} from './animation/animationSchema'
-import { cloneAnimation, cloneSteps, reverseAnimation } from './animation/animationTransforms'
+  slugify,
+} from '../animation/animationSchema'
+import { cloneAnimation, cloneSteps, reverseAnimation } from '../animation/animationTransforms'
 
 const DEBUG = new URLSearchParams(window.location.search).has('debug')
 
@@ -44,6 +45,7 @@ const WAIT_LABEL = { settle: 'attendi', duration: 'durata', none: 'subito' }
  */
 export default function AnimationEditor({
   poseApi,
+  store,
   animations,
   onChange,
   // Prodotto attivo: gruppi di mesh, varianti e grafo delle pose che gli step
@@ -463,6 +465,21 @@ export default function AnimationEditor({
               value={current.label}
               onChange={(e) => patchAnimation({ label: e.target.value })}
               aria-label="Nome animazione"
+            />
+          )}
+          {/* Lo SLUG è il nome con cui questa animazione viene lanciata da
+              fuori (`api.play('go-to-rotors')`). Nasce dalla label, ma è
+              modificabile perché è un contratto: una volta che dei pulsanti lo
+              citano, rinominare l'animazione non deve romperli.
+              ⚠️ Cambiarlo rompe i pulsanti che lo citano già. */}
+          {current && (
+            <input
+              className={styles.input}
+              value={current.slug ?? ''}
+              onChange={(e) => patchAnimation({ slug: slugify(e.target.value) })}
+              aria-label="Slug pubblico"
+              title="Nome pubblico: è così che un pulsante esterno lancia questa animazione (api.play). Cambiarlo rompe i pulsanti già programmati."
+              placeholder="slug"
             />
           )}
           <button type="button" className={styles.btn} onClick={createAnimation}>

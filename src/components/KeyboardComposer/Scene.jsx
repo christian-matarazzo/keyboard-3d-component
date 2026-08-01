@@ -1,22 +1,20 @@
-import { Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { Canvas } from '@react-three/fiber'
-import { Html, useGLTF, useProgress } from '@react-three/drei'
-import { useControls } from 'leva'
-import { KeyboardModel, DRACO_PATH } from './KeyboardModel'
+import { Html, useProgress } from '@react-three/drei'
+import { KeyboardModel } from './KeyboardModel'
 import LightRig from './LightRig'
-import MeshController from './MeshController'
 import AnimationDirector from './AnimationDirector'
 import VariantController from './VariantController'
-import { prepareGroupMaterials, applyMaterialProps } from './materials/groupMaterials'
+import MaterialApplier from './runtime/MaterialApplier'
+import { useComposerSection } from './state/useComposerSection'
 
-// Le etichette dell'HUD sono duplicate per design (più pose condividono la
-// stessa label breve, es. 'TL'/'TR'/'CFB' → '3/4 FT') — non possono essere
-// usate da sole come chiave dell'options Leva, si disambigua accodando la
-// chiave posa. Costruito per PRODOTTO (non più una volta a livello di modulo):
-// le pose sono dati del prodotto attivo.
-const homePoseOptions = (poseGraph) =>
-  Object.fromEntries(poseGraph.keys.map((key) => [`${poseGraph.label(key)} · ${key}`, key]))
+// ⚠️ Stesso specificatore dell'import in KeyboardComposer.jsx, e non è un
+// caso: due `lazy` sullo stesso modulo producono UN chunk solo, quindi il
+// montaggio dentro il Canvas non paga un secondo scaricamento.
+const AuthoringScene = lazy(() =>
+  import('./authoring').then((m) => ({ default: m.AuthoringScene })),
+)
 
 function Loader() {
   const { progress } = useProgress()
@@ -36,152 +34,25 @@ function Loader() {
   )
 }
 
-// Ritocco live del materiale di UN gruppo (pannello ?debug): i default
-// vengono letti dal materiale REALE già presente sul GLB (autorato in
-// Maya/DCC), non da un preset "finish" autorato a mano — vedi
-// materials/groupMaterials.js per il perché. Il valore corrente viene
-// riportato al genitore (window.__STATE_MATERIALS, usato dal salvataggio/
-// caricamento JSON del LightRig — vedi handleSaveJSON/handleLoadJSON) e
-// ripristinabile via l'evento `app-load-materials`.
-//
-// Componente per-gruppo, non un loop di `useControls` dentro MaterialTuner:
-// mappare un array di lunghezza variabile su una CHIAMATA DI HOOK dentro un
-// ciclo violerebbe le Rules of Hooks; mappare l'array su un COMPONENTE per
-// iterazione (ognuno con la propria istanza React, quindi la propria singola
-// chiamata fissa a useControls) è invece il pattern sicuro — è così che
-// MaterialTuner sotto instanzia un folder Leva per gruppo a runtime.
-function MaterialGroupTuner({ group, materials, onChange }) {
-  const seed = materials[0] ?? null
-  const folderLabel = `Materiale · ${group.label.toLowerCase()}`
-  const [values, setValues] = useControls(folderLabel, () => ({
-    color: seed ? `#${seed.color.getHexString()}` : '#888888',
-    roughness: { value: seed?.roughness ?? 0.5, min: 0, max: 1 },
-    metalness: { value: seed?.metalness ?? 0, min: 0, max: 1 },
-    envMapIntensity: { value: seed?.envMapIntensity ?? 1, min: 0, max: 2 },
-    clearcoat: { value: seed?.clearcoat ?? 0, min: 0, max: 1 },
-    clearcoatRoughness: { value: seed?.clearcoatRoughness ?? 0, min: 0, max: 1 },
-  }), { collapsed: true })
-
-  useEffect(() => {
-    onChange(group.id, values)
-  }, [group.id, values, onChange])
-
-  useEffect(() => {
-    const handler = (e) => {
-      const detail = e.detail?.[group.id]
-      if (detail) setValues(detail)
-    }
-    window.addEventListener('app-load-materials', handler)
-    return () => window.removeEventListener('app-load-materials', handler)
-  }, [group.id, setValues])
-
-  useEffect(() => {
-    for (const material of materials) applyMaterialProps(material, values)
-  }, [materials, values])
-
-  return null
-}
-
-/**
- * Inquadratura autorata di UN gruppo (pannello ?debug, modalità Focus).
- *
- * Il focus calcolato da solo (sfera che contiene il gruppo, vedi
- * focusFraming.js) è un default sicuro, non un'inquadratura di prodotto:
- * `radiusFactor` la stringe/allarga e `offsetX/Y/Z` spostano il centro
- * dell'orbita rispetto al baricentro geometrico. I valori si trovano a video
- * con la rotella (attiva solo in ?debug) e si salvano nel JSON globale con
- * "Salva Configurazione" del LightRig, come tutto il resto dello stato.
- *
- * Stesso pattern per-gruppo di MaterialGroupTuner: un COMPONENTE per gruppo
- * (una sola `useControls` fissa ciascuno), non una `useControls` dentro un
- * ciclo — vedi il commento lì sopra per il perché.
- */
-function FocusGroupTuner({ group, onChange }) {
-  const folderLabel = `Focus · ${group.label.toLowerCase()}`
-  const [values, setValues] = useControls(folderLabel, () => ({
-    radiusFactor: { value: 1, min: 0.1, max: 3, step: 0.01, label: 'distanza (×)' },
-    offsetX: { value: 0, min: -2, max: 2, step: 0.01, label: 'offset X' },
-    offsetY: { value: 0, min: -2, max: 2, step: 0.01, label: 'offset Y' },
-    offsetZ: { value: 0, min: -2, max: 2, step: 0.01, label: 'offset Z' },
-  }), { collapsed: true, render: (get) => get('⚙️ Editor · Modalità.editMode') === 'focus' })
-
-  useEffect(() => {
-    onChange(group.id, values)
-  }, [group.id, values, onChange])
-
-  useEffect(() => {
-    const handler = (e) => {
-      const detail = e.detail?.[group.id]
-      if (detail) setValues(detail)
-    }
-    window.addEventListener('app-load-focus', handler)
-    return () => window.removeEventListener('app-load-focus', handler)
-  }, [group.id, setValues])
-
-  return null
-}
-
-/**
- * Raccoglie le inquadrature di tutti i gruppi in un solo oggetto
- * (`{ [groupId]: { radiusFactor, offsetX, offsetY, offsetZ } }`), lo pubblica
- * su `window.__STATE_FOCUS` per il salvataggio JSON e lo risale a Scene, che
- * lo passa al hook della camera. Un groupId assente da un JSON vecchio ricade
- * semplicemente sul focus calcolato.
- */
-function FocusTuner({ groups, onChange }) {
-  const [focusState, setFocusState] = useState({})
-  const handleGroupChange = useCallback((groupId, values) => {
-    setFocusState((prev) => ({ ...prev, [groupId]: values }))
-  }, [])
-
-  useEffect(() => {
-    window.__STATE_FOCUS = focusState
-    onChange(focusState)
-  }, [focusState, onChange])
-
-  return groups.map((group) => (
-    <FocusGroupTuner key={group.id} group={group} onChange={handleGroupChange} />
-  ))
-}
-
-/**
- * Un folder Leva per gruppo di mesh, instanziato a runtime dall'elenco
- * `groups` del prodotto attivo (vedi products/).
- * Carica il GLB in proprio (stessa cache di drei condivisa con
- * KeyboardModel.jsx/MeshController.jsx, nessun fetch aggiuntivo) e scopre i
- * materiali via `prepareGroupMaterials` — idempotente, quindi indipendente
- * dall'ordine in cui questo componente e KeyboardModel.jsx montano i propri
- * effetti (sono fratelli sotto Scene.jsx, non genitore/figlio).
- */
-function MaterialTuner({ modelUrl, groups }) {
-  const { scene } = useGLTF(modelUrl, DRACO_PATH)
-  const materialsByGroup = useMemo(() => prepareGroupMaterials(scene, groups), [scene, groups])
-
-  const [materialState, setMaterialState] = useState({})
-  const handleGroupChange = useCallback((groupId, values) => {
-    setMaterialState((prev) => ({ ...prev, [groupId]: values }))
-  }, [])
-
-  useEffect(() => {
-    window.__STATE_MATERIALS = materialState
-  }, [materialState])
-
-  return groups.map((group) => (
-    <MaterialGroupTuner key={group.id} group={group} materials={materialsByGroup[group.id] ?? []} onChange={handleGroupChange} />
-  ))
-}
-
 export default function Scene({
   // Prodotto già risolto e congelato da KeyboardComposer.jsx: GLB, JSON di
   // configurazione, grafo delle pose, gruppi e varianti. Scende intero fino a
   // chi ne ha bisogno invece di essere spacchettato in quattro prop.
   product,
   apiRef,
+  // Lo stato autorato (luci, materiali, feel, inquadrature): il gemello di
+  // `apiRef` per i DATI, creato in KeyboardComposer.jsx e sceso come prop
+  // normale — vedi state/composerStore.js. Attraversa il confine del Canvas
+  // come prop e non come context proprio come già fa `apiRef`: R3F usa un
+  // riconciliatore separato, e le prop lo attraversano senza sorprese.
+  store,
   animations,
   variantSelection,
   // Modalità di prodotto ('idle' | 'config'): lo stato vive in
   // KeyboardComposer.jsx (rende sia il Canvas sia gli overlay DOM), qui serve
   // solo a spegnere drag/frecce in config — vedi controlsDisabled sotto.
+  // Vero quando l'editor è attivo: carica il sottoalbero 3D di authoring.
+  authoring = false,
   appMode = 'idle',
   // `{ duration, easing }` della dissolvenza di uscita delle animazioni: di
   // sola andata verso AnimationDirector.
@@ -194,10 +65,17 @@ export default function Scene({
 
   const [modelSize, setModelSize] = useState(null)
   const [selectedMesh, setSelectedMesh] = useState(null)
-  // Inquadrature autorate dei gruppi (vedi FocusTuner): raccolte qui perché
-  // devono scendere fino a useComposerControls (via KeyboardModel), che è chi
-  // le applica alla camera.
-  const [focusOverrides, setFocusOverrides] = useState({})
+  // Giunzione fra le due luci-ombra renderizzate dal rig e i gizmo
+  // dell'authoring, che le muovono senza possederle. I ref nascono qui perché
+  // questo è l'antenato comune dei due sottoalberi.
+  const keyLightRef = useRef()
+  const spotLightRef = useRef()
+  // Inquadrature autorate dei gruppi: scendono fino a useComposerControls (via
+  // KeyboardModel), che è chi le applica alla camera. Vengono dallo store, non
+  // più raccolte a mano dai pannelli: prima il valore autorevole era la somma
+  // di N componenti Leva, quindi in produzione (pannelli nascosti ma montati)
+  // funzionava per caso, e senza pannelli non sarebbe funzionato affatto.
+  const focusOverrides = useComposerSection(store, 'focus')
 
   // Modalità editor esclusiva (Nessuno/Luci/Mesh): l'editor luci (LightRig,
   // helper cliccabili) e l'editor mesh (KeyboardModel + MeshController)
@@ -219,21 +97,11 @@ export default function Scene({
   // (KeyboardModel.jsx), posa a cui si rientra uscendo da config_mode
   // (KeyboardComposer.jsx) e posa su cui la modalità Mesh blocca la
   // navigazione. Prima era la sola "posa bloccata" della modalità Mesh.
-  const [{ editMode, homePose }, setModeControls] = useControls('⚙️ Editor · Modalità', () => ({
-    editMode: {
-      options: { Nessuno: 'none', Luci: 'lights', Mesh: 'meshes', Animazioni: 'anim', Focus: 'focus' },
-      value: 'none',
-      label: 'Modalità',
-    },
-    // Opzioni e valore iniziale vengono dal grafo del prodotto attivo: era
-    // `value: 'TL'`, cioè una chiave di ARRAY_MODEL_L scritta a mano.
-    homePose: {
-      options: homePoseOptions(poseGraph),
-      value: poseGraph.findPoseKey(poseGraph.entryLandscape.x, poseGraph.entryLandscape.y) ??
-        poseGraph.keys[0],
-      label: 'Posa home',
-    },
-  }), { collapsed: false })
+  // I due valori vivono nello store, non in Leva: `editMode` entra nel
+  // comportamento di PRODUZIONE (vedi controlsDisabled più sotto), e finché era
+  // una `useControls` il pannello di authoring non era rimovibile. La manopola
+  // che li muove è authoring/ModeTuner.jsx, montato qui sotto.
+  const { editMode, homePose } = useComposerSection(store, 'ui')
 
   // La posa home è stato di prodotto, non di tuning: va nel JSON globale come
   // materiali/focus/animazioni. Non si scrive però direttamente su
@@ -244,14 +112,18 @@ export default function Scene({
     onHomePoseChange?.(homePose)
   }, [homePose, onHomePoseChange])
 
+  // La posa home autorata arriva nella sezione `app` del JSON e va riportata su
+  // `ui`, che è dove la manopola la legge. Sottoscrizione e non evento: così
+  // copre anche il caso in cui la configurazione sia già stata caricata prima
+  // che questo componente esistesse — che con un CustomEvent era stato perso.
   useEffect(() => {
-    const handler = (e) => {
-      if (e.detail?.homePose && poseGraph.has(e.detail.homePose))
-        setModeControls({ homePose: e.detail.homePose })
+    if (!store) return
+    const syncHomePose = (app) => {
+      if (app?.homePose && poseGraph.has(app.homePose)) store.set('ui', { homePose: app.homePose })
     }
-    window.addEventListener('app-load-app', handler)
-    return () => window.removeEventListener('app-load-app', handler)
-  }, [setModeControls, poseGraph])
+    syncHomePose(store.get('app'))
+    return store.subscribe('app', syncHomePose)
+  }, [store, poseGraph])
 
   // Entrando in modalità Mesh (o cambiando la posa home mentre già ci si
   // è dentro), snappa/ri-snappa alla posa home configurabile (non più
@@ -299,6 +171,7 @@ export default function Scene({
           <KeyboardModel
             product={product}
             apiRef={apiRef}
+            store={store}
             onSizeComputed={setModelSize}
             onSelectMesh={setSelectedMesh}
             // Due sorgenti indipendenti spengono drag/frecce:
@@ -318,29 +191,47 @@ export default function Scene({
             focusOverrides={focusOverrides}
           />
         </group>
-        <MaterialTuner modelUrl={modelUrl} groups={meshGroups} />
-        <FocusTuner groups={meshGroups} onChange={setFocusOverrides} />
+        {/* Runtime: applica i materiali autorati al GLB. Prima era una riga
+            dentro un pannello Leva, cioè i materiali di produzione dipendevano
+            dal fatto che l'editor fosse montato. */}
+        <MaterialApplier store={store} modelUrl={modelUrl} groups={meshGroups} />
 
         {/* Rig volumetrico: griglia di point light + rectAreaLight per faccia
             attorno al bounding box del modello, più le due luci-ombra
             (key/spot) con gizmo di editing. Sostituisce lo studio fotografico
             camera-solidale + Environment/Lightformer della vecchia versione:
             è l'unica sorgente di luce della scena. */}
-        <LightRig modelSize={modelSize} apiRef={apiRef} editMode={editMode} product={product} />
-        {/* AGGIUNGI IL CONTROLLER */}
-        <MeshController
-          modelUrl={modelUrl}
-          selectedMesh={selectedMesh}
-          onSelectMesh={setSelectedMesh}
+        <LightRig
+          modelSize={modelSize}
+          apiRef={apiRef}
+          store={store}
           editMode={editMode}
-          meshGroups={meshGroups}
+          product={product}
+          keyLightRef={keyLightRef}
+          spotLightRef={spotLightRef}
         />
+        {/* L'authoring 3D: gizmo, helper, editor mesh e i tuner che hanno
+            bisogno del GLB. Caricato solo in `?debug`, e dallo STESSO chunk
+            dei pannelli DOM — un `import()` solo. */}
+        {authoring && (
+          <AuthoringScene
+            store={store}
+            apiRef={apiRef}
+            product={product}
+            selectedMesh={selectedMesh}
+            onSelectMesh={setSelectedMesh}
+            keyLightRef={keyLightRef}
+            spotLightRef={spotLightRef}
+          />
+        )}
+        {/* AGGIUNGI IL CONTROLLER */}
         {/* Esecutore delle animazioni autorate: un solo useFrame, nessun
             render. Sempre montato (non gated da ?debug): in produzione è chi
             fa girare le animazioni lanciate dai chip dell'HUD. */}
         <AnimationDirector
           modelUrl={modelUrl}
           apiRef={apiRef}
+          store={store}
           animations={animations}
           editMode={editMode}
           meshGroups={meshGroups}

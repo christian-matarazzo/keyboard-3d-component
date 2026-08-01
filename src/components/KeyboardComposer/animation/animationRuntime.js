@@ -109,6 +109,42 @@ export function createAnimationRuntime(ctx) {
   // debug devono poter provare qualunque cosa mentre la si autora.
   const completed = new Set()
 
+  // --- Notifiche verso l'esterno ------------------------------------------
+  // Chi integra il componente (i pulsanti di un e-commerce) deve poter sapere
+  // quando un'animazione parte e quando finisce. Prima l'unico modo era
+  // interrogare `getState()` a intervalli — che va benissimo per una telemetria
+  // di authoring, ma è una latenza inutile per un pulsante che deve tornare
+  // cliccabile.
+  //
+  // ⚠️ GLI EVENTI SI ACCODANO, NON SI EMETTONO SUBITO. Il punto in cui
+  // nascono è dentro `tick`, cioè dentro `useFrame`: un ascoltatore che
+  // reagisse a `finish` chiamando `play()` rientrerebbe nel runtime a metà
+  // aggiornamento, mentre `waveInstances` è in mezzo a un ciclo. La coda si
+  // svuota a fine `tick`, quando lo stato è di nuovo coerente.
+  const listeners = new Set()
+  let queue = []
+  const emit = (type, payload) => {
+    if (listeners.size) queue.push({ type, ...payload })
+  }
+  const flush = () => {
+    if (!queue.length) return
+    const events = queue
+    queue = []
+    for (const event of events) {
+      for (const fn of [...listeners]) {
+        try {
+          fn(event)
+        } catch (err) {
+          console.warn('[anim] ascoltatore in errore su', event.type, err)
+        }
+      }
+    }
+  }
+  const subscribe = (fn) => {
+    listeners.add(fn)
+    return () => listeners.delete(fn)
+  }
+
   const isStepDone = (inst) => {
     const s = inst.step
     const maxWait = s.maxWait ?? DEFAULT_MAX_WAIT
@@ -179,7 +215,10 @@ export function createAnimationRuntime(ctx) {
         // Qui, e solo qui, un'animazione risulta ESEGUITA: non al play, che
         // può essere sostituito a metà, ma a wave esaurite. Prima di
         // `stopOnFinish`, che azzera `anim`.
-        if (anim) completed.add(anim.id)
+        if (anim) {
+          completed.add(anim.id)
+          emit('finish', { id: anim.id, slug: anim.slug, label: anim.label })
+        }
         // Deroga esplicita a "fine ≠ smontaggio": un'animazione dichiarata
         // `stopOnFinish` esiste per riportare la scena a riposo (la
         // transizione verso idle), quindi si smonta da sola invece di lasciare
@@ -258,12 +297,15 @@ export function createAnimationRuntime(ctx) {
     // Il rilascio vive OLTRE lo stato del sequencer: `stop()` ha già portato
     // `state` a 'idle', ma la dissolvenza di uscita deve continuare.
     if (release) tickRelease(dt)
-    if (state === 'idle') return
+    if (state === 'idle') return flush()
     // (1) prima si aggiorna TUTTO ciò che è già partito…
     for (const inst of instances) tickInstance(inst, dt)
     // (2) …e solo dopo si valuta l'avanzamento. Con questo ordine, l'ordine dei
     // callback useFrame fra director e useComposerControls è irrilevante.
     if (state === 'playing' && waveInstances.every((i) => i.done)) advanceWave()
+    // (3) …e per ultime le notifiche, a stato ormai coerente: un ascoltatore
+    // può richiamare `play` senza rientrare in mezzo ai due passaggi sopra.
+    flush()
   }
 
   /**
@@ -319,6 +361,7 @@ export function createAnimationRuntime(ctx) {
     anim = null
     state = 'idle'
     pendingTriggers.clear()
+    if (stoppedId) emit('stop', { id: stoppedId })
     if (restore) ctx.getApi()?.clearFocus?.()
 
     // Un binario entra nel rilascio solo se ha ancora qualcosa da riportare
@@ -429,6 +472,7 @@ export function createAnimationRuntime(ctx) {
     loopsLeft = next.loop?.mode === 'count' ? Math.max(0, (next.loop.times ?? 1) - 1) : 0
     waveIndex = Math.min(Math.max(0, fromWave), waves.length - 1) - 1
     state = 'playing'
+    emit('start', { id: next.id, slug: next.slug, label: next.label })
     advanceWave()
     return true
   }
@@ -551,5 +595,6 @@ export function createAnimationRuntime(ctx) {
     firstVariantTarget,
     isUnlocked,
     resetProgress,
+    subscribe,
   }
 }

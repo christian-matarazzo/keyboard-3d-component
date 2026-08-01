@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useGLTF } from '@react-three/drei'
-import { DRACO_PATH } from './KeyboardModel'
+import { getDracoPath } from './KeyboardModel'
 import { applyVariantVisibility } from './materials/meshVariants'
 
 /**
@@ -26,7 +26,7 @@ export default function VariantController({
   variants,
   selection,
 }) {
-  const { scene } = useGLTF(modelUrl, DRACO_PATH)
+  const { scene } = useGLTF(modelUrl, getDracoPath())
   const holdsRef = useRef(new Set())
 
   useEffect(() => {

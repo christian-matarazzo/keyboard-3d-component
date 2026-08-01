@@ -22,3 +22,12 @@ export {
 // vuole costruirne il grafo a parte (in `defineProduct` basta passarne la
 // descrizione, la fabbrica viene chiamata da lì).
 export { createPoseGraph } from './poseGraph'
+
+// La superficie di comando che arriva da `onReady(api)` / `apiRef`. Esportata
+// perché ci si possa costruire sopra a mano (test, wrapper, un adapter
+// postMessage); l'uso normale è riceverla, non costruirla.
+export { createPublicApi } from './runtime/publicApi'
+
+// Il flag di authoring, per chi vuole aprire l'editor su una propria rotta
+// invece che con `?debug` nell'URL.
+export { isDebug, setDebug } from './state/debug'

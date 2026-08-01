@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { useGLTF } from '@react-three/drei'
-import { DRACO_PATH } from './KeyboardModel'
+import { getDracoPath } from './KeyboardModel'
 import { collectMeshList } from './materials/meshGroups'
 import { createAnimationRuntime } from './animation/animationRuntime'
 import { createOpacityRegistry } from './animation/opacityRegistry'
@@ -32,6 +32,7 @@ const DEBUG = new URLSearchParams(window.location.search).has('debug')
 export default function AnimationDirector({
   modelUrl,
   apiRef,
+  store,
   animations,
   editMode = 'none',
   meshGroups,
@@ -42,7 +43,7 @@ export default function AnimationDirector({
   // mesh spostate. Autorati nell'editor e salvati nella sezione `app` del JSON.
   release,
 }) {
-  const { scene } = useGLTF(modelUrl, DRACO_PATH)
+  const { scene } = useGLTF(modelUrl, getDracoPath())
 
   const sceneRef = useRef(scene)
   sceneRef.current = scene
@@ -102,6 +103,10 @@ export default function AnimationDirector({
       // KeyboardComposer.jsx). Il vincolo lo fa valere l'HUD, non `play`.
       animationUnlocked: (id) => runtime.isUnlocked(id),
       resetAnimationProgress: () => runtime.resetProgress(),
+      // Notifiche di inizio/fine, per chi integra il componente e deve
+      // riaccendere un pulsante quando la sequenza è finita. Gli eventi sono
+      // accodati dentro `tick` e drenati a fine frame — vedi animationRuntime.
+      subscribeAnimation: (fn) => runtime.subscribe(fn),
       // Catalogo delle mesh per il selettore dell'editor, che vive nel DOM
       // fuori dal Canvas e non ha accesso alla scena. Espone il NOME del nodo
       // (ciò che i selettori salvano) accanto alla label dedup di
@@ -121,6 +126,7 @@ export default function AnimationDirector({
       delete apiRef.current.triggerAnimation
       delete apiRef.current.animationUnlocked
       delete apiRef.current.resetAnimationProgress
+      delete apiRef.current.subscribeAnimation
       delete apiRef.current.meshCatalog
     }
   }, [apiRef])

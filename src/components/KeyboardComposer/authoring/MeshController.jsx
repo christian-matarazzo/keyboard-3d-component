@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { useGLTF, TransformControls } from '@react-three/drei'
 import { useControls } from 'leva'
-import { DRACO_PATH } from './KeyboardModel'
-import { collectMeshGroups, collectMeshList } from './materials/meshGroups'
-import { wrapMeshInPivot, wrapGroupInPivot } from './animation/pivot'
+import { renderInMode } from './useLevaSection'
+import { getDracoPath } from '../KeyboardModel'
+import { collectMeshGroups, collectMeshList } from '../materials/meshGroups'
+import { wrapMeshInPivot, wrapGroupInPivot } from '../animation/pivot'
 
 const HALO_SCALE = 1.04
 const HALO_COLOR = '#4dabf7'
@@ -25,9 +26,9 @@ const HALO_COLOR = '#4dabf7'
  * autorate: identica al wrap, diversa allo SMONTAGGIO — qui `bake: true` (la
  * modifica dell'utente si cuoce nella mesh e persiste), lì ripristino esatto.
  */
-export default function MeshController({ modelUrl, selectedMesh, onSelectMesh, editMode = 'none', meshGroups }) {
+export default function MeshController({ modelUrl, selectedMesh, onSelectMesh, store, editMode = 'none', meshGroups }) {
   const active = editMode === 'meshes'
-  const { scene } = useGLTF(modelUrl, DRACO_PATH)
+  const { scene } = useGLTF(modelUrl, getDracoPath())
 
   const meshList = useMemo(() => collectMeshList(scene, meshGroups), [scene, meshGroups])
   const meshOptions = useMemo(() => {
@@ -57,7 +58,7 @@ export default function MeshController({ modelUrl, selectedMesh, onSelectMesh, e
     rotX: { value: 0, min: -180, max: 180, step: 1, label: 'Rot X° (rel.)' },
     rotY: { value: 0, min: -180, max: 180, step: 1, label: 'Rot Y° (rel.)' },
     rotZ: { value: 0, min: -180, max: 180, step: 1, label: 'Rot Z° (rel.)' },
-  }), { collapsed: false, render: (get) => get('⚙️ Editor · Modalità.editMode') === 'meshes' }, [groupOptions, meshOptions])
+  }), { collapsed: false, render: renderInMode('meshes') }, [groupOptions, meshOptions])
   const { groupId, meshName, mode, opacity, posX, posY, posZ, rotX, rotY, rotZ } = meshCtrl
 
   useEffect(() => {

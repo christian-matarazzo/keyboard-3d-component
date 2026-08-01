@@ -1,16 +1,19 @@
-import { useMemo, useRef, useEffect, useState } from 'react'
+import { useCallback, useMemo, useRef, useEffect, useState } from 'react'
 import { useFrame } from '@react-three/fiber'
-import { useControls, button } from 'leva'
 import { easing } from 'maath'
 import * as THREE from 'three'
-import { Html, useHelper, TransformControls, useGLTF } from '@react-three/drei'
+import { Html, useGLTF } from '@react-three/drei'
 // Inizializzazione GLOBALE: deve avvenire prima che i materiali PBR
 // vengano compilati, altrimenti le RectAreaLight vengono ignorate.
 import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js'
 RectAreaLightUniformsLib.init()
 
 import { wrapYaw } from './poseGraph'
-import { DRACO_PATH } from './KeyboardModel'
+import { getDracoPath } from './KeyboardModel'
+import { DEFAULT_VIEW_SETTINGS } from './state/defaults'
+import { applyConfig } from './runtime/productConfig'
+import { ShadowKeyLight, ShadowSpotLight } from './runtime/ShadowLights'
+import { useComposerSection } from './state/useComposerSection'
 
 const RIG_POSITION = [0, 0.1, 0]
 const DEBUG = new URLSearchParams(window.location.search).has('debug')
@@ -105,30 +108,17 @@ const boxFromModelSize = (modelSize) => ({
 })
 
 /**
- * Valori PER VISTA della cartella "Impostazioni Globali Vista", con i loro
- * default. Unica fonte: da qui leggono sia lo schema Leva sia
- * `generateDefaultConfig`, così un default cambiato in un punto non può
- * divergere dall'altro (prima erano due elenchi paralleli da tenere allineati
- * a mano, ed è il modo in cui un valore smette silenziosamente di combaciare
- * con quello scritto nei JSON già salvati).
+ * Valori PER VISTA della cartella "Impostazioni Globali Vista". I default
+ * abitano in state/defaults.js insieme a tutti gli altri; da lì leggono sia lo
+ * schema Leva sia `generateDefaultConfig`, così un default cambiato in un punto
+ * non può divergere dall'altro (prima erano due elenchi paralleli da tenere
+ * allineati a mano, ed è il modo in cui un valore smette silenziosamente di
+ * combaciare con quello scritto nei JSON già salvati).
  *
  * ⚠️ Queste chiavi finiscono nel JSON dentro `lights[posa]`, accanto a
  * `top_0_intensity` & co. Vale la stessa regola dei prefissi delle luci:
  * rinominarne una rimappa in silenzio ogni configurazione già salvata.
- *
- * I quattro damping erano tunabili in `?debug` ma non venivano salvati da
- * nessuna parte, quindi in produzione restavano sempre agli hardcoded: erano
- * l'unico parametro dell'app a non sopravvivere a un salva/ricarica.
- * `showHelpers`/`showSurfaces` non stanno qui pur essendo salvati per vista:
- * sono visualizzazione di debug, non un parametro di resa.
  */
-const DEFAULT_VIEW_SETTINGS = {
-  margin: 1.0,
-  animMarginDamp: 0.25,
-  animLightOnDamp: 0.08,
-  animLightOffDamp: 0.25,
-  animColorDamp: 0.35,
-}
 const VIEW_SETTING_KEYS = Object.keys(DEFAULT_VIEW_SETTINGS)
 
 /** Legge le impostazioni per vista da una config di posa, con i default per le chiavi assenti. */
@@ -153,160 +143,17 @@ const generateDefaultConfig = () => {
   return def
 }
 
-// --- SHADOW KEYLIGHT ---
-function ShadowKeyLight({ debug, lightsActive }) {
-  const lightRef = useRef()
-  
-  // 1. Salviamo l'oggetto intero in 'controls'
-  const [controls, setControls] = useControls('Ombra: Directional (Keylight)', () => ({
-    enabled: { value: true, label: 'Accesa' },
-    showGizmo: { value: false, label: 'Mostra Gizmo 3D' },
-    intensity: { value: 0.5, min: 0, max: 100, step: 0.05 },
-    posX: { value: 0, min: -10, max: 10 },
-    posY: { value: 5, min: -10, max: 10 },
-    posZ: { value: 2, min: -10, max: 10 },
-    bias: { value: -0.0005, min: -0.005, max: 0.005, step: 0.0001 },
-    normalBias: { value: 0.02, min: -0.1, max: 0.1, step: 0.001 },
-  // Cartella visibile solo in modalità Luci: `render` nasconde la riga nel
-  // pannello senza smontare il componente, quindi i valori restano intatti
-  // (a differenza di un unmount/remount, che li resetterebbe ai default).
-  }), { collapsed: true, render: (get) => get('⚙️ Editor · Modalità.editMode') === 'lights' })
-
-  // 2. Destrutturiamo i valori per usarli nel JSX
-  const { enabled, showGizmo, intensity, posX, posY, posZ, bias, normalBias } = controls
-
-  // 3. Ora 'controls' esiste e l'useEffect funziona perfettamente!
-  useEffect(() => { window.__STATE_KEYLIGHT = controls }, [controls])
-  
-  useEffect(() => {
-    const handler = (e) => { if (e.detail) setControls(e.detail) }
-    window.addEventListener('app-load-keylight', handler)
-    return () => window.removeEventListener('app-load-keylight', handler)
-  }, [setControls])
-
-  useHelper(debug && lightsActive && showGizmo && lightRef, THREE.DirectionalLightHelper, 1, '#00ffcc')
-
-  // ... (il resto del return con la directionalLight e il Gizmo rimane identico)
-  if (!enabled) return null
-
-  return (
-    <>
-      <directionalLight
-        ref={lightRef}
-        position={[posX, posY, posZ]}
-        intensity={intensity}
-        castShadow
-        shadow-mapSize={[2048, 2048]}
-        shadow-bias={bias}
-        shadow-normalBias={normalBias}
-      >
-        <orthographicCamera attach="shadow-camera" args={[-4, 4, 4, -4, 0.1, 20]} />
-      </directionalLight>
-
-      {debug && lightsActive && showGizmo && (
-        <TransformControls 
-          object={lightRef} 
-          mode="translate" 
-          size={0.7} 
-          // 1. Appena il mouse preme il Gizmo, disabilitiamo il drag del modello!
-          onMouseDown={() => {
-            if (window.__abortComposerDrag) window.__abortComposerDrag()
-          }}
-          // 2. Sincronizziamo in tempo reale con i parametri Leva
-          // 3. Quando muoviamo il Gizmo, aggiorniamo in tempo reale gli slider di Leva
-          onChange={() => {
-            if (lightRef.current) {
-              setControls({
-                posX: lightRef.current.position.x,
-                posY: lightRef.current.position.y,
-                posZ: lightRef.current.position.z,
-              })
-            }
-          }}
-        />
-      )}
-    </>
-  )
-}
-
-// --- SHADOW SPOTLIGHT ---
-function ShadowSpotLight({ debug, lightsActive }) {
-  const lightRef = useRef()
-  
-  // 1. Salviamo l'oggetto intero in 'controls'
-  const [controls, setControls] = useControls('Ombra: Spotlight', () => ({
-    enabled: { value: false, label: 'Accesa' }, 
-    showGizmo: { value: false, label: 'Mostra Gizmo 3D' },
-    intensity: { value: 1.0, min: 0, max: 100, step: 0.1 },
-    angle: { value: 0.6, min: 0.1, max: Math.PI / 2, step: 0.01 },
-    penumbra: { value: 0.5, min: 0, max: 1, step: 0.01 },
-    distance: { value: 15, min: 1, max: 50, step: 0.5 },
-    posX: { value: -3, min: -10, max: 10 },
-    posY: { value: 4, min: -10, max: 10 },
-    posZ: { value: 3, min: -10, max: 10 },
-    bias: { value: -0.0005, min: -0.005, max: 0.005, step: 0.0001 },
-    normalBias: { value: 0.02, min: -0.1, max: 0.1, step: 0.001 },
-  }), { collapsed: true, render: (get) => get('⚙️ Editor · Modalità.editMode') === 'lights' })
-
-  // 2. Destrutturiamo i valori per usarli nel JSX
-  const { enabled, showGizmo, intensity, angle, penumbra, distance, posX, posY, posZ, bias, normalBias } = controls
-
-  // 3. Salviamo lo stato globale
-  useEffect(() => { window.__STATE_SPOTLIGHT = controls }, [controls])
-  
-  useEffect(() => {
-    const handler = (e) => { if (e.detail) setControls(e.detail) }
-    window.addEventListener('app-load-spotlight', handler)
-    return () => window.removeEventListener('app-load-spotlight', handler)
-  }, [setControls])
-
-  useHelper(debug && lightsActive && showGizmo && lightRef, THREE.SpotLightHelper, '#ff00cc')
-
-  // ... (il resto del return con la spotLight e il Gizmo rimane identico)
-  if (!enabled) return null
-
-  return (
-    <>
-      <spotLight
-        ref={lightRef}
-        position={[posX, posY, posZ]}
-        intensity={intensity}
-        angle={angle}
-        penumbra={penumbra}
-        distance={distance}
-        castShadow
-        shadow-mapSize={[2048, 2048]}
-        shadow-bias={bias}
-        shadow-normalBias={normalBias}
-      />
-
-      {debug && lightsActive && showGizmo && (
-        <TransformControls 
-          object={lightRef} 
-          mode="translate" 
-          size={0.7} 
-          // 1. Appena il mouse preme il Gizmo, disabilitiamo il drag del modello!
-          onMouseDown={() => {
-            if (window.__abortComposerDrag) window.__abortComposerDrag()
-          }}
-          // 2. Sincronizziamo in tempo reale con i parametri Leva
-          // 3. Sincronizzazione con Leva
-          onChange={() => {
-            if (lightRef.current) {
-              setControls({
-                posX: lightRef.current.position.x,
-                posY: lightRef.current.position.y,
-                posZ: lightRef.current.position.z,
-              })
-            }
-          }}
-        />
-      )}
-    </>
-  )
-}
-
-export default function LightRig({ modelSize, apiRef, editMode = 'none', product } = {}) {
+export default function LightRig({
+  modelSize,
+  apiRef,
+  store,
+  editMode = 'none',
+  product,
+  // Creati da Scene e condivisi con l'authoring, che ci aggancia gizmo e
+  // helper senza possedere le luci.
+  keyLightRef,
+  spotLightRef,
+} = {}) {
   // GLB, grafo delle pose e percorso del JSON autorato vengono tutti dal
   // prodotto attivo: le luci sono indicizzate PER CHIAVE DI POSA, quindi un
   // file di configurazione ha senso solo insieme al grafo che lo indicizza
@@ -316,7 +163,7 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', product
   // MaterialTuner: nessun fetch aggiuntivo, è la STESSA istanza di scena su
   // cui l'editor mesh applica le sue trasformate — che è esattamente ciò che
   // qui va misurato dal vivo (vedi measureModelBox).
-  const { scene: modelScene } = useGLTF(modelUrl, DRACO_PATH)
+  const { scene: modelScene } = useGLTF(modelUrl, getDracoPath())
   const rigRef = useRef()
   // Box misurato (target) e box smorzato (quello effettivamente usato per
   // posizionare luci e superfici).
@@ -378,41 +225,12 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', product
   const prevCamRef = useRef({ pitch: 0, yaw: 0, initialized: false })
   const transitionRef = useRef({ totalDist: 0, progress: 1 })
 
-  const schema = useMemo(() => {
-    return {
-      showHelpers: { value: false, label: 'Mostra Punti' },
-      showSurfaces: { value: false, label: 'Mostra Superfici' },
-      // Max alzato da 3 a 12: con la scatola adattiva (che segue le mesh
-      // traslate dall'editor) serve poter allontanare le luci molto più del
-      // vecchio modello statico senza rimanere incastrati nel modello.
-      margin: { value: DEFAULT_VIEW_SETTINGS.margin, min: 0, max: 12, step: 0.1, label: 'Margine Scatola' },
-
-      // Velocità di transizione, anch'esse PER VISTA (vedi DEFAULT_VIEW_SETTINGS):
-      // il valore mostrato qui è sempre quello della posa attiva.
-      animMarginDamp: { value: DEFAULT_VIEW_SETTINGS.animMarginDamp, min: 0.01, max: 1, step: 0.01, label: 'Velocità Margine' },
-      animLightOnDamp: { value: DEFAULT_VIEW_SETTINGS.animLightOnDamp, min: 0.01, max: 1, step: 0.01, label: 'Velocità Accensione' },
-      animLightOffDamp: { value: DEFAULT_VIEW_SETTINGS.animLightOffDamp, min: 0.01, max: 1, step: 0.01, label: 'Velocità Spegnimento' },
-      animColorDamp: { value: DEFAULT_VIEW_SETTINGS.animColorDamp, min: 0.01, max: 1, step: 0.01, label: 'Velocità Colore' },
-
-      'Resetta Vista': button(() => {
-        if (window.confirm(`Vuoi azzerare le luci per la vista ${activePoseRef.current}?`)) {
-          const def = generateDefaultConfig()
-          def.showHelpers = currentControlsRef.current.showHelpers
-          def.showSurfaces = currentControlsRef.current.showSurfaces
-          configsRef.current[activePoseRef.current] = def
-          // Anche le velocità di transizione tornano ai default: fanno parte
-          // della vista, quindi "resetta vista" le comprende.
-          setControls(readViewSettings(def))
-          setSelectedLight(null)
-        }
-      })
-    }
-  }, [])
-
-  const [controls, setControls] = useControls('Impostazioni Globali Vista', () => schema, {
-    collapsed: true,
-    render: (get) => get('⚙️ Editor · Modalità.editMode') === 'lights',
-  })
+  // Impostazioni della vista corrente. Non è più una `useControls`: il rig le
+  // legge dallo store, e il pannello che le muove vive in
+  // authoring/ViewSettingsTuner.jsx. È l'ultimo pezzo che teneva `leva` sul
+  // percorso di produzione.
+  const controls = useComposerSection(store, 'view')
+  const setControls = useCallback((patch) => store.set('view', patch), [store])
   const currentControlsRef = useRef(controls)
   currentControlsRef.current = controls
 
@@ -469,55 +287,41 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', product
   }, [selectedLight, setControls])
   // --- FINE IMPLEMENTAZIONE UNDO ---
 
-  // Fetch automatico in produzione (fuori dal debug). Il percorso è quello del
-  // PRODOTTO attivo (`configUrl`): luci per posa, materiali e focus sono
-  // indicizzati da chiavi che appartengono a quel modello, quindi non esiste un
-  // file condiviso fra prodotti.
+  // Le luci per posa arrivano dallo store, non più da un fetch fatto qui
+  // dentro: chi scarica il file è runtime/ConfigLoader.jsx, chi lo applica è
+  // `applyConfig`. Questo componente è tornato a essere solo il rig.
+  //
+  // Due ingressi, una funzione sola: la configurazione può già essere nello
+  // store quando montiamo (è il caso normale — il fetch parte prima) oppure
+  // arrivare dopo ("Carica JSON" dal pannello). Prima erano due blocchi
+  // identici riga per riga, uno nel fetch e uno in handleLoadJSON, ed è
+  // esattamente il tipo di duplicazione che diverge alla prima modifica.
+  //
+  // ⚠️ `configsRef` non diventa stato React: l'editor la muta IN LOCO e il
+  // useFrame la legge a ogni frame. Lo store la semina e la ripubblica, ma la
+  // proprietà resta qui.
   useEffect(() => {
-    // Eseguiamo il fetch solo fuori dal debug
-    if (!DEBUG) {
-      fetch(configUrl)
-        .then((res) => {
-          if (!res.ok) throw new Error('File di configurazione non trovato')
-          return res.json()
-        })
-        .then((parsed) => {
-          // Verifica se è il vecchio JSON (solo luci) o il nuovo formato globale
-          const isNewFormat = !!parsed.lights
-          const lightsData = isNewFormat ? parsed.lights : parsed
-          
-          // 1. Applica i dati alle luci volumetriche (il Rig originale)
-          configsRef.current = lightsData;
-          
-          // Aggiorna i controlli se c'è una posa già attiva
-          if (activePoseRef.current && lightsData[activePoseRef.current]) {
-            // Lo spread sui default copre i JSON precedenti, che non hanno le
-            // chiavi delle velocità: restano validi e prendono i default.
-            const newConfig = { ...generateDefaultConfig(), ...lightsData[activePoseRef.current] };
-            setControls({
-              ...readViewSettings(newConfig),
-              showHelpers: newConfig.showHelpers,
-              showSurfaces: newConfig.showSurfaces !== undefined ? newConfig.showSurfaces : newConfig.showHelpers
-            });
-          }
+    if (!store) return
 
-          // 2. Lancia gli eventi globali per aggiornare Materiali, Rotazioni e Ombre
-          if (isNewFormat) {
-            if (parsed.materials) window.dispatchEvent(new CustomEvent('app-load-materials', { detail: parsed.materials }))
-            if (parsed.rotation) window.dispatchEvent(new CustomEvent('app-load-rotation', { detail: parsed.rotation }))
-            if (parsed.keylight) window.dispatchEvent(new CustomEvent('app-load-keylight', { detail: parsed.keylight }))
-            if (parsed.spotlight) window.dispatchEvent(new CustomEvent('app-load-spotlight', { detail: parsed.spotlight }))
-            if (parsed.focus) window.dispatchEvent(new CustomEvent('app-load-focus', { detail: parsed.focus }))
-            if (parsed.animations) window.dispatchEvent(new CustomEvent('app-load-animations', { detail: parsed.animations }))
-            if (parsed.variants) window.dispatchEvent(new CustomEvent('app-load-variants', { detail: parsed.variants }))
-            if (parsed.app) window.dispatchEvent(new CustomEvent('app-load-app', { detail: parsed.app }))
-          }
-        })
-        .catch((err) => {
-          console.warn('Nessun JSON personalizzato trovato, applico i default di sistema:', err.message)
-        })
+    const applyLights = (lights) => {
+      if (!lights || !Object.keys(lights).length) return
+      configsRef.current = lights
+
+      const pose = activePoseRef.current
+      if (!pose || !lights[pose]) return
+      // Lo spread sui default copre i JSON precedenti, che non hanno le chiavi
+      // delle velocità: restano validi e prendono i default.
+      const newConfig = { ...generateDefaultConfig(), ...lights[pose] }
+      setControls({
+        ...readViewSettings(newConfig),
+        showHelpers: newConfig.showHelpers,
+        showSurfaces: newConfig.showSurfaces !== undefined ? newConfig.showSurfaces : newConfig.showHelpers,
+      })
     }
-  }, [setControls, configUrl])
+
+    applyLights(store.get('lights'))
+    return store.subscribe('lights', applyLights)
+  }, [store, setControls])
 
   // Slider → config della posa attiva. Il runtime legge questi valori da Leva
   // (currentControlsRef), quindi questo effetto è ciò che li rende persistenti:
@@ -919,30 +723,41 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', product
       for (const k of VIEW_SETTING_KEYS) if (conf[k] === undefined) conf[k] = DEFAULT_VIEW_SETTINGS[k]
     }
 
+    // Le luci rientrano nello store prima di serializzare: `configsRef` è
+    // mutata in loco dall'editor, quindi lo store va riallineato o il prossimo
+    // che lo legge vedrebbe la versione caricata, non quella autorata.
+    store?.replace('lights', configsRef.current)
+
+    // ⚠️ Le altre sezioni si leggono ancora dai globali `window.__STATE_*`, non
+    // dallo store, e NON è una svista: finché i loro valori vivono dentro i
+    // pannelli Leva, il globale è l'unica copia aggiornata: lo store contiene
+    // solo ciò che è stato CARICATO, non ciò che l'autore ha appena mosso.
+    // Ogni sezione passa allo store insieme al proprio pannello, una alla
+    // volta; a quel punto tutto questo diventa `store.toJSON()`.
     const fullData = {
       lights: configsRef.current,
-      materials: window.__STATE_MATERIALS || {},
-      rotation: window.__STATE_ROTATION || {},
-      keylight: window.__STATE_KEYLIGHT || {},
-      spotlight: window.__STATE_SPOTLIGHT || {},
+      materials: store.get('materials'),
+      rotation: store.get('rotation'),
+      keylight: store.get('keylight'),
+      spotlight: store.get('spotlight'),
       // Inquadrature autorate dello zoom sui gruppi (FocusTuner in Scene.jsx).
       // Non c'entra con le luci: sta qui perché questo è l'unico punto di
       // salvataggio/caricamento di TUTTO lo stato tunabile dell'app.
-      focus: window.__STATE_FOCUS || {},
+      focus: store.get('focus'),
       // Animazioni autorate (AnimationEditor, stato in KeyboardComposer.jsx).
       // Stessa ragione del `focus` qui sopra: non c'entrano con le luci, ma
       // questo è l'unico punto di salvataggio/caricamento globale.
-      animations: window.__STATE_ANIMATIONS || { version: 1, items: [] },
+      animations: store.get('animations'),
       // Varianti di modello: SOLO i binding variante→animazione di swap.
       // ⚠️ La selezione (quale layout è acceso) NON si salva: è stato
       // dell'utente, vive in sessionStorage, e in produzione si riparte sempre
       // dal `defaultOption` di materials/meshVariants.js. Vedi il commento in
       // KeyboardComposer.jsx per il perché.
-      variants: window.__STATE_VARIANTS || {},
+      variants: store.get('variants'),
       // Stato di prodotto non legato a luci/materiali: oggi la sola posa home
       // (ingresso in landscape, rientro da config_mode, blocco della modalità
       // Mesh — vedi Scene.jsx).
-      app: window.__STATE_APP || {}
+      app: store.get('app'),
     }
 
     const json = JSON.stringify(fullData, null, 2)
@@ -970,39 +785,14 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', product
       const reader = new FileReader()
       reader.onload = (ev) => {
         try {
-          const parsed = JSON.parse(ev.target.result)
-          
-          const isNewFormat = !!parsed.lights
-          const lightsData = isNewFormat ? parsed.lights : parsed
-
-          configsRef.current = lightsData
-          let alertMsg = "Configurazione Globale caricata con successo!"
-          
-          const currentPose = activePoseRef.current
-          if (currentPose && lightsData[currentPose]) {
-            const newConfig = { ...generateDefaultConfig(), ...lightsData[currentPose] }
-            setControls({
-              ...readViewSettings(newConfig),
-              showHelpers: newConfig.showHelpers,
-              showSurfaces: newConfig.showSurfaces !== undefined ? newConfig.showSurfaces : newConfig.showHelpers
-            })
-          }
-          
-          if (isNewFormat) {
-            if (parsed.materials) window.dispatchEvent(new CustomEvent('app-load-materials', { detail: parsed.materials }))
-            if (parsed.rotation) window.dispatchEvent(new CustomEvent('app-load-rotation', { detail: parsed.rotation }))
-            if (parsed.keylight) window.dispatchEvent(new CustomEvent('app-load-keylight', { detail: parsed.keylight }))
-            if (parsed.spotlight) window.dispatchEvent(new CustomEvent('app-load-spotlight', { detail: parsed.spotlight }))
-            if (parsed.focus) window.dispatchEvent(new CustomEvent('app-load-focus', { detail: parsed.focus }))
-            if (parsed.animations) window.dispatchEvent(new CustomEvent('app-load-animations', { detail: parsed.animations }))
-            if (parsed.variants) window.dispatchEvent(new CustomEvent('app-load-variants', { detail: parsed.variants }))
-            if (parsed.app) window.dispatchEvent(new CustomEvent('app-load-app', { detail: parsed.app }))
-          }
-
+          // Stessa via del fetch di produzione: applyConfig idrata lo store e
+          // avvisa i consumatori. Le luci rientrano dalla sottoscrizione
+          // dell'effetto qui sopra, non da questo handler.
+          applyConfig(store, JSON.parse(ev.target.result))
           setSelectedLight(null)
-          alert(alertMsg)
-        } catch (err) {
-          alert("Errore: Il JSON fornito non è valido.")
+          alert('Configurazione Globale caricata con successo!')
+        } catch {
+          alert('Errore: Il JSON fornito non è valido.')
         }
       }
       reader.readAsText(file)
@@ -1030,10 +820,27 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', product
     Object.assign(apiRef.current, {
       saveConfigJSON: () => jsonImplRef.current.save?.(),
       loadConfigJSON: () => jsonImplRef.current.load?.(),
+      // Azzera le luci della vista attiva. Passa dal ponte perché il pulsante
+      // che lo lancia sta ora nel pannello di authoring, che non vede
+      // `configsRef` — ed è giusto così: quella config appartiene al rig.
+      resetActiveView: () => {
+        const pose = activePoseRef.current
+        if (!pose) return false
+        const def = generateDefaultConfig()
+        def.showHelpers = currentControlsRef.current.showHelpers
+        def.showSurfaces = currentControlsRef.current.showSurfaces
+        configsRef.current[pose] = def
+        // Anche le velocità di transizione tornano ai default: fanno parte
+        // della vista, quindi "resetta vista" le comprende.
+        setControls(readViewSettings(def))
+        setSelectedLight(null)
+        return pose
+      },
     })
     return () => {
       delete apiRef.current.saveConfigJSON
       delete apiRef.current.loadConfigJSON
+      delete apiRef.current.resetActiveView
     }
   }, [apiRef])
 
@@ -1041,8 +848,11 @@ export default function LightRig({ modelSize, apiRef, editMode = 'none', product
     <group position={RIG_POSITION} ref={rigRef}>
 
       {/* NUOVE LUCI CON GIZMO 3D */}
-      <ShadowKeyLight debug={DEBUG} lightsActive={editMode === 'lights'} />
-      <ShadowSpotLight debug={DEBUG} lightsActive={editMode === 'lights'} />
+      {/* Le due luci-ombra. I loro slider e i gizmo di trascinamento vivono in
+          authoring/LightGizmos.jsx e si agganciano a questi stessi ref, che
+          Scene crea e passa a entrambi: la luce è produzione, la manopola no. */}
+      <ShadowKeyLight store={store} lightRef={keyLightRef} />
+      <ShadowSpotLight store={store} lightRef={spotLightRef} />
 
       {/* La pulsantiera di salvataggio/caricamento sta in KeyboardComposer.jsx
           (DebugPanel), agganciata al pannello Leva: qui sopra ne pubblichiamo

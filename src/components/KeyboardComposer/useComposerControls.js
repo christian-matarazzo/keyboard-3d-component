@@ -1,10 +1,10 @@
 import * as THREE from 'three'
 import { useEffect, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
-import { useControls } from 'leva'
 import { easing } from 'maath'
 import { DEG, wrapYaw } from './poseGraph'
 import { measureGroupFraming } from './focusFraming'
+import { useComposerSection } from './state/useComposerSection'
 
 // La rotella è uno STRUMENTO DI AUTHORING, non un'interazione di prodotto: in
 // produzione lo zoom è solo quello autorato sui gruppi (vedi focusGroup). Il
@@ -189,6 +189,10 @@ export function useComposerControls(
     // pulsantiera delle viste, che vive nel DOM FUORI dal Canvas e non può
     // quindi raggiungere questi ref altrimenti.
     apiRef,
+    // Stato autorato (state/composerStore.js): da qui arriva la sezione
+    // `rotation`, cioè i parametri di feel letti ogni frame. È il gemello di
+    // `apiRef` per i dati — quello porta i comandi, questo i valori.
+    store,
     disabled = false,
     // NUOVO: stato editor, per il lock-guard di goTo (posa bloccata in Mesh)
     // e per il fit dinamico in Luci (vedi sotto). `scene` serve SOLO
@@ -283,47 +287,17 @@ export function useComposerControls(
   // inquadrature del FocusTuner deve ripassarle — vedi applyFocus.
   const focusExtraRef = useRef(null)
 
-  // Parametri "feel" regolabili dal pannello (?debug): i default sono i
-  // valori di produzione.
-  // Cerca la definizione di 'feel' (intorno alla riga 100)
-  const [feel, setFeel] = useControls('Rotazione', () => ({
-    dragSpeed: { value: 0.01, min: 0.001, max: 0.012, step: 0.0005, label: 'velocità drag' },
-    followTime: { value: 0.2, min: 0.05, max: 0.6, step: 0.01, label: 'inerzia in drag' },
-    commitFraction: { value: 0.2, min: 0.1, max: 0.9, step: 0.05, label: 'soglia step' },
-    springStiffness: { value: 150, min: 20, max: 300, step: 5, label: 'molla rigidità' },
-    springDamping: { value: 0.85, min: 0.2, max: 1.2, step: 0.05, label: 'molla smorzamento' },
-    rubberFactor: { value: 0, min: 0, max: 0.6, step: 0.05, label: 'elastico oltre-step' },
-    rubberCapDeg: { value: 0, min: 0, max: 20, step: 1, label: 'elastico max ( )' },
-    timeScale: { value: 0.3, min: 0.3, max: 1.5, step: 0.05, label: 'velocità animazione' },
-    fitMargin: { value: 1.6, min: 1, max: 2.5, step: 0.05, label: 'margine inquadratura' },
-    zoomOutMobile: { value: 1.25, min: 1, max: 1.8, step: 0.05, label: 'zoom-out mobile' },
-    // Transizione dello zoom sui gruppi (dolly + spostamento del pivot).
-    // Volutamente NON la molla delle pose: quella integra angoli con la
-    // compensazione d'ampiezza di stepAmp, semanticamente scorrelata da una
-    // carrellata. Smorzamento maath sul delta GREZZO (non scalato da
-    // timeScale), così questo numero è leggibile come "tempo di assestamento
-    // in secondi" e resta l'unica manopola del focus.
-    focusDamp: { value: 0.6, min: 0.1, max: 2, step: 0.05, label: 'transizione focus' },
-    // Uscita dal focus (zoom-out verso l'insieme): manopola propria, perché è
-    // il movimento che chiude ogni animazione e accompagna la dissolvenza
-    // dell'opacità — vederlo alla stessa velocità dell'entrata lo fa sembrare
-    // frettoloso. Default uguale a focusDamp: comportamento invariato finché
-    // non lo si tocca.
-    focusOutDamp: { value: 0.6, min: 0.1, max: 3, step: 0.05, label: 'zoom-out (uscita)' },
-  }), { collapsed: true })
-
-  // 1. Salva lo stato corrente
-  useEffect(() => {
-    window.__STATE_ROTATION = feel
-  }, [feel])
-
-  // 2. Ascolta l'evento di caricamento
-  useEffect(() => {
-    const handler = (e) => { if (e.detail) setFeel(e.detail) }
-    window.addEventListener('app-load-rotation', handler)
-    return () => window.removeEventListener('app-load-rotation', handler)
-  }, [setFeel])
-
+  // Parametri "feel" della navigazione (sezione `rotation` dello store; la
+  // manopola è authoring/RotationTuner.jsx).
+  //
+  // Due letture, perché ci sono due esigenze diverse:
+  //  - `feel` è REATTIVO e serve agli effetti di fit/resize più sotto, che
+  //    devono rigirare quando `fitMargin`/`zoomOutMobile` cambiano. Non è un
+  //    costo per frame: `useComposerSection` rende solo quando la sezione
+  //    cambia davvero, cioè quando un autore muove uno slider.
+  //  - `feelRef` è lo specchio letto DENTRO useFrame, dove attraversare React
+  //    non ha senso. Stesso idioma di `disabledRef`/`editModeRef` qui accanto.
+  const feel = useComposerSection(store, 'rotation')
   const feelRef = useRef(feel)
   feelRef.current = feel
 

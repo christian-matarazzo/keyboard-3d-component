@@ -11,7 +11,28 @@ import {
 import { useComposerControls } from './useComposerControls'
 import { ARRAY_MODEL_L } from './products/arrayModelL'
 
-export const DRACO_PATH = '/draco/'
+/**
+ * Percorso del decoder Draco, condiviso da tutti i `useGLTF` del componente.
+ *
+ * ⚠️ È DELIBERATAMENTE GLOBALE, e non una prop. `useGLTF(url, dracoPath)`
+ * costruisce un DRACOLoader per percorso e la cache di drei è indicizzata di
+ * conseguenza: due valori diversi fra i sette chiamanti significano due
+ * decoder istanziati e — peggio — DUE SCARICAMENTI dello stesso GLB da 1,5 MB.
+ * Un valore per processo è quindi la forma corretta del dato, non una
+ * scorciatoia; il decoder è una risorsa dell'ambiente, non del prodotto.
+ *
+ * Lo imposta `KeyboardComposer` da `product.dracoPath` prima che qualunque
+ * `useGLTF` giri. Chi monta due prodotti con decoder diversi nella stessa
+ * pagina vince l'ultimo — ed è un caso che non ha senso, dato che il decoder è
+ * lo stesso file per chiunque.
+ */
+let dracoPath = '/draco/'
+
+export const getDracoPath = () => dracoPath
+
+export const setDracoPath = (next) => {
+  if (typeof next === 'string' && next) dracoPath = next
+}
 // Compatibilità: il GLB del primo prodotto. Il percorso vero arriva sempre da
 // `product.modelUrl` (vedi products/), questa costante resta solo perché è
 // esportata e usata come default da chi non passa nulla (Hud.jsx, preload).
@@ -28,9 +49,9 @@ const DEBUG = new URLSearchParams(window.location.search).has('debug')
 // del file sorgente (l'OBJ è in centimetri).
 const TARGET_WIDTH = 3.2
 
-export function KeyboardModel({ product, apiRef, onSizeComputed, onSelectMesh, controlsDisabled, editMode = 'none', homePoseKey = null, appMode = 'idle', focusOverrides = null }) {
+export function KeyboardModel({ product, apiRef, store, onSizeComputed, onSelectMesh, controlsDisabled, editMode = 'none', homePoseKey = null, appMode = 'idle', focusOverrides = null }) {
   const { modelUrl, meshGroups, poseGraph } = product
-  const { scene } = useGLTF(modelUrl, DRACO_PATH)
+  const { scene } = useGLTF(modelUrl, getDracoPath())
 
   // Auto-fit: centra il modello e lo scala a TARGET_WIDTH, così camera e
   // ombre funzionano qualunque siano le unità dell'asset.
@@ -123,6 +144,7 @@ export function KeyboardModel({ product, apiRef, onSizeComputed, onSelectMesh, c
         ? { x: homeCoord.pitch, y: homeCoord.yaw }
         : { x: poseGraph.entryLandscape.x, y: poseGraph.entryLandscape.y },
     apiRef, // esposto alla pulsantiera delle viste, che sta fuori dal Canvas
+    store, // stato autorato: da qui arriva il feel di camera (sezione `rotation`)
     disabled: controlsDisabled,
     editMode,
     homePoseKey,
@@ -180,5 +202,5 @@ export function KeyboardModel({ product, apiRef, onSizeComputed, onSelectMesh, c
  * Accetta l'URL di un GLB o direttamente un prodotto (`products/`).
  */
 export function preloadKeyboardModel(source = DEFAULT_MODEL_URL) {
-  useGLTF.preload(typeof source === 'string' ? source : source.modelUrl, DRACO_PATH)
+  useGLTF.preload(typeof source === 'string' ? source : source.modelUrl, getDracoPath())
 }

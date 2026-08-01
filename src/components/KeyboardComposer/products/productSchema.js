@@ -90,11 +90,28 @@ export function defineProduct(def) {
     ? def.poseGraph
     : createPoseGraph({ id, ...def.poseGraph })
 
+  // ⚠️ La base si applica solo agli URL RELATIVI alla radice (`/models/…`), che
+  // sono quelli che questo repo dichiara. Un URL assoluto (già su una CDN) o
+  // uno relativo al documento passa intatto: chi lo scrive per esteso sa dove
+  // sta andando, e riscriverglielo sarebbe una sorpresa.
+  const base = def.assetsBaseUrl ? String(def.assetsBaseUrl).replace(/\/$/, '') : ''
+  const withBase = (url) => (base && typeof url === 'string' && url.startsWith('/') ? base + url : url)
+
   return Object.freeze({
     id,
     label: def.label ?? id,
-    modelUrl: def.modelUrl,
-    configUrl: def.configUrl ?? `/lightconfig/${id}/app-state-config.json`,
+    // Dove stanno gli asset del prodotto. Serve a chi installa il pacchetto e
+    // serve GLB, JSON e decoder da un'altra origine (una CDN, un sottopercorso)
+    // invece che dalla radice del proprio sito.
+    assetsBaseUrl: base || null,
+    modelUrl: withBase(def.modelUrl),
+    configUrl: withBase(def.configUrl ?? `/lightconfig/${id}/app-state-config.json`),
+    // ⚠️ Il decoder Draco è una risorsa di PROCESSO, non di prodotto: drei
+    // costruisce un DRACOLoader per percorso, e due percorsi diversi fra i
+    // sette chiamanti di `useGLTF` significano due decoder e due scaricamenti
+    // dello stesso GLB. Il valore viene applicato una volta sola, globalmente
+    // — vedi setDracoPath in KeyboardModel.jsx.
+    dracoPath: withBase(def.dracoPath ?? '/draco/'),
     poseGraph,
     meshGroups: Object.freeze([...def.meshGroups]),
     meshVariants: Object.freeze([...(def.meshVariants ?? [])]),
@@ -120,7 +137,7 @@ export function resolveProduct(source, overrides = {}, lookup = null) {
   if (!base) throw new Error('[product] nessun prodotto indicato')
 
   const patch = {}
-  for (const key of ['modelUrl', 'meshGroups', 'meshVariants'])
+  for (const key of ['modelUrl', 'meshGroups', 'meshVariants', 'assetsBaseUrl', 'dracoPath'])
     if (overrides[key] !== undefined) patch[key] = overrides[key]
 
   // Nessun override: il prodotto del registro è già congelato e validato, si
