@@ -73,10 +73,24 @@ export default defineConfig(({ mode }) => {
               // three e drei cambiano raramente, il codice del componente
               // spesso: separarli non riduce il totale ma rende cacheabile la
               // parte grossa fra un deploy e l'altro.
-              manualChunks: (id) =>
-                id.includes('node_modules/three') || id.includes('node_modules/@react-three')
-                  ? 'three'
-                  : undefined,
+              //
+              // ⚠️ L'esportatore USDZ va tolto A MANO da quel gruppo. Vive
+              // sotto `node_modules/three`, quindi la regola qui sotto se lo
+              // prenderebbe e lo pianterebbe nel chunk `three`, che è
+              // sincrono: l'`import()` in `src/ar/launchAr.js` diventerebbe
+              // decorativo e ogni visitatore — desktop compreso — scaricherebbe
+              // un esportatore che serve solo a Safari iOS. È successo: il
+              // primo build ne contava 13 occorrenze dentro `three`.
+              // GLTFLoader e DRACOLoader restano invece dove sono, ed è
+              // corretto: `useGLTF` di drei li importa staticamente, quindi
+              // sono già eager per conto loro e spostarli non farebbe che
+              // aggiungere una richiesta.
+              manualChunks: (id) => {
+                if (id.includes('exporters/USDZExporter')) return 'ar'
+                if (id.includes('node_modules/three') || id.includes('node_modules/@react-three'))
+                  return 'three'
+                return undefined
+              },
             },
           },
         },

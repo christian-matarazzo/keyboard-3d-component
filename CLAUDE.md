@@ -45,6 +45,10 @@ npm run preview          # preview the production build
 npm run asset:convert    # OBJ -> raw GLB (obj2gltf, --max-old-space-size=8192)
 npm run asset:optimize   # weld -> prune --keep-attributes -> draco
 npm run asset:inspect    # gltf-transform inspect public/models/keyboard.glb
+npm run asset:ar         # scripts/make-ar-asset.mjs -> public/ar/keyboard-ar.glb:
+                         # the GLB made self-contained for AR — metric scale, the
+                         # authored materials baked in, one variant kept
+                         # (--scale/--in/--out/--config/--variants layout=ansi)
 ```
 
 **No test runner and no linter are configured.** Changes are verified by
@@ -76,7 +80,25 @@ of substance lives in one component directory.
 ```
 src/
 ├─ main.jsx, App.jsx                    app entry; App.jsx (playground) passes
-│                                       `branding` into KeyboardComposer
+│                                       `branding` into KeyboardComposer, and
+│                                       mounts the playground-only `<ArButton>`
+│                                       (see `ar/` below) as a sibling of it
+├─ ar/                                  PLAYGROUND-ONLY "Prova in AR" button —
+│  │                                    sibling of `components/KeyboardComposer/`,
+│  │                                    not inside it: `npm run build:lib` never
+│  │                                    sees it, same reasoning as
+│  │                                    `PLAYGROUND_BRANDING` in App.jsx
+│  ├─ arSupport.js                       `detectArSupport()` — capability-based
+│  │                                     mobile-AR detection (iOS Safari / Android
+│  │                                     with touch), not a viewport media query
+│  ├─ launchAr.js                        `launchAr()`/`isArReady()` — hands the
+│  │                                     model to the platform AR viewer (Quick
+│  │                                     Look on iOS via a client-generated USDZ,
+│  │                                     Scene Viewer on Android via an intent
+│  │                                     URL); renders none of this project's
+│  │                                     lighting/materials/variants
+│  └─ ArButton.jsx (+.module.css)        idle/preparing/ready/error button, `null`
+│                                        on unsupported platforms
 └─ components/KeyboardComposer/
    ├─ index.js                          public exports: component, product registry,
    │                                    `createPublicApi`, `isDebug`/`setDebug`
@@ -197,7 +219,14 @@ src/
                                         meshVariants, warmupTransparency) — the
                                         group/variant LISTS live under products/
 public/
-├─ models/keyboard.glb                  ARRAY_MODEL_L's GLB (`product.modelUrl`)
+├─ models/keyboard.glb                  ARRAY_MODEL_L's GLB (`product.modelUrl`),
+│                                       authored in MILLIMETERS
+├─ ar/keyboard-ar.glb                   the AR playground button's asset, generated
+│                                       by `scripts/make-ar-asset.mjs`: metric
+│                                       scale + baked materials + one variant, i.e.
+│                                       everything the configurator would otherwise
+│                                       apply at runtime. Never read by the
+│                                       configurator itself
 ├─ draco/                               decoder, passed explicitly to useGLTF
 └─ lightconfig/app-state-config.json    ALL authored state of ARRAY_MODEL_L —
                                         the sections are exactly
@@ -211,6 +240,16 @@ dist/lib/                              the npm package artifact (`npm run build:
                                         built from this same source tree, not a
                                         separate project — see Build & Development
                                         Commands
+scripts/make-ar-asset.mjs              generates public/ar/keyboard-ar.glb (see
+                                        `npm run asset:ar`). Three passes, in this
+                                        order: variant selection -> material bake
+                                        (from configUrl's `materials`) -> metric
+                                        scale. IMPORTS meshGroups/meshVariants from
+                                        products/ rather than copying them.
+                                        ⚠️ Edits only the GLB's JSON chunk — scale,
+                                        materials and hierarchy are all JSON — so the
+                                        Draco-compressed binary chunk passes through
+                                        byte for byte
 ```
 
 Data flow, in two directions:
@@ -273,6 +312,19 @@ graph with another's groups yields a JSON that half-loads, silently.
 argument any more. A forgotten argument must throw, not quietly classify the
 wrong model. Adding a model = a folder under `products/`, a `defineProduct`,
 one line in `products/index.js`.
+
+**`src/ar/` is a separate, playground-only feature**, not part of the
+configurator or the npm package — see the `ar/` entry in the tree above and
+"AR playground feature" in the Manual notes for the mm-vs-m unit trap, the
+material bake and the GLB-surgery technique behind `scripts/make-ar-asset.mjs`.
+⚠️ That script is currently **single-product**: it imports ARRAY_MODEL_L's
+groups/variants by name and defaults to its config path, so a second product
+wanting AR needs it parameterized by `product` — one more line in the "adding a
+model" list above, and the only place outside `products/` that still names one.
+`vite.config.js`'s
+production-build `manualChunks` carves `USDZExporter` into its own `'ar'`
+chunk **before** the existing three/@react-three rule, so it isn't dragged
+into the synchronous `three` chunk that every visitor downloads.
 
 <!-- END AUTO-MANAGED -->
 
@@ -564,6 +616,136 @@ world-space size; multiplying by `scale` again double-scales and collapses the
 fit to nearly zero. That was a real bug, hit and fixed — don't reintroduce it.
 (`KeyboardModel.jsx`'s own one-time auto-fit `useMemo` is the opposite case: it
 measures `scene` *before* insertion, i.e. genuinely unscaled.)
+
+## AR playground feature ("Prova in AR")
+
+`src/ar/` (arSupport.js, launchAr.js, ArButton.jsx) is playground-only, same
+boundary as `PLAYGROUND_BRANDING` in App.jsx — `npm run build:lib` never sees
+it. It renders nothing on desktop; on iOS Safari / Android it hands the model
+to the platform's own AR viewer (Quick Look / Scene Viewer). Nothing of this
+project's *runtime* survives that handoff — no 34-light rig, no
+`MaterialApplier`, no `VariantController` — so anything the product needs to
+look right has to be **baked into the asset** by `scripts/make-ar-asset.mjs`.
+That script fixes three separate things the raw GLB gets wrong (units,
+materials, variants), in that order for the reasons below. The one thing that
+genuinely cannot be baked is the lighting: in AR the light IS the real room.
+
+**The production GLB is authored in millimeters, not meters.** Measured
+bounding box: 332.5 × 42.7 × 148.8. The configurator never notices —
+`KeyboardModel.jsx` auto-fits to `TARGET_WIDTH` regardless of source units —
+but glTF units ARE meters by spec, and neither ARKit nor ARCore auto-fits:
+untouched, the keyboard would appear 332 METERS wide. `scripts/make-ar-asset.mjs`
+writes a SEPARATE `public/ar/keyboard-ar.glb` wrapping the existing scene roots
+in one new `__AR_METRIC_ROOT` node scaled ×0.001 — a second file, not an
+in-place rescale of `keyboard.glb`, because authored offsets (mesh-editor
+offsets, animation `transformOffset`) are expressed in the production asset's
+own units and would silently shift under a rescale.
+
+**The rescale touches only the GLB's JSON chunk, never the binary one.** The
+model is Draco-compressed, so decoding to rescale geometry and re-encoding
+would cost quality and CPU just to multiply some numbers; adding one root node
+with a `scale` is equivalent and free, and the binary chunk is copied
+byte-for-byte. GLB chunk padding is spec-mandated (4-byte aligned; JSON padded
+with ASCII spaces `0x20`, binary with zero bytes) — the wrong pad byte and a
+strict parser rejects the file. The script guards its own idempotency: it
+throws if a `__AR_METRIC_ROOT` node already exists in the input, rather than
+double-scaling on a re-run.
+
+**The GLB has no materials worth losing — measured, and it changes the texture
+plan.** Its five materials are byte-identical (`baseColorFactor
+[0.5,0.5,0.5,1]`, `metallicFactor 0`, no `roughnessFactor` → defaults to 1),
+carry no textures, and are named after Maya shading groups that survived
+export (`initialShadingGroup`, `standardSurfaceNSG`). Everything that makes
+the product look like a product is the nine per-group entries in
+`app-state-config.json`'s `materials`, applied at runtime to clones by
+`runtime/MaterialApplier.jsx`. ⚠️ **The GLB's materials cut ACROSS the logical
+groups** — `initialShadingGroup` alone covers keycaps, body, patchesISO and
+patchesANSI, which the config paints black / grey metal / red / blue.
+Consequence for the incoming textured asset: **textures alone will not fix
+AR.** A texture bound to that one material paints all four groups the same.
+The textured GLB has to arrive with a material (and UV) split that follows the
+nine groups — worth settling with whoever exports it *before* delivery, not
+after.
+
+**The material bake, and its three traps.** `make-ar-asset.mjs` writes the nine
+authored materials into the JSON chunk (`baseColorFactor` / `roughnessFactor` /
+`metallicFactor` + `KHR_materials_clearcoat`) and reassigns every primitive.
+(1) ⚠️ **sRGB → linear**: config colours are hex that three reads as sRGB,
+while `baseColorFactor` is linear — writing them through unconverted yields
+visibly washed-out colour, and it is invisible on inspection because the number
+is *there*, just in the wrong space (`#797979` must land as `0.1912`, not
+`0.4745`). (2) `KHR_materials_clearcoat` goes in `extensionsUsed` and **never**
+`extensionsRequired`: a viewer that doesn't know it must fall back to base PBR,
+not reject the file. (3) `envMapIntensity` has no glTF or USD equivalent — it's
+a three.js concept — so the AR result can never match the configurator exactly;
+that gap is expected, not a bug to chase.
+
+**The group/variant lists are IMPORTED by the script, not copied.** It pulls
+`ARRAY_MODEL_L_MESH_GROUPS` / `_MESH_VARIANTS` straight from `products/`
+(both are dependency-free data modules, so Node can import them as-is) and
+replicates `collectMeshGroups`'s rule exactly: first group whose `nameToken`
+appears in the node name, else the `fallback` bucket. ⚠️ **Array order is
+load-bearing here too** — `patchesISO` must precede `body`, or `S05_L_ISO`
+classifies as body because it also contains `S0`. Two diverging copies would
+give an AR asset coloured differently from the configurator, noticed only by
+whoever is holding the phone. ⚠️ And classification **never fails loudly**: an
+unmatched token silently falls into the bucket, and an asset where everything
+landed in `body` is uniformly grey exactly like an unbaked one. That is why the
+script prints a per-group mesh table — currently `keycaps 80 · body 8 ·
+damping 5 · viti 4 · rotors 2 · patchesISO 2 · tasselli 1 · landing 1` = 103
+reachable mesh nodes. Read it after any asset change.
+
+**Baking one variant is correctness, not a feature.** As `meshVariants.js`
+says, all four `S05_{L,R}_{ISO,ANSI}` meshes exist in the GLB and interpenetrate
+unless a selection is applied; in the configurator `VariantController` does that
+at runtime, and in AR there is no runtime. The script keeps `defaultOption`
+(`--variants layout=ansi` to override) and **detaches** the losing nodes from
+their parents rather than removing them from `gltf.nodes`: compacting the array
+would mean renumbering every reference in the file (children, scenes, skins,
+animations) to save a few dozen bytes. Orphaned nodes are drawn by no loader —
+but they must be excluded from the material pass, which is the entire reason
+`reachableNodes()` exists and why the order is **variants → materials → scale**
+(materials before the variant drop would paint geometry that's about to go;
+the metric root node added last must not land in the group counts).
+
+**Why not `@google/model-viewer`.** Its 4.x releases pin `three` via an npm
+`^0.x` peer caret (`^0.172`/`^0.182`/`^0.183`), none satisfiable by this
+project's `three@0.178` without `--legacy-peer-deps` — i.e. exactly the
+two-copies-of-`three` problem `EXTERNAL` in `vite.config.js` exists to prevent
+(see Architecture). `launchAr.js`'s hand-rolled code is the part of
+model-viewer actually needed and adds zero dependencies: the Scene Viewer
+intent is ten lines, and `USDZExporter` already ships inside `three@0.178`.
+
+**`USDZExporter` must be carved out of the production `three` chunk, measured
+not assumed.** It lives under `node_modules/three`, so without a rule ahead of
+the existing `id.includes('node_modules/three') → 'three'` check in
+`vite.config.js`, it gets baked into the synchronous `three` chunk and the
+`import()` in `launchAr.js` becomes decorative. How it was caught, and the
+check worth repeating after any chunking change: grep the built chunks for
+exporter-internal strings (`usdaHeader`, `xformOp:transform`). Before the
+`id.includes('exporters/USDZExporter') → 'ar'` rule those matched **13 lines
+in `three-*.js` and 0 in any async chunk** — i.e. the exporter shipped to
+every visitor, desktop included. After it: 0 in `three`, 6 in a separate
+`ar-*.js` (11 kB / 3.7 kB gzip), and the `three` chunk 11 kB lighter.
+⚠️ Chunk-name greps alone prove nothing here — the module has no unique
+filename in the output. `GLTFLoader`/`DRACOLoader` are deliberately left alone:
+`useGLTF` already imports them eagerly, so splitting them out would only add a
+request.
+
+**Quick Look has two undocumented DOM requirements, both hit and worked
+around.** It opens only from an `<a rel="ar">` whose ONLY child is an `<img>`
+(an inline transparent 1×1 GIF here) — without the img the link downloads
+instead of opening AR — and the USDZ must be handed over as a `File`, not a
+`Blob`: Quick Look identifies the format from the file EXTENSION, which a Blob
+object URL doesn't carry. Object URLs are never revoked within the session —
+Quick Look reads the file only after Safari has already navigated away from
+the page, so revoking it pulls the model out from under the viewer; the
+accepted cost is a few MB living as long as the tab.
+
+**Scene Viewer (Android) downloads the model itself, as a separate app** — the
+URL must be absolute and reachable from the phone's network. `localhost` never
+works in dev (it resolves inside the viewer app, not the dev server); use the
+dev machine's LAN IP or a real deploy.
 
 ## Known strains
 

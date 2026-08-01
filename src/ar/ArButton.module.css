@@ -1,0 +1,109 @@
+/* Bottone AR — solo playground, solo mobile (vedi ArButton.jsx).
+   Stessa lingua grafica dei chip dell'HUD: Suisse Mono ereditato dal body,
+   CAPS, letter-spacing −2%, bordo a 1px senza raggio, fondo trasparente. */
+
+/* ⚠️ Queste due quote sono un DOPPIONE DELIBERATO di `--hud-pad` e
+   `--chip-row-bottom` nel breakpoint `max-width: 600px` di
+   `KeyboardComposer/Hud.module.css`, e servono ad allineare il bottone alla
+   riga più bassa della pila di chip (l'interruttore "Configura"), così i due
+   si leggono come una fascia sola.
+   Non sono condivise perché non possono esserlo: quelle vivono dentro `.hud`,
+   in un altro CSS Module e — soprattutto — dentro il pacchetto npm, mentre
+   questo file sta nel playground e non deve dipenderne. Se cambiano di là,
+   vanno riallineate qui a mano. */
+.button {
+  --ar-pad: clamp(13px, 4.4vw, 20px);
+  --ar-bottom: calc(var(--ar-pad) + 5.6em);
+
+  /* ⚠️ `absolute` e non `fixed`: si aggancia al `<main>` del playground (che è
+     `position: relative`, vedi App.jsx) e quindi agli stessi 100dvh in cui sta
+     l'HUD. Con `fixed` si ancorerebbe al layout viewport, e su iOS Safari —
+     dove la barra inferiore entra ed esce durante lo scorrimento — finirebbe a
+     una quota diversa da quella dei chip con cui deve allinearsi. */
+  position: absolute;
+  right: var(--ar-pad);
+  bottom: var(--ar-bottom);
+  z-index: 4; /* l'HUD è a 3 */
+
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+
+  border: 1px solid rgb(255 255 255 / 45%);
+  border-radius: 0;
+  background: rgb(0 0 0 / 25%);
+  color: rgb(255 255 255 / 82%);
+
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    color 0.16s ease,
+    border-color 0.16s ease,
+    background 0.16s ease;
+}
+
+.button:active {
+  color: #0b0b0b;
+  border-color: #fff;
+  background: #fff;
+}
+
+.button:focus-visible {
+  outline: 2px solid rgb(255 255 255 / 60%);
+  outline-offset: 2px;
+}
+
+.icon {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  display: block;
+}
+
+/* Generazione dello USDZ in corso (solo iOS, qualche secondo su ~350k
+   vertici): il bottone resta visibile ma inerte, e il battito dell'icona è
+   l'unico segnale che qualcosa sta succedendo — non c'è una percentuale
+   onesta da mostrare, l'esportatore non ne espone una. */
+.preparing {
+  pointer-events: none;
+  color: rgb(255 255 255 / 55%);
+  border-color: rgb(255 255 255 / 22%);
+}
+
+.preparing .icon {
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.error {
+  color: rgb(255 255 255 / 55%);
+  border-color: rgb(255 255 255 / 22%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button {
+    transition: none;
+  }
+  .preparing .icon {
+    animation: none;
+    opacity: 0.55;
+  }
+}

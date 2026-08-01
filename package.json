@@ -27,7 +27,8 @@
     "preview": "vite preview",
     "asset:convert": "node --max-old-space-size=8192 node_modules/obj2gltf/bin/obj2gltf.js -i assets-src/Array_L_WEB_Retopo.obj -o assets-src/keyboard-raw.glb",
     "asset:optimize": "gltf-transform weld assets-src/keyboard-raw.glb assets-src/kb-1.glb && gltf-transform prune assets-src/kb-1.glb assets-src/kb-2.glb --keep-attributes && gltf-transform draco assets-src/kb-2.glb public/models/keyboard.glb --quantize-normal 12 --quantize-position 14",
-    "asset:inspect": "gltf-transform inspect public/models/keyboard.glb"
+    "asset:inspect": "gltf-transform inspect public/models/keyboard.glb",
+    "asset:ar": "node scripts/make-ar-asset.mjs"
   },
   "peerDependencies": {
     "@react-three/drei": "^10.0.0",
