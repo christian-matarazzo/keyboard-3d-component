@@ -35,6 +35,17 @@ export default function PostFxTuner({ store }) {
         step: 0.25,
         label: 'tetto pixel ratio',
       },
+      // Le due manopole della scala dinamica sono a caldo come le uniform
+      // dell'AO: non ricostruiscono la catena, riallocano solo i buffer al
+      // prossimo cambio di gradino.
+      dynamicScale: { value: DEFAULT_POSTFX.dynamicScale, label: 'scala dinamica' },
+      dynamicScaleMin: {
+        value: DEFAULT_POSTFX.dynamicScaleMin,
+        min: 0.4,
+        max: 1,
+        step: 0.05,
+        label: 'scala minima',
+      },
       aoEnabled: { value: DEFAULT_POSTFX.aoEnabled, label: 'occlusione ambientale' },
       aoResolutionScale: {
         value: DEFAULT_POSTFX.aoResolutionScale,
@@ -68,8 +79,9 @@ export default function PostFxTuner({ store }) {
         step: 0.1,
         label: 'caduta con distanza',
       },
-      // Prima manopola da abbassare se serve margine: è l'unica che moltiplica
-      // direttamente il costo per pixel.
+      // ⚠️ NON è la manopola da abbassare se serve margine, per quanto lo
+      // sembri: 16 → 4 è stato misurato e vale zero. Il costo dell'AO qui è
+      // banda, non aritmetica — vedi state/defaults.js.
       aoSamples: { value: DEFAULT_POSTFX.aoSamples, min: 4, max: 32, step: 1, label: 'campioni' },
     },
     { folder: 'Post-processing' },

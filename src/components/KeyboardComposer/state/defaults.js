@@ -152,12 +152,87 @@ export const DEFAULT_POSTFX = {
   // (`antialias: true`), ma si perdono nel momento in cui si rende attraverso
   // un composer: qui vanno richiesti a mano, o il primo pass aggiunto PEGGIORA
   // l'immagine invece di migliorarla.
-  msaaSamples: 4,
-  // Tetto al pixel ratio del render target. 2 = esattamente il tetto del
-  // `dpr` del Canvas, cioè nessun cambiamento rispetto a oggi; è la manopola
-  // per scendere su mobile, dove MSAA e DPR alto sono in gran parte ridondanti
-  // fra loro e il costo si moltiplica sull'asse (fragment) già peggiore.
-  pixelRatioCap: 2,
+  //
+  // ⚠️ 2 e non 4, MISURATO: sopra `pixelRatioCap` 1.25 il numero di campioni non
+  // si vede più. Delta medio sui pixel di bordo contro l'immagine a dpr 2 +
+  // msaa 4: 9.06/255 con msaa 4, 9.19/255 con msaa 2 — indistinguibili. Chi
+  // decide la qualità dei bordi è la RISOLUZIONE, non i campioni; da 4 a 2 si
+  // risparmiano ~4 ms per frame senza contropartita.
+  msaaSamples: 2,
+  // Precisione del render target. `false` scende a 8 bit per canale, cioè
+  // dimezza i byte per campione — l'unica classe di risparmio che si misuri su
+  // questa scena (bandwidth-bound, vedi CLAUDE.md).
+  //
+  // ⚠️ MISURATO 2026-08-02, ed è una manopola vera ma la meno conveniente delle
+  // tre. Vale **−9.2%** (54.6 → 49.6 ms, dispersioni 2.1 e 0.7 che non si
+  // sovrappongono). Il prezzo, contro un controllo 16-vs-16 bit che a riposo dà
+  // differenza ESATTAMENTE zero:
+  //   a riposo   0.18/255 medio, max 15, 0.027% dei pixel oltre 8 → invisibile
+  //   in zoom    1.31/255 medio, max 59, 0.425% → piccolo ma sopra il rumore
+  // Lo zoom è peggio perché lì ~105 mesh sono in blending e la quantizzazione
+  // si accumula strato su strato.
+  //
+  // Resta `true` di default, e non perché 9% sia poco: è l'unica delle manopole
+  // misurate il cui danno dipende dal CONTENUTO invece che dalla geometria
+  // dell'immagine. La scena entra qui in HDR lineare (il tone mapping è in
+  // OutputPass), quindi tutto ciò che supera 1.0 si tronca prima che ACES possa
+  // comprimerlo — e il GLB testurato in arrivo può portare materiali più
+  // lucidi, cioè più alte luci sopra 1.0 di quante ne abbia oggi. Il posto dove
+  // spenderla è semmai il mobile, dove il costo di fill è peggiore e lo schermo
+  // più piccolo.
+  hdrTarget: true,
+  // Tetto al pixel ratio del render target, cioè la manopola di gran lunga più
+  // efficace di questo file — il costo di questa scena è LINEARE nei pixel.
+  //
+  // Misurato in browser (2026-08-02, Intel Iris Xe) nello stato peggiore, cioè
+  // a fine `GoToRotors`, dove il focus sui rotori porta il modello da ~25% del
+  // viewport a coprirlo tutto: ~60 ns per pixel, costante su tre risoluzioni
+  // (1.46 Mpx → 87.3 ms, 1.29 → 76.6, 0.89 → 60.0). La CPU dell'intero frame è
+  // 1.17 ms: l'asse è solo quello.
+  //
+  // 1.25 invece di 2 vale −31% da sola e −36% insieme a `msaaSamples: 2`. Il
+  // prezzo, misurato con lo split per gradiente locale su 365k campioni contro
+  // l'immagine a dpr 2: 98% dei pixel (le superfici) a 0.15/255, cioè
+  // invisibile, e 2% (le sagome) a 9.1/255, che è reale ma confinato ai bordi.
+  // Chi volesse più qualità: 1.5 costa 7.6/255 sui bordi ma rende solo −12%.
+  //
+  // ⚠️ Non è un LOD a runtime: come `msaaSamples` ricostruisce la catena
+  // (vedi il useLayoutEffect di runtime/postfx/PostFx.jsx), quindi è un valore
+  // autorato e basta.
+  pixelRatioCap: 1.25,
+
+  // --- Scala dinamica della risoluzione -----------------------------------
+  //
+  // `pixelRatioCap` è un tetto AUTORATO: vale sempre lo stesso, quindi va scelto
+  // per lo stato peggiore o per quello migliore, mai per entrambi. Questo è lo
+  // stesso valore reso funzione dello stato della scena.
+  //
+  // Il perché sta tutto in due misure già fatte e scritte qui sopra: il costo è
+  // LINEARE nei pixel coperti (~60 ns/px), e la stessa scena costa ~3 ms per
+  // frame a riposo e ~56 ms quando un focus porta il modello a riempire il
+  // viewport. Non è un picco da assorbire con un warm-up — è un secondo stato
+  // stazionario, e l'unico modo di pagarlo quanto il primo è renderizzare meno
+  // pixel proprio lì.
+  //
+  // ⚠️ FEED-FORWARD, non retroazione: non si misura il frame precedente, si
+  // legge il fattore di zoom del focus (`apiRef.focusZoomFactor()`, pubblicato
+  // da useComposerControls.js), che è noto PRIMA che il frame costi. Un anello
+  // chiuso sull'intervallo rAF si adatterebbe all'hardware, ma oscillerebbe
+  // attorno alla soglia e darebbe due sessioni non confrontabili — e qui la
+  // riproducibilità non è un lusso, è il modo in cui è stato misurato tutto il
+  // resto di questo file.
+  //
+  // La legge applicata è `scala = focusZoom`, e non è una scelta di gusto: la
+  // frazione di viewport coperta va come 1/focusZoom², i pixel renderizzati come
+  // scala², quindi il loro prodotto — cioè il costo — resta costante solo se
+  // scala ∝ focusZoom.
+  dynamicScale: true,
+  // Pavimento del moltiplicatore. Serve perché la legge qui sopra smette di
+  // valere quando la copertura SATURA: una volta che il modello riempie il
+  // viewport, avvicinarsi ancora non aggiunge un pixel da ombreggiare, e
+  // continuare a scendere sarebbe qualità regalata senza contropartita.
+  // 0.7 = al più metà dei pixel (0.7² = 0.49).
+  dynamicScaleMin: 0.7,
 
   // --- Occlusione ambientale (ombre di contatto) --------------------------
   //
@@ -188,8 +263,14 @@ export const DEFAULT_POSTFX = {
   // Curva di caduta con la distanza. >1 concentra l'effetto sui contatti
   // ravvicinati invece di spalmarlo.
   aoDistanceExponent: 2,
-  // Campioni per pixel. 16 è il default del pass; a metà risoluzione è già
-  // generoso, ed è la prima manopola da abbassare se serve margine.
+  // Campioni per pixel. 16 è il default del pass, e a metà risoluzione è già
+  // generoso.
+  //
+  // ⚠️ NON è la manopola da abbassare se serve margine — questo commento diceva
+  // il contrario, ed è stato misurato falso: 16 → 4 vale ZERO (87.4 ms contro
+  // 87.3), mentre spegnere del tutto la pass vale 15 ms. Il costo dell'AO qui è
+  // BANDA (quattro quad fullscreen: AO, denoise di Poisson, copia, blend), non
+  // aritmetica. Le uniche leve reali sono `aoEnabled` e `aoResolutionScale`.
   aoSamples: 16,
 }
 

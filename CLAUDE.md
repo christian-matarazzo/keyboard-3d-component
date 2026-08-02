@@ -114,7 +114,11 @@ src/
    │                                    auto-fit, useComposerControls host
    ├─ useComposerControls.js            drag/keys/spring/camera/zoom/focus; `rotation`
    │                                    read from the store (useComposerSection + a
-   │                                    mirror ref for useFrame)
+   │                                    mirror ref for useFrame); publishes
+   │                                    `apiRef.focusZoomFactor()` (the animated focus-zoom
+   │                                    factor, a number not a boolean — a focus can zoom
+   │                                    OUT) that `runtime/postfx/PostFx.jsx` reads as its
+   │                                    dynamic-resolution-scale signal
    ├─ poseGraph.js                      angle primitives + `createPoseGraph` FACTORY
    │                                    (no pose data — that lives per product)
    ├─ products/                         ONE CONFIGURATOR, MANY MODELS
@@ -163,7 +167,8 @@ src/
    │  ├─ RotationTuner.jsx, ViewSettingsTuner.jsx, PostFxTuner.jsx, MaterialTuner.jsx,
    │  │  FocusTuner.jsx                   one Leva folder each (PostFxTuner tunes the
    │  │                                   `postfx` section's hot values — MSAA samples,
-   │  │                                   pixel-ratio cap, AO radius/intensity/thickness/
+   │  │                                   pixel-ratio cap, dynamicScale/dynamicScaleMin,
+   │  │                                   AO radius/intensity/thickness/
    │  │                                   distance-exponent/samples — deliberately NOT
    │  │                                   the postfx on/off switch, see
    │  │                                   runtime/postfx/PostFx.jsx); MaterialTuner/
@@ -207,7 +212,7 @@ src/
    │  │                                  point VariantController calls after toggling
    │  │                                  mesh visibility
    │  └─ postfx/PostFx.jsx                MSAA render-target composer (`EffectComposer`/
-   │                                      `RenderPass`/`OutputPass` from
+   │                                      `RenderPass`/`OutputPass`/`GTAOPass` from
    │                                      `three/examples/jsm/postprocessing`, not
    │                                      `@react-three/postprocessing` — same
    │                                      two-copies-of-three reasoning that ruled out
@@ -220,10 +225,40 @@ src/
    │                                      draws to (toneMapping/outputColorSpace are
    │                                      shader-cache-key defines that depend on
    │                                      screen vs. render-target). Tuning
-   │                                      (`msaaSamples`, `pixelRatioCap`) is authored
-   │                                      state (`postfx` section); the on/off switch is
-   │                                      the synchronous `postfx` prop, never authored
-   │                                      (flipping it recompiles every material)
+   │                                      (`msaaSamples`, `pixelRatioCap`, plus the AO
+   │                                      uniforms below) is authored state (`postfx`
+   │                                      section); the on/off switch is the synchronous
+   │                                      `postfx` prop, never authored (flipping it
+   │                                      recompiles every material). `createTarget()`'s
+   │                                      `hdr` arg (from the `postfx` section's
+   │                                      `hdrTarget`) picks HalfFloatType vs
+   │                                      UnsignedByteType for the render target — a
+   │                                      structural knob like `msaaSamples`, so it's
+   │                                      also in the useLayoutEffect's deps and rebuilds
+   │                                      the chain. `createAoPass()`
+   │                                      builds a half-resolution `GTAOPass` off-label
+   │                                      (`aoEnabled` in the `postfx` section, default
+   │                                      on): depth-reconstructed normals so it skips
+   │                                      its own normal prepass, its constructor's
+   │                                      normal render target disposed by hand right
+   │                                      after, and `setSize` overridden on the
+   │                                      instance so `EffectComposer.setSize` can't pull
+   │                                      it back to full resolution on window resize.
+   │                                      Also owns the FEED-FORWARD resolution scale
+   │                                      (`dynamicScale`/`dynamicScaleMin`): the same
+   │                                      `useFrame` reads `apiRef.focusZoomFactor()` —
+   │                                      published by useComposerControls, a number and
+   │                                      not a boolean because a focus can zoom OUT —
+   │                                      and applies `scale = clamp(focusZoom, min, 1)`
+   │                                      through `composer.setPixelRatio()` alone.
+   │                                      ⚠️ Never through the useLayoutEffect: that
+   │                                      rebuild constructs a new GTAOPass, i.e. a
+   │                                      shader compile fired by the knob meant to avoid
+   │                                      one. Quantized (SCALE_STEP) and rate-limited
+   │                                      (SCALE_COOLDOWN_S) because every change
+   │                                      reallocates both targets; the debounced resize
+   │                                      effect re-applies the live tier, or a resize
+   │                                      mid-focus would silently restore full res
    ├─ state/                            per-instance authored config store
    │  ├─ composerStore.js                createComposerStore; COMPOSER_SECTIONS
    │  │                                  IS the saved-JSON shape/order (ten sections:
@@ -236,9 +271,15 @@ src/
    │  │                                  buried in Leva `value:` fields) +
    │  │                                  DEFAULT_POSTFX (msaaSamples/pixelRatioCap —
    │  │                                  render-target tuning; aoEnabled/aoResolution-
-   │  │                                  Scale — structural, rebuild the AO pass;
+   │  │                                  Scale/hdrTarget — structural, rebuild the
+   │  │                                  composer chain (all three sit in
+   │  │                                  PostFx.jsx's useLayoutEffect deps) and none
+   │  │                                  are in authoring/PostFxTuner.jsx;
    │  │                                  aoRadius/aoIntensity/aoThickness/
    │  │                                  aoDistanceExponent/aoSamples — hot uniforms;
+   │  │                                  dynamicScale/dynamicScaleMin — the feed-forward
+   │  │                                  resolution scale, hot too (they only move the
+   │  │                                  tier PostFx.jsx already applies per frame);
    │  │                                  never the postfx on/off switch itself, that's
    │  │                                  a KeyboardComposer prop) + createInitialState
    │  ├─ debug.js                        isDebug()/setDebug(), SSR-safe — now ADOPTED:
@@ -541,6 +582,62 @@ compiler's start-up). Per-material state is reachable via
 `materials/warmupTransparency.js` for the full argument — it is the one place
 that already solves this.
 
+**`ctx.finish()` does NOT synchronise on ANGLE/D3D11 — timing a frame with it
+measures CPU submit, not the GPU.** Measured 2026-08-02: a frame that really
+took 87 ms of wall clock timed as **0.3 ms** with `gl.getContext().finish()`
+after it. The gap is not subtle and it silently inverts conclusions — it makes
+every GPU-bound frame look free and sends you hunting in the JS. ⚠️ It also
+means the "0.53 ms vs 0.28 ms" row in the numbers table below was only ever
+measuring submit time; it is annotated there. **The only reliable clock on this
+setup is the real rAF interval**, because the swap is the one place the browser
+actually blocks:
+
+```js
+const bench = async (warm = 12, n = 25) => {
+  for (let i = 0; i < warm; i++) await new Promise(r => requestAnimationFrame(r))
+  const d = []; let last = performance.now()
+  for (let i = 0; i < n; i++) {
+    await new Promise(r => requestAnimationFrame(r))
+    const now = performance.now(); d.push(now - last); last = now
+  }
+  return d.sort((a, b) => a - b)[n >> 1]   // mediana
+}
+```
+
+**Subtract the environment's rAF floor before believing any absolute number.**
+In a remote-driven Chrome the loop does not run at the display rate: measured
+**31.3 ms median with `state.frameloop = 'never'`, i.e. no WebGL at all**, and
+31.4 ms with the entire model hidden. So ~31 ms of every reading here is the
+harness. Absolutes are inflated by that constant; **deltas between two
+configurations are valid**, which is why every ranking in this file is expressed
+as a delta. Re-measure the floor rather than assuming this number — it is a
+property of the machine and of how Chrome is being driven, not of the app.
+⚠️ **And re-measure it in the same session as the readings it explains**, not
+once at the start: measured 2026-08-02, the same tab read a **39.3 ms** floor
+early on and **31.3 ms** twenty minutes later, with nothing changed. The first
+number was contaminated (it was taken right after a heavy state, with the queue
+still draining) and it makes the app look like it cannot go below the floor —
+in that session a configuration that really ran at 31.2 ms was *below* the
+"floor", which is how the bad reading announces itself. If a measurement comes
+out under the floor, the floor is wrong, not the measurement.
+
+**Reaching the authored store from the console.** `?debug` publishes
+`window.__r3f_state` but *not* the per-instance store, and the composer lives in
+R3F's own reconciler root (walking fibers from the canvas element finds the DOM
+shell only — 641 refs, no composer). The store *is* in that shell, so it can be
+recovered by walking the fiber tree for an object carrying the store's shape,
+which is what makes A/B-ing authored values from the console possible at all:
+
+```js
+let f = canvas[Object.keys(canvas).find(k => k.startsWith('__reactFiber$'))]
+while (f.return) f = f.return
+// DFS su f.child / f.sibling, ispezionando memoizedState:
+//   store → get/set/subscribe/hydrate     api → playAnimation/postfxTarget
+```
+
+Driving `store.set('postfx', …)` this way exercises the real production path
+(`useComposerSection` → `PostFx`'s effects), so what you measure is what ships.
+
 **A hidden or occluded tab breaks the app, not your change.**
 `requestAnimationFrame` is frozen in a background tab, so R3F never measures
 the container (the canvas stays stuck at the default `300×150`,
@@ -585,7 +682,22 @@ published by `LightRig.jsx`) is still the way to try a *different* file.
 | **192 ms vs 0.4 ms** | shader compile vs normal frame | The cost of one `transparent` cache-key flip; the whole reason `warmupTransparency.js` exists |
 | **+4 draw calls** | the AO pass | `GTAOPass` adds four fullscreen quads (AO, Poisson denoise, copy, blend) and **no geometry pass**: 112/frame against 108 without. It is the proof that `setGBuffer(null, undefined)` really suppressed the pass's own normal prepass — which would read ~216 instead |
 | **22.2% vs 6.3%** | AO on crevices vs exposed faces | Relative darkening (`1 - ON/OFF`), ratio 3.5×, zero pixels brightened. ⚠️ Measured as an ABSOLUTE difference the ratio inverts to 0.65 and real contact occlusion looks like a flat global dim — AO multiplies, so already-dark pixels lose little in absolute terms |
-| **0.53 ms vs 0.28 ms** | composer frame vs direct render | Both with `ctx.finish()` to force GPU sync. At rest the whole scene renders in well under a millisecond, i.e. **neither axis is saturated** and half-res AO should be nearly free. Partial answer to step 2 below — measured with no shadow lights and in a remote-driven Chrome, so it is an indication, not the verdict |
+| **0 difference** | two static frames | Consecutive `state.advance()` frames with a settled camera are BIT-IDENTICAL across 1.4 M pixels. Two uses: it is the control that proves any A/B measurement here is signal and not rig noise, and it is half the reason progressive accumulation was archived — there is no shimmer at rest to remove |
+| **0.018 / 255** | what supersampling would buy | Excess *temporal* variation of MSAA 4× over a 2.5× supersampled reference, across poses 0.05° apart (0.313 vs 0.295 mean). ⚠️ Measure the frame-to-frame VARIATION, not the per-frame error: the single-pose error against the same reference is 1.41/255 with 7.4% of pixels beyond 5, which looks like it justifies accumulation. It does not — a constant error is invisible, only an oscillating one is seen |
+| ~~**0.53 ms vs 0.28 ms**~~ | ~~composer frame vs direct render~~ | ⚠️ **RETRACTED 2026-08-02 — do not scale anything off this row.** Both were taken with `ctx.finish()` "to force GPU sync", and on ANGLE/D3D11 that call does not sync: it timed a genuinely 87 ms frame as 0.3 ms. The two numbers are CPU submit time, not frame cost, so the conclusion drawn from them ("neither axis is saturated") was unsupported. See the `ctx.finish()` entry above for the method that replaces it |
+| **~60 ns per pixel** | fill cost, zoomed-in state | The real answer to step 2, and it is unambiguous: **this scene is fill-bound and linear in pixel count.** Same state, three render-target sizes: 1.46 Mpx → 87.3 ms, 1.29 → 76.6, 0.89 → 60.0. ⚠️ Every cost estimate here must scale with the VIEWPORT, not with the model: fullscreen on a 1080p display at DPR 1.6 is ~3.6× these pixels, which is how the same animation reads 12 fps on one window and 6 on another |
+| **1.17 ms** | CPU cost of a whole frame | 60 synchronous `state.advance()` calls, every `useFrame` subscriber plus the full composer chain. Against an 87 ms wall clock, i.e. **the CPU is 1.3% of the frame** and the main thread is idle between frames (202 `setTimeout(0)` per second). Kills the whole class of "reduce draw calls / batch material binds" optimisations before anyone spends a day on one |
+| **112 → 69 draw calls** | entering the `GoToRotors` focus | Frustum culling as the camera closes in. ⚠️ The frame **doubles** while the draw calls nearly halve — the single cheapest observation that separates the fill axis from the geometry axis, and worth re-running before believing any geometry-side diagnosis |
+| **+22% from REMOVING 6 lights** | the 6 `rectAreaLight`s | ⚠️ Counter-intuitive, reproduced 3/3 (87/90/88 ms with them → 111/106/107 without). Removing 13 of 26 point lights changes nothing at all (87.8 vs 84.6). **Light count is not a performance knob on this profile**: the forward shader's ALU hides behind memory traffic, and the recompiled variant can land in a worse register/occupancy regime on Intel Xe. Re-authoring the rig for speed would cost days and buy a regression |
+| **−9.2% from an 8-bit target** | `hdrTarget: false` | The third and last real lever, and the only one deliberately left OFF. 54.6 → 49.6 ms (spreads 2.1 and 0.7, non-overlapping). Quality against a 16-vs-16-bit control that reads **exactly 0** at rest: 0.18/255 mean at rest (invisible), **1.31/255 mean and 0.425% of pixels over 8 in the zoomed state** — the blended state is worse because ~105 meshes quantise layer on layer. ⚠️ Not taken as default because it is the only measured knob whose damage depends on CONTENT rather than on image geometry: the scene enters the target in linear HDR, so anything above 1.0 clips before ACES can compress it, and the incoming textured asset may bring glossier materials. Spend it on mobile, not here |
+| **0 ms from dropping `USE_CLEARCOAT`** | all 8 clearcoat groups | ⚠️ **Measured 2026-08-02, and it closes the last "obvious" lever.** Interleaved A/B/A/B/A/B in the zoomed state: clearcoat on = 56.4 ms median, off = 53.5, i.e. 2.9 ms apart while the *spread within the on-group alone* is 13.1. Below the noise floor. Do not spend image quality on this. ⚠️ Two traps if you re-run it: `clearcoat` is a **define** (`three.cjs:65040`, `HAS_CLEARCOAT = material.clearcoat > 0`), so lowering a value from 0.61 to 0.2 changes literally nothing — only crossing zero does; and verify the define actually dropped (`gl.properties.get(mat).currentProgram.id` must change) rather than trusting that setting the value was enough — see the entry below |
+| **0 ms from `aoSamples` 16 → 4** | the AO pass | 87.4 vs 87.3, i.e. nothing — while disabling the pass entirely is worth 15 ms. The AO's cost here is **bandwidth** (four fullscreen quads: AO, Poisson denoise, copy, blend), not arithmetic. The only real AO levers are `aoEnabled` and `aoResolutionScale` |
+| **9.1/255 on 2% of pixels** | `pixelRatioCap` 2 → 1.25 | What the default change costs visually, split by local gradient over 365k samples: flat surfaces (98%) move 0.15/255, silhouette edges (2%) move 9.1. ⚠️ And the sample count is nearly irrelevant next to it — msaa 4 gives 9.06, msaa 2 gives 9.19, which is why `msaaSamples` dropped to 2 for free. `pixelRatioCap: 1.5` is the conservative alternative: 7.6/255 on edges but only −12% |
+| **−28% wall clock, 0.49× pixels** | `dynamicScale` in the worst state | Interleaved A/B/A/B/A/B on `focusGroup('rotors', radiusFactor: 2)`, medians of the real rAF interval: **43.8 ms off (39.6–46.5) vs 31.4 ms on (31.2–31.8)**, non-overlapping. The scaled runs sit *exactly* on the harness floor, i.e. the GPU work disappears under it — so −28% is a FLOOR-LIMITED lower bound on this window, not the real saving. The machine-independent half of the result is the pixel count: 1.465 → 0.718 Mpx, the exact 0.7² the tier asked for. Exposure control: mean luminance 17.491 vs 17.471 (−0.11%), i.e. resolution changed and nothing else |
+| **0 recompiled programs** | 8 tier transitions | `gl.info.programs.length` 11 → 11 across four focus/exit cycles. This is THE check that the tier change goes through `composer.setPixelRatio()` and not the `useLayoutEffect` — the rebuild path would construct a fresh `GTAOPass`, i.e. new materials, i.e. a compile stall triggered by the very knob that exists to avoid one. Re-run it after touching either path |
+| **2 reallocations per dolly** | entering focus, 150 frames sampled | Target width went 1276 → 1148.4 → 893.2 and stopped, i.e. `SCALE_STEP` + `SCALE_COOLDOWN_S` really do keep the ~0.6 s damped dolly from reallocating at every intermediate zoom. Sample `postfxTarget().width` per frame and count distinct values to re-check |
+| **`focusZoom` 1.56 on `keycaps`** | why the signal is a number, not a boolean | Focusing a group whose bounding sphere is *larger* than the fit zooms OUT, and costs less than the resting frame. Measured: rotors 0.19 → tier 0.7, keycaps 1.56 → clamped to 1, full resolution. A boolean "focus active" would have downscaled the one case that needed nothing |
+| **~8% from transparency** | ~105 meshes at `opacity 0.2` | 86.7 ms transparent vs 79.8 opaque, same camera. Real, but far from the story — the transparent pass loses early-Z and interleaves materials by z instead of batching them (`three.cjs:65639` vs `65665`), yet both of those land on the CPU/ordering axis that the 1.17 ms row already rules out. **What makes `GoToRotors` expensive is the focus zoom filling the viewport, not the fade** |
 | **`RADIUS_MIN = 0.8`** | `useComposerControls.js` | Lowered from 2.5 for the group focus. With a 200 mm lens `baseRadius` is ~36 scene units and a small group frames at ~1.7–3.5 — the old floor was an invisible ceiling on the product zoom |
 | **`FIT_RADIUS_MIN = 5.2`** | `useComposerControls.js` | Floor of the **whole-model fit only**. ⚠️ Never apply it to the focus path |
 | **`KEY_DEBOUNCE_MS = 300`** | `useComposerControls.js` | Blocks rapid re-presses from stacking steps and velocity ("spinning"). Native key-repeat is filtered separately (`e.repeat` + a `heldKeys` Set) |
@@ -840,23 +952,72 @@ These are accepted costs of the current design, not bugs waiting to be filed.
   as it rotates can make the adaptive light box slowly breathe. If it turns out
   to matter, the skip flag belongs on **spin only** — a `transformOffset`
   *should* stretch the box, that is the point of it.
+- **Any framing that fills the viewport costs ~4× the resting frame, and there
+  is no fix — only a scale factor.** Measured on `GoToRotors`: ~3 ms/frame at
+  rest, **~56 ms** once `focusGroup('rotors', radiusFactor: 2)` has the model
+  covering the whole viewport. Nothing pathological is happening; the scene is
+  simply fill-bound (~60 ns/px) and focus multiplies covered pixels. ⚠️ Two
+  consequences that are easy to get wrong:
+  - **it is a property of the WINDOW, not of the animation.** The same sequence
+    reads ~12 fps in a 798×718 canvas and ~6 fps fullscreen on a 1080p display,
+    because that is 3.6× the pixels. Reproduce perf reports at the reporter's
+    window size or the numbers will not match.
+  - **the obvious culprits are all innocent** — the opacity fade is ~8%, the
+    CPU 1.3%, and cutting lights makes it *worse*. Every one of those was
+    measured after being wrongly predicted as the cause; don't re-derive them.
+
+  The only lever is `pixelRatioCap` (linear), which is why it ships at 1.25
+  rather than 2. Beyond that the fix would have to be the material shader
+  itself — 32 forward lights with clearcoat, i.e. two BRDF lobes per light per
+  fragment — and that is an authoring decision, not a tuning one.
+  ⚠️ **Since `dynamicScale` that lever is applied automatically** (see the
+  matching row in the numbers table and `state/defaults.js`): the strain is no
+  longer "the expensive state costs 4×" but "the expensive state is rendered at
+  fewer pixels", which is a quality cost, not a frame-rate one. What did **not**
+  change is the underlying profile — the scene is still fill-bound and the
+  shader is still the only structural fix.
+- **A material change that flips a DEFINE does not reach the shader while that
+  material is under an opacity override — observed, mechanism not yet
+  diagnosed.** Seen 2026-08-02 while measuring clearcoat: with `GoToRotors`
+  holding ~105 meshes transparent, writing `clearcoat: 0` through the normal
+  authored path (`store.set('materials', …)` → `applyMaterialProps`) updated the
+  VALUE on the material — `mat.clearcoat` really read 0 — while the material
+  stayed on its old program (id 9, `clearcoat` still an active uniform). The one
+  group that *wasn't* faded (`rotors`, excluded by the selector) rebuilt
+  correctly, 7 → 8. Forcing `needsUpdate = true` afterwards makes every group
+  rebuild as expected.
+  ⚠️ Why it matters beyond clearcoat: uniform-valued props (color, roughness,
+  metalness) are unaffected and apply normally, so the failure is **invisible
+  until a define is involved** — and the textured GLB will bring exactly those
+  (`map`, `normalMap`, `alphaMap` presence are all defines, and
+  `programSignature` already tracks them for the warm-up). Authoring materials
+  while an animation holds a fade is a normal thing to do in `?debug`.
+  ⚠️ Not investigated: `opacityRegistry.own()` does bump the version once at
+  acquire, and three bumps it again when clearcoat crosses zero, so on paper the
+  rebuild should happen. Don't assume the registry is at fault without checking
+  — start from `properties.get(material).__version` against `material.version`.
 - **A partial-subset opacity fade clones N materials** and flips `transparent`.
   The compile is pre-warmed and the warm-up covers the clones (they share the
   originals' cache key), but the *cloning* itself is still per-acquire work. The
   fast path avoids it for whole-group selections, the common case.
 
-## Anti-aliasing and contact shadows: partly built, partly planned
+## Anti-aliasing and contact shadows: built, and one part deliberately not
 
-⚠️ **This section used to say "nothing here exists in the code". That is no
-longer true**, and the boundary matters when reading the rest of it:
+⚠️ **This section twice described work that no longer matched reality** — first
+claiming nothing here existed in the code, then that step 4 was unmeasured. It
+is now settled: steps 1, 3 and 4 are built and measured, step 2 is answered, and
+step 5 is **archived by measurement rather than left pending**. Nothing below is
+open work. Read the status table before acting on any prescription further down,
+because two of them (moving the tone mapping, building the quality LOD) are kept
+as records of decisions *not* to do something:
 
 | Step (see "Suggested implementation order" below) | Status |
 | --- | --- |
 | 1. Freeze the shadow map | **BUILT & MEASURED** — `runtime/ShadowFreeze.jsx`, halves the frame (215 → 108) when a shadow light is on. ⚠️ Saves nothing today: both shadow lights are disabled in the shipped config |
-| 2. Measure CPU- vs fragment-bound | **PARTIAL** — 0.53 ms/frame through the composer, 0.28 ms direct. Neither axis saturated, so half-res AO looks nearly free. Measured without shadow lights, so re-check if the key light comes back |
+| 2. Measure CPU- vs fragment-bound | **ANSWERED 2026-08-02 — fragment, and only when the model fills the viewport.** CPU 1.17 ms of an 87 ms frame; ~60 ns/px, linear. ⚠️ Supersedes the earlier "neither axis saturated", which was an artefact of `ctx.finish()` not syncing on ANGLE |
 | 3. Composer + MSAA + `OutputPass` | **BUILT & CHECKPOINTED** — `runtime/postfx/PostFx.jsx`. No SMAA yet, and the tone-mapping move it prescribed turned out to be WRONG (see the step itself) |
 | 4. Half-res AO with depth-reconstructed normals | **BUILT & MEASURED** — `createAoPass()` in `runtime/postfx/PostFx.jsx` (`GTAOPass`, `aoEnabled: true` by default). 112 draw calls/frame vs 108 without, i.e. the normal prepass really is skipped; crevices darken 3.5× more than exposed faces; cost below the measurement noise floor |
-| 5. Progressive accumulation at rest | not built |
+| 5. Progressive accumulation at rest | **ARCHIVED, not deferred** — measured worth 0.018/255; the image is already bit-identical at rest. Takes the quality-LOD machine and SMAA down with it |
 
 So: an `EffectComposer` *and* a `GTAOPass` now exist and are mounted (the
 composer whenever the `postfx` prop is on, the AO pass whenever `aoEnabled` is
@@ -878,13 +1039,40 @@ reintroduced the two-copies-of-`three` problem — it peer-pins `three` with a
 
 ### The cost profile that drives every choice
 
-The two bottlenecks in the table above (108 draw calls, ~34 forward lights)
-exist before any effect is added, and they push in the same direction. The cheap
-axis is **screen-space**: a full-screen pass is geometry-independent, and at
-half resolution it costs a fraction of the main 34-light pass. Hence the rule:
-**prefer screen-space effects over extra geometry passes, and never increase the
-pixel count.** Raising DPR or brute-force SSAA scales the already-worst axis; a
-depth prepass doubles the other one.
+⚠️ **Half of this subsection was written from the draw-call count and turned out
+to be wrong when measured (2026-08-02).** The corrected profile, which every
+choice below should now be read against:
+
+- **The CPU is not a bottleneck and never was.** 1.17 ms of a 87 ms frame. Any
+  optimisation aimed at draw calls, material binds or render-list ordering is
+  chasing ~1% — including the "108 draw calls" figure that this section used to
+  treat as one of the two bottlenecks.
+- **The light count is not a bottleneck either**, and cutting it *backfires*
+  (see the +22% row in the numbers table). The "~34 forward lights" figure is
+  still true as a description; it is not a lever.
+- **The only axis that matters is pixels**, and it is linear: ~60 ns each. Cost
+  therefore scales with the VIEWPORT and with how much of it the model covers —
+  not with the model's complexity.
+
+**The one sentence that predicts every measurement in this file: the frame is
+bandwidth-bound, not ALU-bound.** Everything arithmetic has measured free —
+light count (removing 6 is *worse*), clearcoat (2.9 ms against 13.1 of noise),
+`aoSamples` 16 → 4 (zero). Everything that moves bytes has measured expensive —
+pixel count (linear, the only real lever), MSAA samples (4 → 0 is worth 26 ms),
+the AO pass's four fullscreen quads (15 ms), blending ~105 transparent meshes
+(7 ms). ⚠️ Use this to triage before measuring: **an optimisation that removes
+shader math on this scene will do nothing.** That is not a general truth about
+three.js — it is a property of an RGBA16F + MSAA target on an integrated GPU
+sharing system memory, and it should be re-tested on a discrete card before
+being carried anywhere else.
+
+What survives intact is the rule this section existed to state, now for a
+sharper reason: **prefer screen-space effects over extra geometry passes, and
+never increase the pixel count.** Raising DPR multiplies the only axis that
+costs anything. ⚠️ But its corollary does not survive: a fullscreen pass is
+*not* cheap here because it is geometry-independent — the AO is four fullscreen
+quads at half resolution and still costs 15 ms. On a bandwidth-bound integrated
+GPU, "screen-space" and "cheap" are not synonyms.
 
 The second structural fact: **the scene is static most of the time.** The camera
 only moves during the spring settle and the model never rotates. There is no
@@ -892,25 +1080,55 @@ reason to pay per-frame for quality that only matters once the image settles.
 
 ### Anti-aliasing
 
-The dominant aliasing source here is **not** geometric edges — it is **specular
-aliasing**: sub-pixel highlights flickering on rounded keycap edges, driven by
-clearcoat + satin metal + 34 light sources. That is a *shading-rate* problem,
-not a *coverage* problem, so **MSAA does not fix it** (MSAA multiplies coverage
-samples, not shader evaluations), and SMAA barely helps (it post-processes an
-image in which the specular is already wrong). Only supersampling — too
-expensive on the fragment axis — or **temporal accumulation** addresses it.
+⚠️ **This section argued for temporal accumulation on a premise that turned out
+to be false on this asset. It was measured 2026-08-01 and the answer is no —
+MSAA 4× is enough, and step 5 is ARCHIVED, not deferred.** The reasoning is kept
+because the argument is sound in general and the measurement method is worth
+reusing; what changed is the empirical input.
 
-Hence a two-tier scheme tied to motion state:
+The argument was: the dominant aliasing source here is **not** geometric edges
+but **specular aliasing** — sub-pixel highlights flickering on rounded keycap
+edges, driven by clearcoat + satin metal + 34 light sources. That is a
+*shading-rate* problem, not a *coverage* problem, so **MSAA does not fix it**
+(MSAA multiplies coverage samples, not shader evaluations) and SMAA barely helps.
+Only supersampling — too expensive on the fragment axis — or **temporal
+accumulation** addresses it. All of that is still true *as physics*.
 
-| State | Technique | Cost |
-| --- | --- | --- |
-| Moving (drag, spring, running animation) | MSAA 4× on the render target + SMAA | ≈ today's |
-| At rest (spring settled, no input) | Progressive accumulation: sub-pixel Halton jitter on the projection matrix, averaged into an HDR buffer at weight `1/n` over ~16–32 frames, then **stop rendering** | Zero at steady state |
+**What is not true is that this scene has that problem.** Three measurements,
+in the order that matters:
 
-Conceptually `TAARenderPass`/`SSAARenderPass` in progressive mode. The key
-property for the stated requirement ("no stuttering"): during motion the cost is
-exactly what it is today, and the extra work happens only when idle. **It cannot
-introduce stutter into navigation by construction.**
+1. **At rest the image is bit-identical frame to frame.** Two consecutive
+   `state.advance()` frames with a static camera differ by **0** across 1.4 M
+   pixels — not "small", zero. Progressive accumulation acts precisely in the
+   settled state, which is where this app spends most of its time, and there is
+   nothing there to stabilise.
+2. **Under motion, supersampling removes almost nothing.** Building the ground
+   truth accumulation converges to (render at 2.5×, area-reduce to the display
+   grid) and comparing the *temporal* variation of the two chains across four
+   poses 0.05° of yaw apart — the tail of a settle, i.e. the regime most likely
+   to expose shimmer:
+
+   | | mean variation | unstable pixels (>8) | max |
+   | --- | --- | --- | --- |
+   | MSAA 4× (today) | 0.313 | 0.58% | 62 |
+   | supersampled (the truth) | 0.295 | 0.43% | 69 |
+
+   Excess: **0.018/255**, about 6% of an already small quantity, and the
+   supersampled chain's *maximum* is even higher. What changes between frames is
+   **real motion**, not aliasing.
+3. **The static error is real but static, and therefore invisible.** A single
+   pose against the supersampled truth differs by 1.41/255 on average, 7.4% of
+   pixels beyond 5. So the image genuinely is not the ideal one — but (2) shows
+   that discrepancy does not move as the camera does. A constant error is not
+   perceived; an oscillating one is. **That distinction is the whole answer**,
+   and measuring only (3) — the obvious test — would have produced the opposite
+   conclusion.
+
+Likely why: the materials are rough and the keycaps are black with mild
+clearcoat, so the highlights are broad and soft. The condition that generates
+specular shimmer — highlights narrower than a pixel — simply does not occur here.
+⚠️ It could return with the incoming textured asset, if it brings glossier
+materials or a normal map. If it does, re-run measurement (2), not (3).
 
 ⚠️ **MSAA on the default framebuffer is lost the moment you render through a
 composer**, and the last draw to the screen is a fullscreen quad with no
@@ -985,34 +1203,48 @@ surfaces as they separate. Per-mesh *self*-occlusion stays valid regardless. A
 sensible hybrid is baked self-AO plus screen-space inter-mesh AO — but only if
 measurement shows screen-space alone is insufficient. Don't assume it up front.
 
-### The mechanism that unifies both
+### The quality LOD — NOT BUILT, and no longer needed
 
-A **render-quality LOD driven by a "scene is at rest" signal**, which
-`useComposerControls.js` largely already has (it knows whether the spring is
-settled, whether a drag is active, whether an arrow was pressed):
+⚠️ **Do not build this.** A render-quality LOD driven by a "scene is at rest"
+signal existed in this document only to serve progressive accumulation, and
+accumulation was archived by measurement (see "Anti-aliasing" above). With it
+goes the whole machine: the tier switching, the convergence threshold on the
+rig's damping, the three invalidation sources. That is a substantial amount of
+delicate state serving an effect worth 0.018/255.
+
+It is kept here in outline because the *shape* would return if the textured
+asset ever reintroduces specular shimmer:
 
 ```
-moving    -> MSAA + SMAA, low-sample half-res AO (or AO frozen from the last settled frame)
+moving    -> MSAA + SMAA, low-sample half-res AO
 at rest   -> progressive accumulation for N frames -> stop
 any input -> invalidate, drop back to the base tier
 ```
 
-The elegant coupling: **accumulation makes everything else cheaper.** If the
-final image is the mean of 32 jittered frames, the AO can run at a low, noisy
-sample count and the noise averages out — you pay for a dirty AO that converges,
-not a clean one every frame.
+The coupling that made it attractive: **accumulation makes everything else
+cheaper** — if the final image is the mean of 32 jittered frames, the AO can run
+at a low, noisy sample count and the noise averages out. Note that today's AO
+already costs below the measurement noise floor at full quality, so even that
+argument has lost its payer.
 
-Three invalidation sources that are not obvious and would bite:
+And the three invalidation sources that would bite, which are the reason this
+was never cheap — recorded so nobody rediscovers them the hard way:
 
 - **`LightRig` is never truly "at rest".** Intensities damp asymptotically
   toward their targets and the adaptive box re-measures every
   `BOX_REFRESH_FRAMES`. Accumulating while the damping is still converging
   averages genuinely different images and yields a dirty result. A convergence
   threshold on the damping is needed, not just the camera spring's signal.
+  ⚠️ Note this does NOT contradict the measured "bit-identical at rest" result:
+  the rig converges to an exact fixed point and then stops changing — it is the
+  approach to it that is asymptotic, so the threshold problem is about *when* to
+  start accumulating, not about the settled state being noisy.
 - **A running animation is never at rest**, and not only while the camera moves:
   a `spinGroup` step keeps rotating geometry forever and a `setOpacity` fade
   changes shading without moving the camera at all. The "at rest" signal must
   consult `apiRef.current.animationState()`, not just the pose spring.
+  (`runtime/ShadowFreeze.jsx` already does exactly this, and is the working
+  precedent for how such a signal should read the bridge.)
 - **In `?debug`**, gizmo drags must invalidate like a normal drag.
 
 ### Codebase-specific traps
@@ -1068,14 +1300,24 @@ Three invalidation sources that are not obvious and would bite:
    remount, which a one-shot effect would miss.
    ⚠️ **Payoff is currently zero**: both shadow lights ship disabled. See
    "Contact shadows" above before counting on this headroom.
-2. 🟡 **Measure whether the app is CPU- or fragment-bound.** The ratio decides
-   whether half-res AO is nearly free, and it cannot be derived on paper.
-   Partially answered: 0.53 ms/frame through the composer vs 0.28 ms direct
-   (`ctx.finish()` on both), so at rest neither axis is close to saturated. Two
-   reasons it is not the final word — it was measured with **no shadow casters
-   enabled**, and in a remote-driven Chrome whose ~32 fps is environmental, not
-   GPU (the render is 1/30 of the frame budget). Re-measure if the key light
-   returns.
+2. ✅ **Measure whether the app is CPU- or fragment-bound. ANSWERED 2026-08-02:
+   fragment, overwhelmingly, and only when the model fills the viewport.**
+   ⚠️ The previous answer here (0.53 vs 0.28 ms, "neither axis saturated") was
+   wrong because `ctx.finish()` does not sync on ANGLE — see the retracted row
+   in the numbers table. The real figures: **CPU 1.17 ms against an 87 ms
+   frame**, cost linear in pixels at ~60 ns/px, and — the measurement that
+   settles it — **at rest, cutting the render target to 1/36 of its pixels
+   changes nothing** (34.3 → 31.2 ms, and 31.3 is the harness floor), while in
+   the zoomed-in state halving the pixels halves the frame.
+
+   So the two states are bound by different things and must be measured
+   separately. At rest the app costs ~3 ms/frame and is fine. What is expensive
+   is any framing where the model covers the viewport — which `focusGroup` does
+   by design, and which no post-processing knob removes, only scales.
+
+   Consequences that overturn earlier prescriptions in this file: half-res AO is
+   **not** nearly free (the pass is worth 15 ms, all of it bandwidth), and the
+   only knob with real leverage is `pixelRatioCap`.
 3. ✅ **Composer with MSAA + ~~relocated tone mapping~~ + SMAA.** Built as
    `runtime/postfx/PostFx.jsx` — minus SMAA, and minus the tone-mapping move,
    which was wrong (see the traps above). **Checkpoint run 2026-08-01, both
@@ -1147,10 +1389,20 @@ Three invalidation sources that are not obvious and would bite:
      like a flat global dim. That mistake was made first and inverted the
      conclusion — the absolute metric said crevices darkened *less* than faces
      (ratio 0.65).
-   - **Cost below the noise floor**: the composer measures 0.53 ms/frame, and
-     AO-on vs AO-off came out at 1.26 vs 1.41 ms — i.e. the two orderings
-     invert, so the effect is smaller than the variance (≲0.2 ms against a
-     16.6 ms budget). Don't quote a cost for this pass; quote a bound.
+   - ~~**Cost below the noise floor**: AO-on vs AO-off came out at 1.26 vs
+     1.41 ms, the orderings invert, so the effect is smaller than the
+     variance.~~ ⚠️ **RETRACTED 2026-08-02.** Those numbers came from
+     `ctx.finish()`, which does not sync on ANGLE, so they compared two CPU
+     submit times and were always going to look like noise. Re-measured against
+     the real rAF interval, **the AO pass costs ~15 ms** in the zoomed-in state
+     (87.3 ms with, 73.2 without) — not a rounding error, roughly a sixth of
+     the frame. ⚠️ And the cost is **bandwidth, not samples**: `aoSamples`
+     16 → 4 changes nothing at all (87.4 vs 87.3). The levers are
+     `aoResolutionScale` and, if it ever comes to it, `aoEnabled`; there is a
+     hot path for the latter (`pass.enabled`, honoured at
+     `EffectComposer.js:232`) that skips the pass without rebuilding the chain,
+     should switching it off during animations ever be wanted. It is not done
+     today because the AO is the product's only occlusion and it would pop.
 
    ⚠️ **At full-model framing the AO reads as diffuse depth, not crisp contact.**
    The gaps between keycaps are 1–2 px wide there, and the AO runs at half
@@ -1164,8 +1416,18 @@ Three invalidation sources that are not obvious and would bite:
    compiler on Windows. It comes from three's shader, not from this code; the
    program links and the AO renders correctly. It only appears on a cold shader
    cache. If AO ever comes out black on a specific GPU, start there.
-5. **Progressive accumulation at rest**, last: biggest quality jump, and the
-   piece needing the most accurate invalidation signal.
+5. ❌ **Progressive accumulation at rest — ARCHIVED 2026-08-01, by measurement.**
+   It was billed as the biggest quality jump. Measured, it is worth **0.018/255**
+   of temporal variation on this asset, and the image is already bit-identical
+   frame to frame once settled. See "Anti-aliasing" above for the three numbers
+   and, more importantly, for *which* measurement decides: the single-pose
+   comparison against a supersampled reference (test 3) says the error is real
+   and would have justified building this; only the temporal comparison (test 2)
+   shows the error does not oscillate, which is what makes it invisible. Measure
+   the variation, not the error.
+   Archived with it: the quality-LOD state machine, the convergence threshold on
+   the rig's damping, and SMAA (with MSAA 4× already on the render target it
+   adds little, and it does nothing for specular aliasing by construction).
 
 What not to do: raise DPR or add a depth prepass "since it's cheap". With 34
 lights the first doubles the fragment axis; with 108 draw calls the second

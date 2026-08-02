@@ -485,6 +485,23 @@ export function useComposerControls(
       currentFocus() {
         return focusGroupRef.current
       },
+      // Fattore di zoom del focus, nel suo valore ANIMATO: 1 = inquadratura
+      // d'insieme, <1 = ravvicinata. Non serve alla navigazione — è il SEGNALE
+      // DI CARICO che runtime/postfx/PostFx.jsx usa per scalare la risoluzione
+      // di rendering, e sta qui perché questo è l'unico posto che lo conosce.
+      //
+      // ⚠️ Un booleano "focus attivo" non basterebbe, ed è il motivo per cui si
+      // espone il numero: la porzione di viewport coperta dal modello — cioè
+      // tutto il costo di questa scena — va come 1/focusZoom², quindi un gruppo
+      // grande inquadrato con `radiusFactor` alto (che si avvicina di pochissimo)
+      // e i rotori visti da vicino sono lo stesso booleano e due costi diversi.
+      //
+      // Non comprende `userZoom`: la rotella è registrata solo in ?debug (vedi
+      // l'invariante sulla distanza camera più sopra), quindi in produzione non
+      // esiste un secondo modo di riempire il viewport.
+      focusZoomFactor() {
+        return focusZoom.current.value
+      },
       // --- Sonde di "movimento finito" -----------------------------------
       // In questo componente non esiste alcun callback di fine animazione: il
       // sequencer (animation/animationRuntime.js) interroga questi due
@@ -516,6 +533,7 @@ export function useComposerControls(
       delete apiRef.current.focusGroup
       delete apiRef.current.clearFocus
       delete apiRef.current.currentFocus
+      delete apiRef.current.focusZoomFactor
       delete apiRef.current.isPoseSettled
       delete apiRef.current.isFocusSettled
     }

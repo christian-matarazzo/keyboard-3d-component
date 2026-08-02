@@ -52,13 +52,50 @@ import { DEFAULT_POSTFX } from '../../state/defaults'
  * spegne `antialias` sul Canvas quando questo componente è montato: sarebbe un
  * framebuffer multicampionato allocato e mai usato.
  *
- * ⚠️ Questo NON risolve l'aliasing dominante di questa scena, che è
- * *speculare* (highlight sub-pixel sui bordi arrotondati dei keycap, con
- * clearcoat e ~34 luci) e non di copertura. L'MSAA moltiplica i campioni di
- * copertura, non le valutazioni di shading: lo lascia dov'è. Serve
- * accumulazione temporale, ed è un passo successivo — questo qui è
- * l'infrastruttura su cui appoggiarla.
+ * ⚠️ L'MSAA moltiplica i campioni di COPERTURA, non le valutazioni di shading,
+ * quindi per costruzione non tocca l'aliasing speculare. Su questa scena però
+ * quell'aliasing è stato MISURATO e non c'è (materiali ruvidi, keycap neri,
+ * highlight larghi): l'accumulazione temporale che questo commento indicava
+ * come passo successivo è ARCHIVIATA, vale 0.018/255 — vedi CLAUDE.md,
+ * "Anti-aliasing". Non costruirla senza rimisurare.
+ *
+ * ⚠️ E i `samples` contano molto meno del numero di PIXEL: sopra
+ * `pixelRatioCap` 1.25 passare da 4 a 2 campioni è indistinguibile
+ * (9.06 contro 9.19 di delta medio sui bordi). Il default è sceso a 2 per
+ * questo — la manopola vera è `pixelRatioCap`, vedi state/defaults.js.
  */
+
+/**
+ * --- Scala dinamica della risoluzione ------------------------------------
+ *
+ * Il "perché" e la legge (`scala = focusZoom`) stanno in state/defaults.js, su
+ * `dynamicScale`. Qui restano i due numeri di MECCANISMO, che non sono materia
+ * di authoring perché non cambiano l'aspetto, solo il modo in cui la manopola
+ * si muove.
+ *
+ * ⚠️ Cambiare scala RIALLOCA i due render target del composer (più quelli
+ * dell'AO): è la stessa microfreeze che l'effetto di ridimensionamento qui
+ * sotto antirimbalza, e per la stessa ragione non può succedere per frame. Da
+ * qui entrambe le costanti — la quantizzazione taglia il continuo dello zoom in
+ * pochi gradini, il tempo di guardia impedisce che il dolly del focus (~0.6 s
+ * smorzati) li attraversi tutti riallocando a ogni passo.
+ *
+ * ⚠️ E soprattutto: la scala NON passa dal useLayoutEffect che costruisce la
+ * catena. `pixelRatioCap` sì (è autorata, cambia di rado), ma ricostruire vuol
+ * dire un `GTAOPass` nuovo, cioè materiali nuovi, cioè una compilazione di
+ * shader — esattamente lo stallo che questa manopola esiste per evitare, fatto
+ * scattare dal tentativo di evitarlo. La sola via è `composer.setPixelRatio()`,
+ * che rialloca i buffer lasciando in piedi i pass.
+ */
+
+/** Gradini del moltiplicatore. Sotto questa granularità si riallocherebbe per nulla. */
+const SCALE_STEP = 0.1
+
+/** Secondi minimi fra due riallocazioni. Copre il dolly del focus con al più un cambio. */
+const SCALE_COOLDOWN_S = 0.35
+
+/** Il continuo → un gradino intero, per confrontare INTERI e non float sommati. */
+const scaleTier = (value) => Math.round(value / SCALE_STEP)
 
 /**
  * Il render target su cui si disegna la scena.
@@ -78,9 +115,14 @@ import { DEFAULT_POSTFX } from '../../state/defaults'
  * target ha un depth buffer. Spegnere `resolveDepthBuffer` per risparmiare la
  * risoluzione consegnerebbe all'AO una texture di profondità vuota.
  */
-const createTarget = (width, height, samples) => {
+const createTarget = (width, height, samples, hdr = true) => {
   const target = new THREE.WebGLRenderTarget(width, height, {
-    type: THREE.HalfFloatType,
+    // ⚠️ SPERIMENTALE (`hdrTarget: false`): 8 bit per canale invece di 16.
+    // Dimezza i byte per campione, che su una scena bandwidth-bound è l'unico
+    // tipo di risparmio che si veda — ma la scena entra qui in HDR LINEARE, e
+    // in 8 bit lineari le ombre di un prodotto NERO bandeggiano e le alte luci
+    // si troncano prima che ACES possa comprimerle. Vedi state/defaults.js.
+    type: hdr ? THREE.HalfFloatType : THREE.UnsignedByteType,
     samples,
   })
   target.depthTexture = new THREE.DepthTexture(width, height)
@@ -181,10 +223,28 @@ export default function PostFx({ store, apiRef }) {
   // `createInitialState` nasce con le sezioni a `{}`, e un `samples: undefined`
   // sul render target è un MSAA spento in silenzio.
   const settings = { ...DEFAULT_POSTFX, ...useComposerSection(store, 'postfx') }
-  const { msaaSamples, pixelRatioCap, aoEnabled, aoResolutionScale } = settings
+  const { msaaSamples, pixelRatioCap, aoEnabled, aoResolutionScale, hdrTarget } = settings
 
   const composerRef = useRef(null)
   const aoRef = useRef(null)
+
+  // Il pixel ratio a piena qualità: il tetto autorato, non oltre il `dpr` che
+  // il Canvas ha davvero. Specchiato in una ref perché il useFrame qui sotto lo
+  // rimoltiplica per la scala corrente, e `dpr` NON è fra le dipendenze della
+  // costruzione (ci pensa l'effetto di ridimensionamento).
+  const baseRatio = Math.min(dpr, pixelRatioCap)
+  const baseRatioRef = useRef(baseRatio)
+  baseRatioRef.current = baseRatio
+
+  // Lo stesso specchio per le manopole lette dentro il useFrame.
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
+
+  // Gradino di scala ATTUALMENTE applicato al render target, come intero (vedi
+  // scaleTier). Non è uno stato React: cambiarlo non deve far rendere nulla,
+  // deve solo ridimensionare dei buffer.
+  const tierRef = useRef(scaleTier(1))
+  const cooldownRef = useRef(0)
 
   // Costruzione. `useLayoutEffect` e non `useEffect`: il useFrame qui sotto
   // parte già dal primo frame utile, e con un composer nullo R3F non
@@ -196,11 +256,17 @@ export default function PostFx({ store, apiRef }) {
   // nulla. È esattamente il motivo per cui questa manopola può stare nel JSON
   // autorato mentre l'interruttore no.
   useLayoutEffect(() => {
+    // La catena nasce sempre a piena qualità: il gradino ricomincia da 1, o il
+    // primo frame dopo una ricostruzione userebbe una scala di cui non esiste
+    // più il target che la giustificava.
+    tierRef.current = scaleTier(1)
+    cooldownRef.current = 0
+
     const ratio = Math.min(dpr, pixelRatioCap)
     const width = Math.max(1, Math.floor(size.width * ratio))
     const height = Math.max(1, Math.floor(size.height * ratio))
 
-    const composer = new EffectComposer(gl, createTarget(width, height, msaaSamples))
+    const composer = new EffectComposer(gl, createTarget(width, height, msaaSamples, hdrTarget))
     // ⚠️ `setSize` PRIMA di `setPixelRatio`, e l'ordine inverso non è
     // equivalente. Ricevendo un render target il costruttore assume
     // `_width = renderTarget.width`, cioè una misura già in PIXEL; ma
@@ -240,7 +306,7 @@ export default function PostFx({ store, apiRef }) {
     // in più o in meno) e `aoResolutionScale` (la dimensione dei suoi target).
     // Le altre sono uniform e si applicano a caldo, nell'effetto qui sotto.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gl, scene, camera, msaaSamples, pixelRatioCap, aoEnabled, aoResolutionScale])
+  }, [gl, scene, camera, msaaSamples, pixelRatioCap, aoEnabled, aoResolutionScale, hdrTarget])
 
   // Taratura a caldo: raggio, intensità, spessore, campioni. Sono uniform e
   // define del solo materiale dell'AO — mai dei materiali della scena — quindi
@@ -264,7 +330,12 @@ export default function PostFx({ store, apiRef }) {
     const id = setTimeout(() => {
       const composer = composerRef.current
       if (!composer) return
-      composer.setPixelRatio(Math.min(dpr, pixelRatioCap))
+      // ⚠️ Il ratio va rimoltiplicato per la scala dinamica CORRENTE, non
+      // riportato al tetto: un ridimensionamento della finestra durante un focus
+      // altrimenti rimetterebbe di soppiatto la piena risoluzione proprio nello
+      // stato che questa manopola esiste per alleggerire, e il useFrame non se
+      // ne accorgerebbe (per lui il gradino non è cambiato).
+      composer.setPixelRatio(Math.min(dpr, pixelRatioCap) * tierRef.current * SCALE_STEP)
       composer.setSize(size.width, size.height)
     }, 100)
     return () => clearTimeout(id)
@@ -297,8 +368,28 @@ export default function PostFx({ store, apiRef }) {
   // useComposerControls e ShadowFreeze girano già prima di questa riga, e
   // l'ordine "prima si muove la scena, poi si compone" viene gratis — non c'è
   // niente da coordinare a mano.
-  useFrame(() => {
-    composerRef.current?.render()
+  useFrame((_, delta) => {
+    const composer = composerRef.current
+    if (!composer) return
+
+    // Scala dinamica, prima del render e non dopo: il segnale è già aggiornato
+    // (useComposerControls gira a priorità 0, cioè prima di questa riga), quindi
+    // il frame che sta per essere disegnato è già quello alla scala giusta —
+    // non si insegue lo stato del frame precedente.
+    const s = settingsRef.current
+    cooldownRef.current -= delta
+    const zoom = s.dynamicScale ? (apiRef?.current?.focusZoomFactor?.() ?? 1) : 1
+    const wanted = scaleTier(Math.min(1, Math.max(s.dynamicScaleMin, zoom)))
+    if (wanted !== tierRef.current && cooldownRef.current <= 0) {
+      tierRef.current = wanted
+      cooldownRef.current = SCALE_COOLDOWN_S
+      // Solo `setPixelRatio`: rialloca i due target (e, tramite il `setSize` dei
+      // pass, quelli dell'AO) senza toccare la catena. Vedi il blocco in testa
+      // al file per cosa succederebbe passando invece dalla ricostruzione.
+      composer.setPixelRatio(baseRatioRef.current * wanted * SCALE_STEP)
+    }
+
+    composer.render()
   }, 1)
 
   return null
