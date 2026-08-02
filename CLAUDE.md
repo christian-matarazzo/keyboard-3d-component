@@ -106,7 +106,9 @@ src/
    │                                    the store, resolves the `product` prop, decides
    │                                    `authoring` (prop or `isDebug()`) once via a ref
    ├─ Scene.jsx                         <Canvas>; mounts MaterialApplier/LightRig/
-   │                                    AnimationDirector/VariantController and, only
+   │                                    ShadowFreeze/AnimationDirector/VariantController,
+   │                                    `runtime/postfx/PostFx` (gated on the `postfx`
+   │                                    prop, frozen into a ref at mount) and, only
    │                                    when `authoring`, the lazy AuthoringScene
    ├─ KeyboardModel.jsx                 GLB load (getDracoPath()/setDracoPath()),
    │                                    auto-fit, useComposerControls host
@@ -128,7 +130,10 @@ src/
    │                                    reads `store.get('view')`, exposes
    │                                    `resetActiveView` on apiRef
    ├─ AnimationDirector.jsx             single useFrame driving the runtime; renders null
-   ├─ VariantController.jsx             ISO/ANSI-style variant visibility
+   ├─ VariantController.jsx             ISO/ANSI-style variant visibility; also calls
+   │                                    `apiRef.invalidateShadows()` after every toggle
+   │                                    (frozen shadow maps would otherwise keep
+   │                                    casting the outgoing variant's shadow)
    ├─ Hud.jsx                           optional DOM overlay (telemetry, chips, mode
    │                                    button); `branding` prop (logo/version/footer),
    │                                    no hardcoded lockup; off by default (`hud=false`)
@@ -155,9 +160,15 @@ src/
    │  │                                   homePose), writes `store.ui`
    │  ├─ DebugPanel.jsx                   the `<Leva>` root + debug readouts, extracted
    │  │                                   from KeyboardComposer.jsx
-   │  ├─ RotationTuner.jsx, ViewSettingsTuner.jsx, MaterialTuner.jsx, FocusTuner.jsx
-   │  │                                   one Leva folder each; MaterialTuner/FocusTuner
-   │  │                                   render one component instance per group (Patterns)
+   │  ├─ RotationTuner.jsx, ViewSettingsTuner.jsx, PostFxTuner.jsx, MaterialTuner.jsx,
+   │  │  FocusTuner.jsx                   one Leva folder each (PostFxTuner tunes the
+   │  │                                   `postfx` section's hot values — MSAA samples,
+   │  │                                   pixel-ratio cap, AO radius/intensity/thickness/
+   │  │                                   distance-exponent/samples — deliberately NOT
+   │  │                                   the postfx on/off switch, see
+   │  │                                   runtime/postfx/PostFx.jsx); MaterialTuner/
+   │  │                                   FocusTuner render one component instance per
+   │  │                                   group (Patterns)
    │  ├─ LightGizmos.jsx                  TransformControls + useHelper for the two shadow
    │  │                                   lights; moves `keyLightRef`/`spotLightRef` (the
    │  │                                   real lights are rendered by
@@ -182,17 +193,54 @@ src/
    │  ├─ MaterialApplier.jsx              applies the authored materials — used to be one
    │  │                                   line inside a Leva panel, i.e. production
    │  │                                   materials depended on the editor being mounted
-   │  └─ ShadowLights.jsx                 the two shadow lights (key/spot), rendered
-   │                                      unconditionally from the store; see LightGizmos
+   │  ├─ ShadowLights.jsx                 the two shadow lights (key/spot), rendered
+   │  │                                  unconditionally from the store; see LightGizmos
+   │  ├─ ShadowFreeze.jsx                 `shadow.autoUpdate = false` on both shadow
+   │  │                                  lights, one useFrame, renders null. The model
+   │  │                                  never rotates (only the camera orbits), so a
+   │  │                                  frozen shadow map is pixel-identical to a
+   │  │                                  redrawn one; regenerates (frame-counted budget,
+   │  │                                  not a boolean) on a running animation/
+   │  │                                  `editMode==='meshes'`, a `keylight`/`spotlight`/
+   │  │                                  `materials` store change, or
+   │  │                                  `apiRef.invalidateShadows(frames)` — the entry
+   │  │                                  point VariantController calls after toggling
+   │  │                                  mesh visibility
+   │  └─ postfx/PostFx.jsx                MSAA render-target composer (`EffectComposer`/
+   │                                      `RenderPass`/`OutputPass` from
+   │                                      `three/examples/jsm/postprocessing`, not
+   │                                      `@react-three/postprocessing` — same
+   │                                      two-copies-of-three reasoning that ruled out
+   │                                      `@google/model-viewer` for AR). Owns the app's
+   │                                      only positive-priority `useFrame`, so it
+   │                                      renders last; publishes
+   │                                      `apiRef.postfxTarget()` so
+   │                                      `materials/warmupTransparency.js` warms up
+   │                                      shaders against the SAME target production
+   │                                      draws to (toneMapping/outputColorSpace are
+   │                                      shader-cache-key defines that depend on
+   │                                      screen vs. render-target). Tuning
+   │                                      (`msaaSamples`, `pixelRatioCap`) is authored
+   │                                      state (`postfx` section); the on/off switch is
+   │                                      the synchronous `postfx` prop, never authored
+   │                                      (flipping it recompiles every material)
    ├─ state/                            per-instance authored config store
    │  ├─ composerStore.js                createComposerStore; COMPOSER_SECTIONS
-   │  │                                  IS the saved-JSON shape/order (nine sections:
+   │  │                                  IS the saved-JSON shape/order (ten sections:
    │  │                                  lights, materials, rotation, keylight, spotlight,
-   │  │                                  focus, animations, variants, app), + UI_SECTION
-   │  │                                  ('ui') and VIEW_SECTION ('view'), both never
-   │  │                                  serialized; get/set/replace/hydrate/subscribe
+   │  │                                  focus, animations, variants, app, postfx),
+   │  │                                  + UI_SECTION ('ui') and VIEW_SECTION ('view'),
+   │  │                                  both never serialized; get/set/replace/hydrate/
+   │  │                                  subscribe
    │  ├─ defaults.js                     every product default in one place (was:
-   │  │                                  buried in Leva `value:` fields) + createInitialState
+   │  │                                  buried in Leva `value:` fields) +
+   │  │                                  DEFAULT_POSTFX (msaaSamples/pixelRatioCap —
+   │  │                                  render-target tuning; aoEnabled/aoResolution-
+   │  │                                  Scale — structural, rebuild the AO pass;
+   │  │                                  aoRadius/aoIntensity/aoThickness/
+   │  │                                  aoDistanceExponent/aoSamples — hot uniforms;
+   │  │                                  never the postfx on/off switch itself, that's
+   │  │                                  a KeyboardComposer prop) + createInitialState
    │  ├─ debug.js                        isDebug()/setDebug(), SSR-safe — now ADOPTED:
    │  │                                  `KeyboardComposer` uses it to decide whether to
    │  │                                  load authoring, and it's re-exported from
@@ -217,7 +265,12 @@ src/
    │                                      exposed as `subscribeAnimation` on apiRef
    └─ materials/                        MACHINERY ONLY (meshGroups, groupMaterials,
                                         meshVariants, warmupTransparency) — the
-                                        group/variant LISTS live under products/
+                                        group/variant LISTS live under products/.
+                                        `warmupTransparency.js`'s
+                                        `warmTransparentPrograms` takes a
+                                        `renderTarget` (from `apiRef.postfxTarget()`,
+                                        `null` = screen) — must warm up wherever
+                                        production actually draws, see runtime/postfx/
 public/
 ├─ models/keyboard.glb                  ARRAY_MODEL_L's GLB (`product.modelUrl`),
 │                                       authored in MILLIMETERS
@@ -232,8 +285,8 @@ public/
                                         the sections are exactly
                                         state/composerStore.js's COMPOSER_SECTIONS
                                         (lights, materials, rotation, keylight,
-                                        spotlight, focus, animations, variants, app).
-                                        Path comes from `product.configUrl`;
+                                        spotlight, focus, animations, variants, app,
+                                        postfx). Path comes from `product.configUrl`;
                                         new products default to
                                         /lightconfig/<ID>/app-state-config.json
 dist/lib/                              the npm package artifact (`npm run build:lib`),
@@ -255,10 +308,11 @@ scripts/make-ar-asset.mjs              generates public/ar/keyboard-ar.glb (see
 Data flow, in two directions:
 - **Commands** cross the DOM/Canvas boundary through one imperative ref,
   `apiRef` — a multi-writer bridge written **only** via
-  `Object.assign(apiRef.current, {...})`, never reassigned. **Six writing
-  files, seven call sites**: VariantController, LightRig, AnimationDirector,
-  Scene, useComposerControls, and KeyboardComposer.jsx itself twice (app mode,
-  then the variant commands).
+  `Object.assign(apiRef.current, {...})`, never reassigned. **Eight writing
+  files, nine call sites**: VariantController, LightRig, AnimationDirector,
+  Scene, useComposerControls, `runtime/ShadowFreeze.jsx` (`invalidateShadows`),
+  `runtime/postfx/PostFx.jsx` (`postfxTarget`), and KeyboardComposer.jsx itself
+  twice (app mode, then the variant commands).
 - **Data** needs no bridge: `KeyboardComposer.jsx` renders both the Canvas
   subtree and the DOM overlays, so animations, variants and `appMode` travel
   as ordinary props.
@@ -268,8 +322,9 @@ Data flow, in two directions:
   `KeyboardComposer.jsx` and threaded as a `store` prop through nearly every
   component that reads or writes authored state — Scene, KeyboardModel,
   LightRig, `runtime/MaterialApplier`, `runtime/ShadowLights`,
-  AnimationDirector, Hud, useComposerControls, and every `authoring/`
-  component. **The migration is complete**: zero `window.__STATE_*`, zero
+  `runtime/ShadowFreeze`, `runtime/postfx/PostFx`, AnimationDirector, Hud,
+  useComposerControls, and every `authoring/` component. **The migration is
+  complete**: zero `window.__STATE_*`, zero
   `app-load-*` CustomEvents. `handleSaveJSON` reads only from the store.
 - **`editMode`/`homePose` live in `store.ui`** (the never-serialized section),
   written only by `authoring/ModeTuner.jsx` and read via
@@ -293,6 +348,11 @@ Data flow, in two directions:
   `false`) to opt into the built-in DOM overlay, `branding` to customize it,
   `escapeToIdle` (default `true`, independent of the HUD) and `authoring`
   (default follows `isDebug()`) to force the editor open on a custom route.
+  `postfx` (default `true`) switches the MSAA render-target composer
+  (`runtime/postfx/PostFx.jsx`) on/off; unlike the other props it must be
+  decided synchronously (before the first `useGLTF`/Canvas creation) because
+  toggling it later would recompile every material's shader — see
+  `runtime/postfx/PostFx.jsx` and `state/defaults.js`'s `postfx` section.
 
 **One configurator, many models.** Everything model-specific is a `Product`
 (`products/productSchema.js`): `modelUrl`, `configUrl`, `poseGraph`,
@@ -519,9 +579,13 @@ published by `LightRig.jsx`) is still the way to try a *different* file.
 
 | Number | Where | Why it is what it is |
 | --- | --- | --- |
-| **264 draw calls** | the GLB | The asset pipeline forbids `join`/`optimize`, so the mesh count is permanent. Every extra *geometry* pass re-pays all 264 |
-| **~34 forward lights** | `LightRig.jsx` | 26 point (9 `top` + 8 `mid` + 9 `bot`) + 6 `rectAreaLight` (LTC, not cheap) + directional + spot. Every fragment evaluates all of them |
+| **108 draw calls/frame** | measured in browser, 2026-08-01 | ⚠️ **Supersedes the "264" this table used to claim.** Counted with `gl.info.autoReset = false` + `state.advance()`: 108 per frame, from 107 visible meshes out of 143 in the graph (the rest are the hidden variant). 264 is not reproducible on today's asset — treat any cost estimate scaled from it as 2.4× too pessimistic. The pipeline still forbids `join`/`optimize`, so the count is still permanent |
+| **+107 draw calls** | one shadow-map regeneration | The directional's shadow pass, measured by forcing `shadow.needsUpdate`: 108 frozen → 215 the frame it regenerates → 108 again. I.e. an active shadow light **doubles the frame**, which is the entire payoff of `runtime/ShadowFreeze.jsx` |
+| **~34 forward lights** | `LightRig.jsx` | 26 point (9 `top` + 8 `mid` + 9 `bot`) + 6 `rectAreaLight` (LTC, not cheap) + directional + spot. Every fragment evaluates all of them. ⚠️ Measured in the shipped config there are only **32**: `keylight.enabled` and `spotlight.enabled` are both `false` in `app-state-config.json`, so the two shadow-casters aren't in the scene at all — see "Contact shadows" below, it changes what AO has to stand in for |
 | **192 ms vs 0.4 ms** | shader compile vs normal frame | The cost of one `transparent` cache-key flip; the whole reason `warmupTransparency.js` exists |
+| **+4 draw calls** | the AO pass | `GTAOPass` adds four fullscreen quads (AO, Poisson denoise, copy, blend) and **no geometry pass**: 112/frame against 108 without. It is the proof that `setGBuffer(null, undefined)` really suppressed the pass's own normal prepass — which would read ~216 instead |
+| **22.2% vs 6.3%** | AO on crevices vs exposed faces | Relative darkening (`1 - ON/OFF`), ratio 3.5×, zero pixels brightened. ⚠️ Measured as an ABSOLUTE difference the ratio inverts to 0.65 and real contact occlusion looks like a flat global dim — AO multiplies, so already-dark pixels lose little in absolute terms |
+| **0.53 ms vs 0.28 ms** | composer frame vs direct render | Both with `ctx.finish()` to force GPU sync. At rest the whole scene renders in well under a millisecond, i.e. **neither axis is saturated** and half-res AO should be nearly free. Partial answer to step 2 below — measured with no shadow lights and in a remote-driven Chrome, so it is an indication, not the verdict |
 | **`RADIUS_MIN = 0.8`** | `useComposerControls.js` | Lowered from 2.5 for the group focus. With a 200 mm lens `baseRadius` is ~36 scene units and a small group frames at ~1.7–3.5 — the old floor was an invisible ceiling on the product zoom |
 | **`FIT_RADIUS_MIN = 5.2`** | `useComposerControls.js` | Floor of the **whole-model fit only**. ⚠️ Never apply it to the focus path |
 | **`KEY_DEBOUNCE_MS = 300`** | `useComposerControls.js` | Blocks rapid re-presses from stacking steps and velocity ("spinning"). Native key-repeat is filtered separately (`e.repeat` + a `heldKeys` Set) |
@@ -781,17 +845,40 @@ These are accepted costs of the current design, not bugs waiting to be filed.
   originals' cache key), but the *cloning* itself is still per-acquire work. The
   fast path avoids it for whole-group selections, the common case.
 
-## Planned work: anti-aliasing and contact shadows
+## Anti-aliasing and contact shadows: partly built, partly planned
 
-⚠️ **Nothing in this section exists in the code.** It is a design record for a
-discussed-but-unbuilt feature — don't go looking for an `EffectComposer`, an AO
-pass or a quality-LOD state machine, and don't treat their absence as a
-regression. Most of the reasoning is specific to this scene's cost profile and
-is *not* the answer a generic three.js guide gives.
+⚠️ **This section used to say "nothing here exists in the code". That is no
+longer true**, and the boundary matters when reading the rest of it:
+
+| Step (see "Suggested implementation order" below) | Status |
+| --- | --- |
+| 1. Freeze the shadow map | **BUILT & MEASURED** — `runtime/ShadowFreeze.jsx`, halves the frame (215 → 108) when a shadow light is on. ⚠️ Saves nothing today: both shadow lights are disabled in the shipped config |
+| 2. Measure CPU- vs fragment-bound | **PARTIAL** — 0.53 ms/frame through the composer, 0.28 ms direct. Neither axis saturated, so half-res AO looks nearly free. Measured without shadow lights, so re-check if the key light comes back |
+| 3. Composer + MSAA + `OutputPass` | **BUILT & CHECKPOINTED** — `runtime/postfx/PostFx.jsx`. No SMAA yet, and the tone-mapping move it prescribed turned out to be WRONG (see the step itself) |
+| 4. Half-res AO with depth-reconstructed normals | **BUILT & MEASURED** — `createAoPass()` in `runtime/postfx/PostFx.jsx` (`GTAOPass`, `aoEnabled: true` by default). 112 draw calls/frame vs 108 without, i.e. the normal prepass really is skipped; crevices darken 3.5× more than exposed faces; cost below the measurement noise floor |
+| 5. Progressive accumulation at rest | not built |
+
+So: an `EffectComposer` *and* a `GTAOPass` now exist and are mounted (the
+composer whenever the `postfx` prop is on, the AO pass whenever `aoEnabled` is
+true in the `postfx` section); only the quality-LOD state machine (step 5,
+progressive accumulation) still does not — don't treat *its* absence as a
+regression. Everything below about *why* remains the design record, and most of
+the reasoning is specific to this scene's cost profile rather than what a
+generic three.js guide would say.
+
+⚠️ **The passes come from `three` itself** (`three/examples/jsm/postprocessing/`),
+not from `postprocessing`/`@react-three/postprocessing`. That is what makes this
+feature cost the npm package **zero bytes**: `vite.config.js`'s EXTERNAL rule
+already matches `three/` subpaths, so the pass code stays external and is
+supplied by the peer `three` the host installs anyway. Measured on the
+playground build, the only place it does land: `three` chunk 1504.71 → 1514.19
+kB (+9.5 kB, +2.3 kB gzip). Picking `postprocessing` instead would have
+reintroduced the two-copies-of-`three` problem — it peer-pins `three` with a
+`^0.x` caret, the same reason `@google/model-viewer` was rejected for AR.
 
 ### The cost profile that drives every choice
 
-The two bottlenecks in the table above (264 draw calls, ~34 forward lights)
+The two bottlenecks in the table above (108 draw calls, ~34 forward lights)
 exist before any effect is added, and they push in the same direction. The cheap
 axis is **screen-space**: a full-screen pass is geometry-independent, and at
 half resolution it costs a fraction of the main 34-light pass. Hence the rule:
@@ -826,9 +913,13 @@ exactly what it is today, and the extra work happens only when idle. **It cannot
 introduce stutter into navigation by construction.**
 
 ⚠️ **MSAA on the default framebuffer is lost the moment you render through a
-composer.** A multisampled render target must be requested explicitly (in
-pmndrs `postprocessing`, the `multisampling` prop on `EffectComposer`), or the
-first effect added makes the image *worse*, not better.
+composer**, and the last draw to the screen is a fullscreen quad with no
+geometric edges to sample. A multisampled render target must be requested
+explicitly — `samples` on the `WebGLRenderTarget` handed to `EffectComposer`,
+since its default target has none — or the first effect added makes the image
+*worse*, not better. For the same reason `Scene.jsx` now sets
+`antialias: !postfxOn` on the Canvas: with the composer up, that would be a
+multisampled framebuffer allocated and never used.
 
 ### Contact shadows (between meshes)
 
@@ -844,28 +935,47 @@ Terminology selects the technique here:
 The reason none of this exists is structural, not an oversight: **31 of the 34
 lights physically cannot cast shadows.** `rectAreaLight` has no shadow support
 in three.js at all, and point lights only shadow via cube maps — 6 scene renders
-*per light*, i.e. 26 × 6 × 264 draw calls, which is not a tradeoff to evaluate
-but a non-starter. The only real shadow is the directional's. **The volumetric
-rig therefore behaves as ambient light that never occludes anything** — AO is
-not a polish item here, it is what stands in for the rig's missing occlusion.
+*per light*, i.e. 26 × 6 × 108 draw calls, which is not a tradeoff to evaluate
+but a non-starter. The only light that *could* shadow is the directional.
+
+⚠️ **And in the shipped configuration it is switched off.** Measured in browser
+2026-08-01: `app-state-config.json` carries `keylight.enabled: false` *and*
+`spotlight.enabled: false`, and the scene contains 32 lights — 26 point + 6
+rectArea — with **zero shadow casters**. So the product as it ships has no
+shadow of any kind, not merely a weak one. Two consequences, and they point in
+opposite directions:
+
+- The premise below is *stronger* than it was written: **the volumetric rig
+  behaves as ambient light that never occludes anything** — AO is not a polish
+  item here, it is the only occlusion the product would have.
+- The headroom that was supposed to pay for AO **is not there to recover**.
+  `runtime/ShadowFreeze.jsx` is built, correct and measured, but with no shadow
+  caster enabled it currently guards nothing (0 draw calls saved). Re-enabling
+  the key light returns 107 draw calls per frame — but whether it is off by
+  authoring choice or by accident is unresolved, and it should be settled before
+  any cost is scaled off it.
 
 Two separate contributions:
 
-1. **Half-resolution screen-space AO** (GTAO/N8AO class) with a depth-guided
-   bilateral upsample. It responds to any transform, so it keeps working under
-   the mesh editor and under a running animation. Use an implementation that can
-   **reconstruct normals from depth** — that removes the normal prepass, i.e.
-   264 draw calls, worth the marginal quality loss on this cost profile.
-   Physically AO should modulate only indirect light, but here the 32
-   non-shadowing lights *already are* a stand-in for indirect, so multiplying
-   the final color is defensible in this scene specifically.
+1. ✅ **Half-resolution screen-space AO** (GTAO/N8AO class) with a depth-guided
+   bilateral upsample. Built — see step 4 in "Suggested implementation order"
+   below for the implementation traps. It responds to any transform, so it
+   keeps working under the mesh editor and under a running animation. Uses an
+   implementation that can **reconstruct normals from depth** — that removes
+   the normal prepass, i.e. 108 draw calls, worth the marginal quality loss on
+   this cost profile. Physically AO should modulate only indirect light, but
+   here the 32 non-shadowing lights *already are* a stand-in for indirect, so
+   multiplying the final color is defensible in this scene specifically.
 2. **Freeze the directional light's shadow map.** The camera orbits, the model
    never rotates, the key light is fixed — **the shadow map is identical frame
    after frame.** Rendering it once (`shadow.autoUpdate = false`,
    `shadow.needsUpdate = true` on demand) and regenerating it only when the mesh
-   editor moves something returns 264 draw calls per frame. Likely the single
-   largest win in this list, and it lands *before* any effect is added. The
-   recovered headroom is what pays for a contact-hardening (PCSS-style) filter
+   editor moves something returns 107 draw calls per frame — **measured**, see
+   the numbers table. Built as `runtime/ShadowFreeze.jsx`. It was billed as
+   likely the single largest win in this list, and per-frame it is (it halves
+   the frame); ⚠️ but the shipped config has no shadow caster enabled, so today
+   it recovers nothing and **cannot be the thing that pays** for a
+   contact-hardening (PCSS-style) filter
    on that one light.
 
 **Baked AO** is the zero-runtime-cost option and the obvious choice for a static
@@ -907,12 +1017,28 @@ Three invalidation sources that are not obvious and would bite:
 
 ### Codebase-specific traps
 
-- **Tone mapping has to move.** ACES currently sits on the renderer
-  (`Scene.jsx`'s `gl={{ toneMapping, toneMappingExposure }}`). With a composer it
-  must become the second-to-last effect and be disabled on the renderer, or AO
-  gets applied to already-tone-mapped values and AA blends in display space.
-  Correct order: scene in linear HDR → AO → accumulate → tone map → SMAA last,
-  on LDR.
+- ⚠️ **Tone mapping does NOT have to move — this entry used to say it did, and
+  acting on it would have broken the image.** The requirement is real (scene in
+  linear HDR → AO → accumulate → tone map → SMAA last, on LDR), but three
+  already satisfies it for free: the `toneMapping`/`outputColorSpace` defines a
+  material compiles with are chosen **per render destination** — the renderer's
+  values when drawing to the screen, `NoToneMapping` + linear when drawing into
+  a render target. So `RenderPass` fills the target in linear HDR by itself, and
+  `OutputPass` reads `renderer.toneMapping`/`outputColorSpace` back off the
+  renderer for the final quad. Setting the renderer to `NoToneMapping` disables
+  **both**, and the image comes out flat. ACES stays on `Scene.jsx`'s `gl={{…}}`
+  exactly where it was.
+- ⚠️ **That same per-destination rule is why `warmupTransparency.js` takes a
+  `renderTarget`.** The destination is part of the program cache key, so once
+  the composer exists the production frames compile against a *different* key
+  than a warm-up that renders to the screen — the warm-up would heat programs
+  nobody uses and the first `setOpacity` would still compile 2, i.e. the exact
+  defect that module exists to prevent, re-created from another direction.
+  Failure mode: no error, no visual difference, visible **only** on
+  `gl.info.programs.length`. `KeyboardModel.jsx` passes
+  `apiRef.current.postfxTarget()`, published by `runtime/postfx/PostFx.jsx`;
+  `null` (composer off) means the screen, i.e. the old behavior. **Any future
+  pass that changes where the scene is drawn has to keep that bridge honest.**
 - **`__editorHelper` meshes must be excluded from depth passes.** The selection
   halos are slightly inflated shells; in the depth buffer they would generate an
   AO halo around every selected object. Same class of bug already handled in
@@ -931,19 +1057,118 @@ Three invalidation sources that are not obvious and would bite:
 
 ### Suggested implementation order
 
-1. **Freeze the shadow map.** No new effect, pure headroom. Everything else is
-   measured from there.
-2. **Measure whether the app is CPU- or fragment-bound.** The ratio decides
+1. ✅ **Freeze the shadow map.** No new effect, pure headroom. Built as
+   `runtime/ShadowFreeze.jsx`; the invalidation budget is counted in FRAMES, not
+   a boolean, because whoever invalidates (a React effect, a store listener) has
+   no guaranteed order against the `useFrame` that spends it. Measured: 108
+   frozen / 215 the frame it regenerates, i.e. it **halves the frame**. The
+   freeze also applies itself from inside `useFrame` rather than an effect, and
+   that is load-bearing — verified by enabling the key light long after mount
+   and finding `autoUpdate === false` anyway; three resets it to `true` on every
+   remount, which a one-shot effect would miss.
+   ⚠️ **Payoff is currently zero**: both shadow lights ship disabled. See
+   "Contact shadows" above before counting on this headroom.
+2. 🟡 **Measure whether the app is CPU- or fragment-bound.** The ratio decides
    whether half-res AO is nearly free, and it cannot be derived on paper.
-3. **Composer with MSAA + relocated tone mapping + SMAA.** Checkpoint: verify
-   the image is *identical* to today before adding any effect — the only moment
-   a color-space mistake is still easy to isolate.
-4. **Half-res AO** with depth-reconstructed normals.
+   Partially answered: 0.53 ms/frame through the composer vs 0.28 ms direct
+   (`ctx.finish()` on both), so at rest neither axis is close to saturated. Two
+   reasons it is not the final word — it was measured with **no shadow casters
+   enabled**, and in a remote-driven Chrome whose ~32 fps is environmental, not
+   GPU (the render is 1/30 of the frame budget). Re-measure if the key light
+   returns.
+3. ✅ **Composer with MSAA + ~~relocated tone mapping~~ + SMAA.** Built as
+   `runtime/postfx/PostFx.jsx` — minus SMAA, and minus the tone-mapping move,
+   which was wrong (see the traps above). **Checkpoint run 2026-08-01, both
+   halves passed**, and the method is worth reusing rather than re-deriving:
+
+   *Image identity.* Don't reload to compare — do the A/B **inside one frame**:
+   render through the composer, `readPixels` off the default framebuffer, then
+   `gl.setRenderTarget(null); gl.render(scene, camera)` and grab again. Same
+   camera, same damping state, only the destination differs. Then split the diff
+   by local gradient, because a single mean hides the answer: **flat surfaces
+   (1,413,204 px, 97%) differed by 0.0043/255 — numerically identical — while
+   edge pixels (46,800, 3%) differed by 5.66**, which is the MSAA doing its job.
+   Mean luminance 4.221 vs 4.171, i.e. an exposure delta of **+0.02%**: a
+   colour-space mistake would have moved the whole image, not one pixel in
+   thirty.
+
+   *Warm-up survival.* `gl.info.programs.length` around the first `setOpacity`
+   (`GoToRotors`) read **7 → 7, delta 0**. ⚠️ A delta of 0 alone proves little —
+   run the counterfactual: drawing **one** frame to the screen instead of the
+   composer target compiles **2 new programs**, the exact number this repo
+   already measured for the un-warmed case. That is the proof the destination is
+   in the cache key and that `warmupTransparency.js`'s `renderTarget` parameter
+   is load-bearing rather than decorative.
+4. ✅ **Half-res AO** with depth-reconstructed normals. Built as `createAoPass()`
+   in `runtime/postfx/PostFx.jsx`, using `three`'s own `GTAOPass`. Three traps
+   hit and worked around, specific to using `GTAOPass` off-label this way:
+   - `pass.setGBuffer(null, undefined)` — not `(depth, undefined)`, the depth
+     argument only matters when a normal texture is supplied — sets
+     `NORMAL_VECTOR_TYPE = 0`, reconstructing normals from depth and skipping
+     the pass's own normal prepass, which would otherwise cost +108 draw
+     calls/frame, the one thing this scene cannot afford.
+   - The constructor allocates a normal render target regardless, before
+     `setGBuffer` can refuse it, and passing `parameters.depthTexture` to the
+     constructor doesn't avoid it either — in that branch `normalRenderTarget`
+     is never created and the very next line dereferences it, so the
+     constructor throws. The only way out is build → reconfigure → dispose the
+     orphan by hand (`pass.normalRenderTarget?.dispose()`); safe because
+     `setSize`/`dispose` keep referencing it but nothing ever draws to it.
+   - `EffectComposer.setSize` forces every pass back to full resolution on
+     resize, so `pass.setSize` is overridden on the instance to defend the
+     half-res scale. `aoResolutionScale` is therefore a *structural* setting
+     (rebuilds the chain) alongside `aoEnabled`, unlike the AO uniforms below.
+   - The pass's `depthTexture` is re-read from `readBuffer.depthTexture` on
+     every `render()` call rather than fixed once, because `EffectComposer`
+     swaps two render targets with **distinct** depth textures (`clone()`
+     duplicates them); today's two-pass round trip makes a fixed reference
+     work *by accident*, and a third pass (e.g. the still-unbuilt SMAA) would
+     make it flicker at alternating frames instead of erroring.
+
+   The `DepthTexture` this depends on is allocated unconditionally in
+   `createTarget()`. Settings split into structural (`aoEnabled`,
+   `aoResolutionScale` — rebuild) vs hot-tunable uniforms (`aoRadius`,
+   `aoIntensity`, `aoThickness`, `aoDistanceExponent`, `aoSamples` — applied
+   without rebuilding); `authoring/PostFxTuner.jsx` is the Leva surface for
+   both.
+
+   **Measured in browser 2026-08-01**, and two of the three numbers are only
+   meaningful because of *how* they were taken:
+
+   - **112 draw calls/frame** against 108 without AO. The AO adds four
+     fullscreen quads (AO, Poisson denoise, copy, blend) and **no geometry
+     pass** — that single number is the proof the first trap above actually
+     worked. Had the normal prepass still been running it would read ~216.
+   - **Crevices darken 3.5× more than exposed faces** (22.2% vs 6.3% relative),
+     max occlusion 100%, and **zero pixels brightened**. ⚠️ Measure the
+     darkening as `1 - ON/OFF`, **not** as an absolute difference: AO
+     multiplies, so a pixel that is already dark loses little in absolute terms
+     and an absolute-difference histogram makes real contact occlusion look
+     like a flat global dim. That mistake was made first and inverted the
+     conclusion — the absolute metric said crevices darkened *less* than faces
+     (ratio 0.65).
+   - **Cost below the noise floor**: the composer measures 0.53 ms/frame, and
+     AO-on vs AO-off came out at 1.26 vs 1.41 ms — i.e. the two orderings
+     invert, so the effect is smaller than the variance (≲0.2 ms against a
+     16.6 ms budget). Don't quote a cost for this pass; quote a bound.
+
+   ⚠️ **At full-model framing the AO reads as diffuse depth, not crisp contact.**
+   The gaps between keycaps are 1–2 px wide there, and the AO runs at half
+   resolution, so they fall below its sampling. Close up it is unmistakable. If
+   crisp contact is ever wanted in the wide shot the knob is
+   `aoResolutionScale: 1`, but measure before spending it — that doubles the
+   axis this scene is most sensitive on.
+
+   Cosmetic, worth knowing: linking the GTAO shader emits
+   `warning X4000: use of potentially uninitialized variable` from ANGLE's HLSL
+   compiler on Windows. It comes from three's shader, not from this code; the
+   program links and the AO renders correctly. It only appears on a cold shader
+   cache. If AO ever comes out black on a specific GPU, start there.
 5. **Progressive accumulation at rest**, last: biggest quality jump, and the
    piece needing the most accurate invalidation signal.
 
 What not to do: raise DPR or add a depth prepass "since it's cheap". With 34
-lights the first doubles the fragment axis; with 264 draw calls the second
+lights the first doubles the fragment axis; with 108 draw calls the second
 doubles the CPU one. Those are the two moves this scene's profile punishes
 hardest.
 

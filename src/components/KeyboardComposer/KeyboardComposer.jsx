@@ -96,6 +96,12 @@ export default function KeyboardComposer({
   // propria rotta. Valutato UNA volta: il confine è un `import()`, non un
   // ramo di render.
   authoring: authoringProp,
+  // Catena di post-processing (MSAA sul render target, e da qui in avanti
+  // l'occlusione ambientale). Acceso di default; è una prop e non un valore
+  // autorato perché l'accensione deve essere SINCRONA — vedi Scene.jsx. Chi
+  // integra su hardware debole la spegne e torna esattamente al percorso di
+  // rendering di prima.
+  postfx = true,
 }) {
   const authoringRef = useRef(authoringProp ?? isDebug())
   const authoring = authoringRef.current
@@ -420,6 +426,7 @@ export default function KeyboardComposer({
           apiRef={poseApi}
           store={store}
           authoring={authoring}
+          postfx={postfx}
           animations={animations}
           variantSelection={variantSelection}
           appMode={appMode}

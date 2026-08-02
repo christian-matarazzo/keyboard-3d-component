@@ -7,6 +7,8 @@ import LightRig from './LightRig'
 import AnimationDirector from './AnimationDirector'
 import VariantController from './VariantController'
 import MaterialApplier from './runtime/MaterialApplier'
+import ShadowFreeze from './runtime/ShadowFreeze'
+import PostFx from './runtime/postfx/PostFx'
 import { useComposerSection } from './state/useComposerSection'
 
 // ⚠️ Stesso specificatore dell'import in KeyboardComposer.jsx, e non è un
@@ -53,6 +55,15 @@ export default function Scene({
   // solo a spegnere drag/frecce in config — vedi controlsDisabled sotto.
   // Vero quando l'editor è attivo: carica il sottoalbero 3D di authoring.
   authoring = false,
+  // Interruttore della catena di post-processing. Prop e non valore autorato,
+  // e non è una svista: accendere il composer sposta la scena dallo schermo a
+  // un render target, il che cambia i define `toneMapping`/`outputColorSpace`
+  // di OGNI materiale, cioè la loro chiave di cache — 192 ms di ricompilazione
+  // a programma. Va deciso una volta sola e in modo SINCRONO, e il JSON
+  // autorato arriva per fetch, cioè troppo tardi per definizione. La taratura
+  // (campioni MSAA, tetto al pixel ratio) sta invece nella sezione `postfx`
+  // dello store e viaggia col JSON — vedi state/defaults.js.
+  postfx = true,
   appMode = 'idle',
   // `{ duration, easing }` della dissolvenza di uscita delle animazioni: di
   // sola andata verso AnimationDirector.
@@ -65,6 +76,12 @@ export default function Scene({
 
   const [modelSize, setModelSize] = useState(null)
   const [selectedMesh, setSelectedMesh] = useState(null)
+  // Valutato UNA volta, stesso idioma di `authoring` in KeyboardComposer.jsx e
+  // per una ragione più stringente: il `gl` del Canvas si legge solo alla
+  // creazione, e cambiare bersaglio a sessione avviata ricompilerebbe ogni
+  // materiale della scena (vedi la prop qui sopra).
+  const postfxRef = useRef(postfx)
+  const postfxOn = postfxRef.current
   // Giunzione fra le due luci-ombra renderizzate dal rig e i gizmo
   // dell'authoring, che le muovono senza possederle. I ref nascono qui perché
   // questo è l'antenato comune dei due sottoalberi.
@@ -151,7 +168,17 @@ export default function Scene({
       dpr={[1, 2]}
       camera={{ position: [0, 0.1, 5.2] }} // livellata sul pivot; il fov deriva dalla focale (useComposerControls)
       gl={{
-        antialias: true,
+        // Con il composer attivo l'MSAA del framebuffer di DEFAULT non serve a
+        // niente: l'ultimo disegno sullo schermo è un quad fullscreen, che di
+        // bordi geometrici non ne ha. I campioni veri stanno sul render target
+        // del composer (`postfx.msaaSamples`); questo sarebbe solo un
+        // framebuffer multicampionato allocato e mai usato.
+        antialias: !postfxOn,
+        // ⚠️ Il tone mapping resta QUI anche col composer, e non va spostato su
+        // OutputPass: three applica il define solo quando si disegna sullo
+        // schermo, quindi il render target si riempie già in HDR lineare da sé,
+        // e `OutputPass` rilegge questi stessi due valori dal renderer per il
+        // quad finale. Metterli a `NoToneMapping` spegnerebbe entrambi.
         toneMapping: THREE.ACESFilmicToneMapping,
         toneMappingExposure: 1.0,
       }}
@@ -210,6 +237,22 @@ export default function Scene({
           keyLightRef={keyLightRef}
           spotLightRef={spotLightRef}
         />
+        {/* Congela le shadow map delle due luci-ombra e le rigenera solo quando
+            la geometria (non la camera) può essere cambiata. Restituisce 264
+            draw call per frame a scena ferma, senza cambiare l'immagine: il
+            modello non ruota mai, è la camera a girargli attorno. */}
+        <ShadowFreeze
+          store={store}
+          apiRef={apiRef}
+          keyLightRef={keyLightRef}
+          spotLightRef={spotLightRef}
+          modelSize={modelSize}
+          editMode={editMode}
+        />
+        {/* La catena di post-processing. Possiede l'unico useFrame a priorità
+            positiva dell'app, quindi da qui in poi è lui a renderizzare: tutti
+            gli altri useFrame (a priorità 0) girano comunque prima. */}
+        {postfxOn && <PostFx store={store} apiRef={apiRef} />}
         {/* L'authoring 3D: gizmo, helper, editor mesh e i tuner che hanno
             bisogno del GLB. Caricato solo in `?debug`, e dallo STESSO chunk
             dei pannelli DOM — un `import()` solo. */}

@@ -148,15 +148,39 @@ export function programSignature(materials) {
 
 /**
  * Compila le varianti trasparenti, una volta, disegnando un frame.
+ *
+ * ⚠️ `renderTarget` NON è un parametro di comodo: deve essere lo STESSO
+ * bersaglio su cui la produzione disegna. `toneMapping` e `outputColorSpace`
+ * sono anch'essi define nel fragment shader, e three ne sceglie il valore in
+ * base a dove si sta disegnando — sullo schermo valgono quelli del renderer
+ * (ACES, sRGB), dentro un render target valgono `NoToneMapping` e lineare.
+ * Sono quindi due CHIAVI DI CACHE diverse. Da quando esiste
+ * `runtime/postfx/PostFx.jsx` la scena finisce in un render target: scaldare
+ * sullo schermo compilerebbe programmi che non verranno mai usati, e il primo
+ * `setOpacity` ne compilerebbe 2 nuovi in mezzo alla dissolvenza — cioè
+ * esattamente il difetto che questo modulo esiste per prevenire, ricreato da
+ * un'altra strada e altrettanto invisibile (nessun errore, nessuna differenza
+ * a video: si vede solo su `gl.info.programs.length`).
+ *
+ * `null` = schermo, ed è il valore giusto quando il post-processing è spento.
+ *
  * @returns {number} quanti materiali sono stati scaldati (0 = non fatto nulla)
  */
-export function warmTransparentPrograms({ gl, scene, camera, materials, hidden = [] }) {
+export function warmTransparentPrograms({
+  gl,
+  scene,
+  camera,
+  materials,
+  hidden = [],
+  renderTarget = null,
+}) {
   if (!gl || !scene || !camera) return 0
   const list = [...new Set(materials)].filter((m) => m && m.transparent !== true)
   if (!list.length) return 0
 
   const wasTransparent = list.map((m) => m.transparent)
   const wasVisible = hidden.map((o) => o.visible)
+  const prevTarget = gl.getRenderTarget()
   try {
     for (const m of list) {
       m.transparent = true
@@ -175,8 +199,12 @@ export function warmTransparentPrograms({ gl, scene, camera, materials, hidden =
     // ancora in dissolvenza d'ingresso: invisibile.
     for (const o of hidden) o.visible = true
 
+    gl.setRenderTarget(renderTarget)
     gl.render(scene, camera)
   } finally {
+    // Prima di ogni altro ripristino: se `gl.render` lancia, lasciare il
+    // renderer puntato altrove spegnerebbe il frame successivo.
+    gl.setRenderTarget(prevTarget)
     // `finally`: se il render lancia, i materiali non devono restare
     // trasparenti — sarebbero ~264 mesh nel pass ordinato per distanza per
     // tutta la sessione, cioè l'artefatto che DEPTH_WRITE_MIN esiste per

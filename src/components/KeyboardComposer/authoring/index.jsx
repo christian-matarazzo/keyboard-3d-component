@@ -3,6 +3,7 @@ import AnimationEditor from './AnimationEditor'
 import MeshController from './MeshController'
 import ModeTuner from './ModeTuner'
 import RotationTuner from './RotationTuner'
+import PostFxTuner from './PostFxTuner'
 import ViewSettingsTuner from './ViewSettingsTuner'
 import MaterialTuner from './MaterialTuner'
 import FocusTuner from './FocusTuner'
@@ -48,6 +49,7 @@ export function AuthoringDom({
       <DebugPanel poseApi={poseApi} />
       <ModeTuner store={store} poseGraph={product.poseGraph} />
       <RotationTuner store={store} />
+      <PostFxTuner store={store} />
       <ViewSettingsTuner store={store} apiRef={poseApi} />
       <FocusTuner store={store} groups={product.meshGroups} />
       <AnimationEditor

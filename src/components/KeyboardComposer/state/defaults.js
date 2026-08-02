@@ -129,6 +129,70 @@ export const DEFAULT_APP_CONFIG = {
   releaseTransformsEasing: 'easeInOutCubic',
 }
 
+/**
+ * Sezione `postfx`: TARATURA della catena di post-processing, non il suo
+ * interruttore.
+ *
+ * ⚠️ La divisione fra questa sezione e la prop `postfx` di KeyboardComposer non
+ * è arbitraria, ed è l'unica che regge. ACCENDERE il composer cambia la CHIAVE
+ * DI CACHE dei programmi di OGNI materiale della scena: three compila
+ * `toneMapping`/`outputColorSpace` dentro il fragment shader e ne sceglie i
+ * valori in base a dove si sta disegnando (schermo → ACES + sRGB, render target
+ * → nessuno + lineare). Passare dall'uno all'altro a sessione avviata
+ * ricompilerebbe tutto, a 192 ms per programma — lo stesso costo misurato che
+ * `materials/warmupTransparency.js` esiste per evitare.
+ *
+ * Quindi: l'ACCENSIONE si decide una volta sola, in modo sincrono, dalla prop
+ * (il JSON autorato arriva via fetch, cioè troppo tardi per definizione). Qui
+ * restano solo i valori che si possono muovere a caldo perché toccano il render
+ * target e i quad fullscreen, mai i materiali della scena.
+ */
+export const DEFAULT_POSTFX = {
+  // Campioni MSAA del render target. Il framebuffer di default ne ha di suoi
+  // (`antialias: true`), ma si perdono nel momento in cui si rende attraverso
+  // un composer: qui vanno richiesti a mano, o il primo pass aggiunto PEGGIORA
+  // l'immagine invece di migliorarla.
+  msaaSamples: 4,
+  // Tetto al pixel ratio del render target. 2 = esattamente il tetto del
+  // `dpr` del Canvas, cioè nessun cambiamento rispetto a oggi; è la manopola
+  // per scendere su mobile, dove MSAA e DPR alto sono in gran parte ridondanti
+  // fra loro e il costo si moltiplica sull'asse (fragment) già peggiore.
+  pixelRatioCap: 2,
+
+  // --- Occlusione ambientale (ombre di contatto) --------------------------
+  //
+  // ⚠️ Qui l'AO non è una rifinitura: è l'UNICA occlusione che il prodotto ha.
+  // Delle ~34 luci del rig, 31 non possono proiettare ombra per costruzione
+  // (rectAreaLight non le supporta, le point solo via cube map: 6 render di
+  // scena a luce), e le due luci-ombra sono spente per scelta estetica nella
+  // configurazione spedita. Senza questo passaggio niente stacca il keycap
+  // dalla piastra, il tassello dalla sua sede, il rotore dal corpo.
+  aoEnabled: true,
+  // Risoluzione dell'AO come frazione di quella del render target. 0.5 = metà
+  // per lato, cioè un quarto dei pixel. È l'asse su cui questa scena è più
+  // sensibile (fragment), e il denoise di Poisson del pass fa già da
+  // ricampionamento guidato dalla profondità.
+  aoResolutionScale: 0.5,
+  // Raggio di ricerca in UNITÀ DI SCENA. Il modello è largo `TARGET_WIDTH`
+  // = 3.2, quindi 0.12 è dell'ordine della fuga fra due keycap: è la distanza
+  // a cui vogliamo vedere il contatto, non l'occlusione d'insieme.
+  aoRadius: 0.12,
+  // Quanto l'AO scurisce il colore finale (`blendIntensity`). Fisicamente
+  // dovrebbe modulare solo la luce indiretta; qui le 32 luci non-ombreggianti
+  // SONO il sostituto dell'indiretta, quindi moltiplicare il colore finale è
+  // difendibile in questa scena in particolare.
+  aoIntensity: 1,
+  // Spessore presunto degli oggetti visti di taglio: alza per ridurre gli aloni
+  // chiari attorno alle silhouette, abbassa se il contatto sparisce.
+  aoThickness: 1,
+  // Curva di caduta con la distanza. >1 concentra l'effetto sui contatti
+  // ravvicinati invece di spalmarlo.
+  aoDistanceExponent: 2,
+  // Campioni per pixel. 16 è il default del pass; a metà risoluzione è già
+  // generoso, ed è la prima manopola da abbassare se serve margine.
+  aoSamples: 16,
+}
+
 /** Stato dell'editor: non si salva, vedi UI_SECTION in composerStore.js. */
 export const DEFAULT_UI = {
   editMode: 'none',
@@ -156,6 +220,7 @@ export const createInitialState = (overrides = {}) => ({
   animations: { version: 1, items: [] },
   variants: { swapAnimations: {} },
   app: { ...DEFAULT_APP_CONFIG, ...overrides.app },
+  postfx: { ...DEFAULT_POSTFX },
   ui: { ...DEFAULT_UI, ...overrides.ui },
   view: { ...DEFAULT_VIEW_SETTINGS, showHelpers: false, showSurfaces: false },
 })

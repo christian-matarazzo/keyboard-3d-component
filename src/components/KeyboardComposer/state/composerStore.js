@@ -61,6 +61,7 @@ export const COMPOSER_SECTIONS = [
   'animations',
   'variants',
   'app',
+  'postfx',
 ]
 
 /**

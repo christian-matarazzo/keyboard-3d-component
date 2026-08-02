@@ -31,7 +31,12 @@ export default function VariantController({
 
   useEffect(() => {
     applyVariantVisibility(scene, variants, selection, holdsRef.current)
-  }, [scene, variants, selection])
+    // Accendere e spegnere mesh cambia ciò che proietta ombra, e le shadow map
+    // sono congelate (runtime/ShadowFreeze.jsx): senza questa riga la variante
+    // uscente continuerebbe a proiettare la propria ombra finché qualcos'altro
+    // non invalida. Difetto silenzioso — il modello è giusto, l'ombra no.
+    apiRef?.current?.invalidateShadows?.()
+  }, [scene, variants, selection, apiRef])
 
   useEffect(() => {
     if (!apiRef) return
@@ -42,6 +47,7 @@ export default function VariantController({
         // Ri-applica subito: la selezione può essere cambiata mentre l'hold era
         // attivo, ed è questo il momento in cui la mesh uscente va spenta.
         applyVariantVisibility(scene, variants, selection, holdsRef.current)
+        apiRef.current.invalidateShadows?.()
       },
     })
     return () => {

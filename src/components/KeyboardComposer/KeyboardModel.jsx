@@ -119,11 +119,17 @@ export function KeyboardModel({ product, apiRef, store, onSizeComputed, onSelect
         camera,
         materials,
         hidden,
+        // ⚠️ Si scalda dove si disegna, non sullo schermo: con il
+        // post-processing attivo la scena finisce in un render target, e il
+        // bersaglio fa parte della chiave di cache del programma. `null` (post
+        // spento) resta lo schermo, cioè il comportamento di prima. Il perché
+        // per esteso sta in warmupTransparency.js, sopra la firma.
+        renderTarget: apiRef?.current?.postfxTarget?.() ?? null,
       })
     }
     const id = setInterval(check, 400)
     return () => clearInterval(id)
-  }, [scene, gl, rootScene, camera])
+  }, [scene, gl, rootScene, camera, apiRef])
 
   // Posa d'ingresso: su desktop è la POSA HOME autorata in ?debug e salvata
   // nel JSON (di default l'ingresso landscape dichiarato dal prodotto — per
