@@ -13,18 +13,13 @@
  * può sporcare un fade in corso. Ortogonali per costruzione, non per
  * disciplina.
  *
- * Il problema da risolvere: `prepareGroupMaterials` clona UN materiale per
- * GRUPPO, quindi le mesh di uno stesso gruppo condividono l'oggetto materiale.
- * Va benissimo per "sfuma tutto il gruppo", è sbagliato per "sfuma 3 keycap".
- * Due percorsi:
- *
- *  - FAST PATH — se la selezione contiene TUTTI gli utenti di un materiale
- *    (il caso comune: `allExcept('rotors')` sono 5 materiali di gruppo interi)
- *    si scrive direttamente sul materiale condiviso. Zero cloni, zero
- *    ricompilazioni di shader in più.
- *  - CLONE-ON-WRITE per mesh — sottoinsieme parziale di un materiale
- *    condiviso: ogni mesh selezionata riceve il proprio clone, ripristinato e
- *    distrutto al release.
+ * A QUALI oggetti materiale si scrive — fast path sul materiale di gruppo
+ * condiviso oppure clone-on-write per mesh — non lo decide più questo file: lo
+ * decide `materialTargets.js`, condiviso con `materialRegistry.js`. I due
+ * registry devono partire dalla stessa mappa di cloni, o si contendono
+ * `mesh.material` (la ragione per esteso è in testa a quel file). Qui resta il
+ * possesso dell'OPACITÀ: chi l'ha presa, con che valore di partenza, e come si
+ * restituisce.
  *
  * ⚠️ Disciplina anti-ricompilazione: `transparent`/`depthWrite`/`needsUpdate`
  * si toccano SOLO all'acquire e al release. Durante il fade si scrive solo
@@ -78,30 +73,20 @@
  */
 const DEPTH_WRITE_MIN = 0.2
 
-export function createOpacityRegistry(getScene) {
+export function createOpacityRegistry(targets) {
   // Materiale (oggetto) -> stato posseduto. La chiave è l'oggetto su cui si
   // scrive davvero: o quello condiviso (fast path) o il clone per-mesh.
   const owned = new Map() // Material -> { prevOpacity, prevTransparent, prevDepthWrite, refs }
-  // Mesh -> clone creato per lei (solo percorso clone-on-write).
-  const cloned = new Map() // Mesh -> { base: Material, clone: Material }
-
-  /**
-   * Mappa materiale -> mesh che lo usano, ricostruita a ogni acquire.
-   * È un traverse completo, ma gli acquire sono edge-triggered (inizio di uno
-   * step), non per-frame — stessa logica di misura di measureGroupFraming.
-   */
-  const usersByMaterial = () => {
-    const map = new Map()
-    const scene = getScene()
-    if (!scene) return map
-    scene.traverse((o) => {
-      if (!o.isMesh || o.userData?.__editorHelper) return
-      const arr = map.get(o.material)
-      if (arr) arr.push(o)
-      else map.set(o.material, [o])
-    })
-    return map
-  }
+  // Materiali che un ripristino graduale sta pilotando: le azioni vive
+  // continuano pure a chiamare set()/lerpTo(), ma da qui in poi non scrivono
+  // più nulla. Gemello esatto di `restoring` in pivotRegistry.js e per la
+  // stessa ragione: senza, un'azione che riscrive l'opacità A OGNI FRAME
+  // (`pulseOpacity`, e prima di lei nessuna) combatterebbe col rientro e
+  // vincerebbe l'ultimo scrittore del frame. `setOpacity` non ne aveva bisogno
+  // perché smette da sé a regime (`inst.data.settled`).
+  const restoring = new Set()
+  // Handle emessi e non ancora rilasciati: è da qui che passa `releaseAll`.
+  const live = new Set()
 
   const own = (material, depthWrite) => {
     const rec = owned.get(material)
@@ -147,21 +132,6 @@ export function createOpacityRegistry(getScene) {
     if (material.depthWrite !== want) material.depthWrite = want
   }
 
-  const cloneFor = (mesh) => {
-    const existing = cloned.get(mesh)
-    if (existing) return existing.clone
-    const base = mesh.material
-    const clone = base.clone()
-    // Il tag di provenienza va copiato, altrimenti prepareGroupMaterials
-    // (idempotente proprio grazie a quel tag) riclonerebbe questa mesh al
-    // primo ricalcolo che capita mentre il clone è in uso.
-    clone.userData.__groupMaterialFor = base.userData?.__groupMaterialFor
-    clone.userData.__animCloneOf = base
-    mesh.material = clone
-    cloned.set(mesh, { base, clone })
-    return clone
-  }
-
   const disown = (material) => {
     const rec = owned.get(material)
     if (!rec) return
@@ -171,19 +141,7 @@ export function createOpacityRegistry(getScene) {
     material.depthWrite = rec.prevDepthWrite
     material.needsUpdate = true
     owned.delete(material)
-  }
-
-  const releaseClones = (meshes) => {
-    for (const mesh of meshes) {
-      const rec = cloned.get(mesh)
-      if (!rec) continue
-      // Se il clone è ancora posseduto da un altro handle non va smontato: il
-      // refcount di `owned` è l'autorità.
-      if (owned.has(rec.clone)) continue
-      mesh.material = rec.base
-      rec.clone.dispose()
-      cloned.delete(mesh)
-    }
+    restoring.delete(material)
   }
 
   /**
@@ -191,67 +149,60 @@ export function createOpacityRegistry(getScene) {
    * @returns handle con readCurrent()/set()/lerpTo()/release()
    */
   const acquire = (meshes, { depthWrite = true } = {}) => {
-    const users = usersByMaterial()
-    const bySourceMaterial = new Map()
-    for (const mesh of meshes) {
-      if (!mesh?.material) continue
-      const arr = bySourceMaterial.get(mesh.material)
-      if (arr) arr.push(mesh)
-      else bySourceMaterial.set(mesh.material, [mesh])
-    }
-
-    const targets = []
-    const clonedMeshes = []
-    for (const [material, selected] of bySourceMaterial) {
-      const totalUsers = users.get(material)?.length ?? selected.length
-      if (selected.length >= totalUsers) {
-        targets.push(own(material, depthWrite))
-      } else {
-        for (const mesh of selected) {
-          targets.push(own(cloneFor(mesh), depthWrite))
-          clonedMeshes.push(mesh)
-        }
-      }
-    }
+    const { targets: mats, clonedMeshes } = targets.resolve(meshes)
+    for (const m of mats) own(m, depthWrite)
 
     let released = false
-    return {
-      materials: targets,
+    const handle = {
+      materials: mats,
       /** Snapshot dei valori correnti, per interpolare DA dove si è ora. */
       readCurrent() {
-        return targets.map((m) => m.opacity)
+        return mats.map((m) => m.opacity)
       },
       /** Scrive `opacity` (+ il riallineamento di depthWrite) — mai needsUpdate. */
       set(value) {
-        for (const m of targets) {
+        for (const m of mats) {
+          if (restoring.has(m)) continue
           m.opacity = value
           syncDepthWrite(m)
         }
       },
       lerpTo(from, to, k) {
-        for (let i = 0; i < targets.length; i++) {
-          const a = from?.[i] ?? targets[i].opacity
-          targets[i].opacity = a + (to - a) * k
-          syncDepthWrite(targets[i])
+        for (let i = 0; i < mats.length; i++) {
+          if (restoring.has(mats[i])) continue
+          const a = from?.[i] ?? mats[i].opacity
+          mats[i].opacity = a + (to - a) * k
+          syncDepthWrite(mats[i])
         }
       },
       release() {
         if (released) return
         released = true
-        for (const m of targets) disown(m)
-        releaseClones(clonedMeshes)
+        live.delete(handle)
+        for (const m of mats) disown(m)
+        targets.release(clonedMeshes)
       },
     }
+    live.add(handle)
+    return handle
   }
 
-  /** Rete di sicurezza: rilascia tutto, usata allo smontaggio del director. */
+  /**
+   * Rete di sicurezza: rilascia tutto, usata allo smontaggio del director.
+   *
+   * ⚠️ Passa dagli HANDLE vivi, non direttamente da `owned`: i cloni sono ora
+   * refcontati e condivisi con gli altri scrittori di materiali (vedi
+   * materialTargets.js), quindi solo l'handle sa quanti riferimenti restituire.
+   * Azzerare `owned` a mano lascerebbe i cloni montati per sempre.
+   */
   const releaseAll = () => {
+    for (const handle of [...live]) handle.release()
+    // Materiali posseduti senza un handle vivo non dovrebbero esistere; se
+    // esistono, meglio restituirli che lasciarli semitrasparenti per sempre.
     for (const material of [...owned.keys()]) {
-      const rec = owned.get(material)
-      rec.refs = 1
+      owned.get(material).refs = 1
       disown(material)
     }
-    releaseClones([...cloned.keys()])
   }
 
   /**
@@ -266,12 +217,15 @@ export function createOpacityRegistry(getScene) {
    * che è esattamente ciò che si vuole evitare.
    */
   const beginRestoreAll = () => {
-    const targets = [...owned.keys()]
-    const from = targets.map((m) => m.opacity)
-    const to = targets.map((m) => owned.get(m).prevOpacity)
+    const snapshot = [...owned.keys()]
+    const from = snapshot.map((m) => m.opacity)
+    const to = snapshot.map((m) => owned.get(m).prevOpacity)
+    // Da qui in poi le azioni vive non scrivono più su questi materiali: è il
+    // rientro a pilotarli. Vedi la nota su `restoring` in testa alla funzione.
+    for (const m of snapshot) restoring.add(m)
     let finished = false
     return {
-      empty: targets.length === 0,
+      empty: snapshot.length === 0,
       get done() {
         return finished
       },
@@ -283,31 +237,34 @@ export function createOpacityRegistry(getScene) {
        */
       get remaining() {
         let n = 0
-        for (const m of targets) if (owned.has(m)) n++
+        for (const m of snapshot) if (owned.has(m)) n++
         return n
       },
       lerp(k) {
         if (finished) return
-        for (let i = 0; i < targets.length; i++) {
+        for (let i = 0; i < snapshot.length; i++) {
           // Un materiale rilasciato nel frattempo da chi lo possedeva (lo
           // scambio di varianti chiude sempre la propria dissolvenza) è già
           // tornato al suo valore e non è più `transparent`: continuare a
           // scriverci sopra non si vedrebbe, ma è comunque una bugia.
-          if (!owned.has(targets[i])) continue
-          targets[i].opacity = from[i] + (to[i] - from[i]) * k
+          if (!owned.has(snapshot[i])) continue
+          snapshot[i].opacity = from[i] + (to[i] - from[i]) * k
           // Risalendo verso l'opaco il depth write torna da sé alla soglia.
-          syncDepthWrite(targets[i])
+          syncDepthWrite(snapshot[i])
         }
       },
       finish() {
         if (finished) return
         finished = true
+        // `disown` toglie da `restoring` mano a mano: a valle di questa riga
+        // nessun materiale resta congelato, e un'animazione lanciata subito
+        // dopo riparte scrivendo normalmente.
         releaseAll()
       },
     }
   }
 
-  const stats = () => ({ ownedMaterials: owned.size, clonedMeshes: cloned.size })
+  const stats = () => ({ ownedMaterials: owned.size })
 
   return { acquire, releaseAll, beginRestoreAll, stats }
 }

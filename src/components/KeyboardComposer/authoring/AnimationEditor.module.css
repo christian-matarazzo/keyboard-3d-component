@@ -56,6 +56,14 @@
   flex: 1 1 auto;
 }
 
+/* Comandi che vanno letti insieme (↺/↻): le righe della testata sono a
+   `flex-wrap`, e senza questo la coppia si spezza fra due righe. */
+.pair {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 5px;
+}
+
 .status {
   color: rgb(255 255 255 / 55%);
   white-space: nowrap;
@@ -65,11 +73,71 @@
   color: #ffd43b;
 }
 
-.sectionLabel {
+/* Testata di sezione. È un <button> per le quattro ripiegabili e uno <span>
+   per «step», che non si chiude: stesse regole, così le cinque etichette
+   restano incolonnate (vedi il componente Section). */
+.sectionHead {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   width: 100%;
-  padding-top: 2px;
-  color: rgb(255 255 255 / 35%);
+  padding: 4px 0 1px;
+  border: none;
   border-top: 1px solid rgb(255 255 255 / 8%);
+  background: transparent;
+  color: rgb(255 255 255 / 35%);
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  text-align: left;
+}
+
+button.sectionHead {
+  cursor: pointer;
+  transition: color 0.16s ease;
+}
+
+button.sectionHead:hover {
+  color: rgb(255 255 255 / 75%);
+}
+
+button.sectionHead:focus-visible {
+  outline: 2px solid rgb(255 255 255 / 55%);
+  outline-offset: 1px;
+}
+
+/* Larghezza FISSA anche quando è vuota (la sezione «step»): è ciò che tiene le
+   etichette allineate fra sezioni ripiegabili e non. */
+.sectionCaret {
+  flex: 0 0 9px;
+  width: 9px;
+}
+
+/* Una sezione chiusa che contiene un avviso lo dichiara sulla testata — ma
+   `sectionOpen` la tiene comunque aperta, quindi questo è un rinforzo, non
+   l'unico segnale. */
+.sectionIssue {
+  color: #ffd43b;
+}
+
+/* Durata complessiva della sequenza, accanto alla testata degli step. */
+.total {
+  color: rgb(255 255 255 / 50%);
+  white-space: nowrap;
+}
+
+/* Avanzamento a WAVE (non a tempo: vedi il commento nel JSX). Sottile e senza
+   transizione — il salto fra una wave e l'altra è l'informazione, ammorbidirlo
+   suggerirebbe una continuità che non c'è. */
+.progress {
+  width: 100%;
+  height: 2px;
+  background: rgb(255 255 255 / 10%);
+}
+
+.progressFill {
+  height: 100%;
+  background: #4dabf7;
 }
 
 /* ── Controlli generici ──────────────────────────────────────────────────── */
@@ -197,8 +265,19 @@
   border-left-color: #4dabf7;
 }
 
+/* Punto d'inserimento: qui sotto finiscono i nuovi step e gli incolla.
+   Tratteggiato e non pieno, così non si confonde col blocco IN ESECUZIONE, che
+   è l'altra cosa evidenziata sul bordo sinistro. */
+.waveInsert {
+  border-left-style: dashed;
+  border-left-color: #ffd43b;
+}
+
+/* La testata di un blocco porta fino a sette comandi in una colonna da 400 px:
+   va a capo invece di comprimere i pulsanti sotto la soglia del cliccabile. */
 .waveHead {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 3px;
 }
@@ -206,6 +285,16 @@
 .waveTitle {
   color: rgb(255 255 255 / 40%);
   white-space: nowrap;
+}
+
+/* Durata della wave: «1.4 s» oppure «?» quando finisce su un predicato. */
+.waveTime {
+  color: rgb(255 255 255 / 30%);
+  white-space: nowrap;
+}
+
+.waveIssue {
+  color: #ffd43b;
 }
 
 /* Solo da chiuso: le azioni contenute, per riconoscere il blocco senza
@@ -256,6 +345,18 @@
   background: rgb(77 171 247 / 10%);
 }
 
+/* Step che a runtime non farebbe nulla (vedi stepIssues). Giallo come .warning
+   e non rosso: non è un errore, è una configurazione che non ha effetto —
+   e mentre si costruisce un blocco è uno stato del tutto normale. */
+.stepWarn {
+  border-color: rgb(255 212 59 / 45%);
+}
+
+.stepIssue {
+  color: #ffd43b;
+  cursor: help;
+}
+
 .stepIndex {
   min-width: 16px;
   color: rgb(255 255 255 / 35%);
@@ -272,6 +373,31 @@
 .vec {
   display: inline-flex;
   gap: 3px;
+}
+
+/* Selettore di colore nativo. ⚠️ Il campo ha un padding interno suo che su
+   Chrome disegna un bordo chiaro attorno al campione: azzerarlo è ciò che lo fa
+   sembrare un pastello pieno invece di un pulsante di sistema. */
+.color {
+  width: 30px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid rgb(255 255 255 / 25%);
+  background: transparent;
+  cursor: pointer;
+}
+
+.color::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+
+.color::-webkit-color-swatch {
+  border: none;
+}
+
+.color:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 /* ── Editor del selettore di mesh ────────────────────────────────────────── */

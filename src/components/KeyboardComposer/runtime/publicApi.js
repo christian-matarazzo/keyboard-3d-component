@@ -104,8 +104,14 @@ export function createPublicApi({ apiRef, getAnimations, getVariants, getPoseGra
     trigger: (name) => api().triggerAnimation?.(name),
 
     /**
-     * @param {(event: { type: 'start'|'finish'|'stop', id, slug, label }) => void} fn
+     * @param {(event: AnimationEvent) => void} fn
      * @returns {() => void} disiscrizione
+     *
+     * Quattro tipi. `start`/`finish`/`stop` sono il ciclo di vita e portano
+     * `{ id, slug, label }`. `event` è invece un segnale AUTORATO — lo step
+     * «Notifica l'host» — e porta `{ name, detail, id, slug }`: è come una
+     * sequenza dice all'host di cambiare didascalia a metà corsa, senza che
+     * l'host debba indovinare i tempi. Il verso opposto è `trigger()`.
      */
     subscribe: (fn) => api().subscribeAnimation?.(fn) ?? (() => {}),
 

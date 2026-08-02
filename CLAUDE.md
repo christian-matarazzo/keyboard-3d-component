@@ -179,7 +179,35 @@ src/
    │  │                                   real lights are rendered by
    │  │                                   runtime/ShadowLights.jsx) without owning them
    │  ├─ MeshController.jsx               mesh/group inspector (TransformControls, halos)
-   │  └─ AnimationEditor.jsx (+.module.css) ?debug block editor for animations
+   │  └─ AnimationEditor.jsx (+.module.css) ?debug block editor for animations. Four
+   │                                       things it owns that the markup doesn't show:
+   │                                       an UNDO/REDO history (every write goes through
+   │                                       `commitAll`, writes to the same field coalesce
+   │                                       within 700 ms, Ctrl+Z is ignored while a text
+   │                                       field has focus), an INSERTION POINT (a block's
+   │                                       ⌖ decides where new/pasted steps land),
+   │                                       `stepIssues` — the diagnosis of steps that
+   │                                       would raise no runtime error and do nothing
+   │                                       (an empty selector resolves zero meshes,
+   │                                       silently) — and a per-sequence duration
+   │                                       estimate (`stepDuration`/`waveDuration`)
+   │                                       rendered as "durata ≥ 4.2 s · 3 attese", not a
+   │                                       single number: a `wait: 'settle'` step's duration
+   │                                       depends on a physics predicate converging (see
+   │                                       "ogni `done` è una policy, non un fatto" in
+   │                                       Known strains), so the count of unpredictable
+   │                                       waves is shown alongside the guaranteed minimum
+   │                                       instead of averaging over a lie.
+   │                                       The four sections above the step list fold
+   │                                       (`Section`, collapsed by default — they are set
+   │                                       once per animation while the steps are worked
+   │                                       continuously). ⚠️ A folded section AUTO-OPENS
+   │                                       and flags a ⚠ when it holds a warning
+   │                                       (`sectionIssues`): those warnings describe
+   │                                       configurations that raise no runtime error —
+   │                                       a `requires` on a forever-loop never unlocks —
+   │                                       so hiding one behind a default-closed fold
+   │                                       would be a regression, not a tidy-up
    ├─ runtime/                           production code — imports no `leva`, no
    │  │                                  authoring component
    │  ├─ productConfig.js                 fetchProductConfig/applyConfig/normalizeConfig;
@@ -292,18 +320,37 @@ src/
    │  └─ useComposerSection.js           reactive per-section read (useSyncExternalStore);
    │                                     store.get(section) is the non-reactive twin for useFrame
    ├─ animation/                        schema, runtime, actions, selectors, easings,
-   │  │                                 opacityRegistry, pivot, pivotRegistry, transforms
+   │  │                                 opacityRegistry, materialRegistry,
+   │  │                                 materialTargets, pivot, pivotRegistry, transforms
+   │  ├─ materialTargets.js              SHARED material ownership: resolves a set of
+   │  │                                  meshes to the material objects actually written
+   │  │                                  to — fast path on the shared group material, or
+   │  │                                  per-mesh clone-on-write — with the clones
+   │  │                                  REFCOUNTED per mesh. Extracted out of
+   │  │                                  opacityRegistry the moment a second writer
+   │  │                                  appeared: two separate clone maps fight over
+   │  │                                  `mesh.material`, and whichever releases first
+   │  │                                  silently takes the other's effect with it
+   │  ├─ materialRegistry.js             color/roughness/metalness/emissive override
+   │  │                                  (the `setMaterial` action) — twin of
+   │  │                                  opacityRegistry: snapshot on acquire, interpolate,
+   │  │                                  restore-not-bake. ⚠️ UNIFORM properties only,
+   │  │                                  never a define (see the strain in Manual notes)
    │  ├─ animationSchema.js               every animation gets a `slug` (slugified label,
    │  │                                   deduped) alongside its id; `findAnimation(items, key)`
    │  │                                   matches id OR slug, id first across every source —
    │  │                                   internal `requires`/`idleAnimation` cite ids, the
    │  │                                   slug is the citable public surface
    │  │                                   (`play('go-to-rotors')`)
-   │  └─ animationRuntime.js              emitter (`start`/`finish`/`stop`) with events
-   │                                      QUEUED and drained at the end of `tick()` — they
-   │                                      originate inside useFrame, and a listener that
-   │                                      called back into `play` would re-enter mid-update;
-   │                                      exposed as `subscribeAnimation` on apiRef
+   │  └─ animationRuntime.js              emitter (`start`/`finish`/`stop`, plus `event` —
+   │                                      the authored signal of the «Notifica l'host»
+   │                                      action) with events QUEUED and drained at the end
+   │                                      of `tick()` — they originate inside useFrame, and
+   │                                      a listener that called back into `play` would
+   │                                      re-enter mid-update; exposed as
+   │                                      `subscribeAnimation` on apiRef. `stop()`'s soft
+   │                                      teardown now runs THREE tracks: opacity, pose,
+   │                                      tints (the last reuses the opacity timings)
    └─ materials/                        MACHINERY ONLY (meshGroups, groupMaterials,
                                         meshVariants, warmupTransparency) — the
                                         group/variant LISTS live under products/.
@@ -516,10 +563,29 @@ variant:
   `products/<id>/meshGroups.js`.
 - **Schema and implementation side by side** so they cannot drift:
   `ACTIONS` holds a parameter schema, the runtime impl and the `inverse`
-  generator in one object; the editor's UI is generated from it.
+  generator in one object; the editor's UI is generated from it. Two schema
+  flags are read only by `AnimationEditor.jsx`'s `ParamField`/`StepRow`, not by
+  the runtime: `advanced: true` hides a param behind a '···' toggle that
+  auto-reveals when the value differs from the schema default (`isDefaultValue`).
+  Same principle as the panel's folded sections, which auto-open on a
+  `sectionIssues` warning rather than on a non-default value: **nothing that
+  changes behaviour is allowed to sit behind a closed fold**; a `type: 'color'`
+  param is tri-state via a checkbox gating the color input — unchecked means
+  `null`, i.e. "leave this material property alone", not black. Both exist
+  because `setMaterial` has optional per-property overrides that a plain
+  default value can't express.
 - **Registries with refcounted ownership + snapshot restore**
-  (`opacityRegistry`, `pivotRegistry`): acquire snapshots once, a second
-  acquire bumps a count, release restores — never bakes.
+  (`opacityRegistry`, `materialRegistry`, `pivotRegistry`): acquire snapshots
+  once, a second acquire bumps a count, release restores — never bakes. All
+  three now also share a `restoring` freeze Set: once a graceful restore
+  (`beginRestoreAll`) claims a material/pivot, any still-live action that
+  keeps writing it every frame (`pulseOpacity`, `wobble`, `bounce`) is
+  ignored until the restore finishes — without it the "last writer of the
+  frame wins" and the restore would flicker against the action still ticking.
+  `opacityRegistry`/`materialRegistry` additionally share ownership of the
+  underlying material *objects* (fast-path-vs-clone decision) via
+  `materialTargets.js`, so two registries writing different properties of the
+  same mesh never fight over `mesh.material` — see that file's header.
 - **One component instance per item, never `useControls` in a loop**
   (`MaterialTuner`/`FocusTuner` render N tuner components).
 - **Scene traversals must skip tagged nodes**: `userData.__editorHelper`
@@ -648,14 +714,35 @@ window-resize call on an occluded window is not enough.
 
 **Pump frames manually when you must.** `Scene.jsx`'s `onCreated` publishes
 `window.__r3f_state` under `?debug`; `state.advance(timestamp)` runs one frame
-on demand, which fast-forwards damping without waiting in real time:
+on demand, which fast-forwards damping without waiting in real time.
+
+⚠️ **Two details decide whether it works at all, and the version this file
+carried until 2026-08-02 got both wrong — measured, not assumed.** R3F honours
+the `timestamp` argument *only* when `frameloop === 'never'`; otherwise the
+delta comes from `clock.getDelta()`, i.e. real wall time, which in a
+synchronous loop is ~0. And the timestamp is `clock.elapsedTime`, in
+**seconds**, not a `performance.now()` millisecond value. The old recipe
+(`t += 16` from `performance.now()`, frameloop left alone) therefore advanced
+nothing: 43 calls moved the animation runtime by **64 ms** instead of the ~0.7 s
+asked for, which reads as "the sequencer is stuck" and sends you debugging the
+sequencer. The working version:
 
 ```js
 const st = window.__r3f_state
-const pump = (sec) => { let t = performance.now(); for (let i = 0; i < sec*1000/16; i++) { t += 16; st.advance(t) } }
+st.setFrameloop ? st.setFrameloop('never') : (st.frameloop = 'never')
+let T = st.clock.elapsedTime
+const pump = (sec) => { const n = Math.round(sec * 60); for (let i = 0; i < n; i++) { T += 1/60; st.advance(T) } }
 window.__setPose(35.264389682754654, 45)   // TL — see the product's POSE_COORD
 pump(25)                                    // damping to convergence
+// …e alla fine: st.setFrameloop('always'), o la pagina resta ferma
 ```
+
+Confirmation that the manual clock is really driving: after `pump(1)` from a
+standing start, `st.clock.elapsedTime` reads **exactly** `1` — under
+`frameloop: 'always'` it would read the accumulated real time instead.
+⚠️ Note `st.frameloop` on the published snapshot keeps reading `'always'` even
+once the switch has taken effect (`window.__r3f_state` is the state object
+captured at `onCreated`); trust the clock, not that field.
 
 Other `?debug`-only console handles, all installed next to the code they drive:
 `window.__setPose(pitchDeg, yawDeg)` (hard teleport — bypasses both the spring

@@ -4,7 +4,9 @@ import { useGLTF } from '@react-three/drei'
 import { getDracoPath } from './KeyboardModel'
 import { collectMeshList } from './materials/meshGroups'
 import { createAnimationRuntime } from './animation/animationRuntime'
+import { createMaterialTargets } from './animation/materialTargets'
 import { createOpacityRegistry } from './animation/opacityRegistry'
+import { createMaterialRegistry } from './animation/materialRegistry'
 import { createPivotRegistry } from './animation/pivotRegistry'
 
 const DEBUG = new URLSearchParams(window.location.search).has('debug')
@@ -61,6 +63,11 @@ export default function AnimationDirector({
   const runtimeRef = useRef(null)
   if (!runtimeRef.current) {
     const getScene = () => sceneRef.current
+    // ⚠️ UNA sola istanza, condivisa fra i due registry che scrivono sui
+    // materiali: è la mappa refcontata dei cloni per-mesh. Due istanze
+    // separate si contenderebbero `mesh.material` e il rilascio del primo
+    // porterebbe via l'effetto del secondo — vedi materialTargets.js.
+    const materialTargets = createMaterialTargets(getScene)
     const ctx = {
       getApi: () => apiRef?.current,
       getScene,
@@ -72,7 +79,9 @@ export default function AnimationDirector({
         return variantsRef.current
       },
       getRelease: () => releaseRef.current,
-      opacity: createOpacityRegistry(getScene),
+      targets: materialTargets,
+      opacity: createOpacityRegistry(materialTargets),
+      materials: createMaterialRegistry(materialTargets),
       pivots: createPivotRegistry(getScene),
       debug: DEBUG,
     }
@@ -147,7 +156,11 @@ export default function AnimationDirector({
     return () => {
       runtime.stop({ soft: false })
       ctx.opacity.releaseAll()
+      ctx.materials.releaseAll()
       ctx.pivots.releaseAll()
+      // Per ultimo: i cloni sono refcontati dai due registry qui sopra, quindi
+      // a questo punto non ne dovrebbe restare nessuno. È la rete della rete.
+      ctx.targets.releaseAll()
     }
   }, [])
 
@@ -161,7 +174,12 @@ export default function AnimationDirector({
     window.__stopAnimation = () => runtime.stop()
     window.__animTrigger = (name) => runtime.trigger(name)
     window.__animState = () => runtime.getState()
-    window.__animStats = () => ({ ...ctx.opacity.stats(), ...ctx.pivots.stats() })
+    window.__animStats = () => ({
+      ...ctx.opacity.stats(),
+      ...ctx.materials.stats(),
+      ...ctx.targets.stats(),
+      ...ctx.pivots.stats(),
+    })
     return () => {
       delete window.__playAnimation
       delete window.__stopAnimation

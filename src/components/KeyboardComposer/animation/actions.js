@@ -33,11 +33,15 @@ import { variantOptionMeshes, forceVariantVisible } from '../materials/meshVaria
  * salta". Vedi animationTransforms.js.
  *
  * `inst` è l'istanza viva dello step: { step, action, params, elapsed, data }.
- * `ctx` è { getApi, getScene, groups, opacity, pivots, runtime, debug }.
+ * `ctx` è { getApi, getScene, groups, opacity, materials, pivots, runtime, debug }.
  *
  * Tipi di parametro che l'editor sa disegnare:
  *   'number' | 'boolean' | 'string' | 'select' | 'vec3' | 'selector' | 'group'
- *   | 'pose' | 'easing'
+ *   | 'pose' | 'easing' | 'color'
+ *
+ * `advanced: true` su un parametro lo mette dietro il «···» della scheda:
+ * l'editor lo apre da sé se il valore è diverso dal default, così una manopola
+ * nascosta non può cambiare il comportamento in silenzio.
  */
 
 export const DEFAULT_MAX_WAIT = 8
@@ -204,6 +208,12 @@ export const ACTIONS = {
         default: true,
         label: 'Rimetti le mesh a posto',
       },
+      {
+        key: 'restoreMaterials',
+        type: 'boolean',
+        default: true,
+        label: 'Togli le tinte',
+      },
     ],
     start(inst, ctx) {
       ctx.getApi()?.clearFocus?.()
@@ -212,6 +222,9 @@ export const ACTIONS = {
       }
       if (inst.params.restoreTransforms !== false) {
         inst.data.restoreT = ctx.pivots.beginRestoreAll()
+      }
+      if (inst.params.restoreMaterials !== false) {
+        inst.data.restoreM = ctx.materials.beginRestoreAll()
       }
     },
     update(inst) {
@@ -231,21 +244,29 @@ export const ACTIONS = {
         // vive, un ritorno immediato alla posa che stavano scrivendo).
         if (k >= 1) t.finish()
       }
+      const m = inst.data.restoreM
+      if (m && !m.done) {
+        m.lerp(k)
+        if (k >= 1) m.finish()
+      }
     },
     isSettled(inst, ctx) {
       const cameraDone = ctx.getApi()?.isFocusSettled?.() ?? true
       const opacityDone = !inst.data.restore || inst.data.restore.done
       const transformsDone = !inst.data.restoreT || inst.data.restoreT.done
-      return cameraDone && opacityDone && transformsDone
+      const materialsDone = !inst.data.restoreM || inst.data.restoreM.done
+      return cameraDone && opacityDone && transformsDone && materialsDone
     },
     stop(inst, ctx, opts) {
-      // Con `keepOpacity`/`keepTransforms` il rilascio globale ha già
-      // fotografato questi materiali (o questi pivot) e li sta interpolando:
-      // chiudere qui il ripristino parziale significherebbe strapparglieli di
-      // mano a metà strada, cioè far scattare esattamente ciò che entrambe le
-      // fasi esistono per addolcire. I due interruttori sono indipendenti.
+      // Con `keepOpacity`/`keepTransforms`/`keepMaterials` il rilascio globale
+      // ha già fotografato questi materiali (o questi pivot) e li sta
+      // interpolando: chiudere qui il ripristino parziale significherebbe
+      // strapparglieli di mano a metà strada, cioè far scattare esattamente ciò
+      // che entrambe le fasi esistono per addolcire. Gli interruttori sono
+      // indipendenti.
       if (!opts?.keepOpacity) inst.data.restore?.finish()
       if (!opts?.keepTransforms) inst.data.restoreT?.finish()
+      if (!opts?.keepMaterials) inst.data.restoreM?.finish()
     },
     inverse: () => null,
     inverseNote: 'non si sa quale gruppo re-inquadrare',
@@ -305,6 +326,142 @@ export const ACTIONS = {
     // Su un materiale del GLB autorato semitrasparente l'inverso va corretto a
     // mano (o si usa "Torna all'insieme", che ripristina la fotografia).
     inverse: () => ({ params: { opacity: 1 } }),
+  },
+
+  // Il "guarda QUESTO" senza toccare né camera né geometria: l'opacità pulsa e
+  // torna da sé. Fratello di wobble/bounce (stessa forma inviluppo × seno,
+  // stesso `decay` come costante di tempo, 0 = non si spegne mai) ma sui
+  // materiali invece che sui pivot.
+  //
+  // ⚠️ È la PRIMA azione che riscrive l'opacità a ogni frame senza mai andare a
+  // regime, e ha costretto opacityRegistry a imparare il congelamento
+  // `restoring` che pivotRegistry aveva già: senza, un lampeggio con
+  // `decay: 0` continuerebbe a scrivere durante la dissolvenza di uscita e i
+  // due si contenderebbero gli stessi materiali (vince l'ultimo del frame).
+  pulseOpacity: {
+    label: 'Lampeggia (opacità)',
+    group: 'materiali',
+    persistent: true,
+    defaults: { wait: 'none', duration: 1.2 },
+    params: [
+      { key: 'selector', type: 'selector', default: { kind: 'group', groupId: '' }, label: 'Mesh' },
+      { key: 'opacityMin', type: 'number', default: 0.25, min: 0, max: 1, step: 0.01, label: 'Opacità minima' },
+      { key: 'frequency', type: 'number', default: 1.2, min: 0.05, max: 12, step: 0.05, label: 'Frequenza (Hz)' },
+      { key: 'decay', type: 'number', default: 2.5, min: 0, max: 20, step: 0.1, label: 'Smorzamento (s, 0 = mai)' },
+      { key: 'depthWrite', type: 'boolean', default: true, label: 'Scrivi profondità', advanced: true },
+    ],
+    start(inst, ctx) {
+      const meshes = resolveSelector(ctx.getScene(), ctx.groups, inst.params.selector)
+      if (meshes.length === 0) return
+      inst.data.handle = ctx.opacity.acquire(meshes, {
+        depthWrite: inst.params.depthWrite !== false,
+      })
+      // Il battito parte DA dove ogni materiale è adesso e ci ritorna: non da
+      // un 1 letterale, o un pezzo già in dissolvenza per un `setOpacity`
+      // precedente diventerebbe opaco al primo frame del lampeggio.
+      inst.data.from = inst.data.handle.readCurrent()
+    },
+    update(inst) {
+      if (inst.data.settled || !inst.data.handle) return
+      const env = inst.params.decay > 0 ? Math.exp(-inst.elapsed / inst.params.decay) : 1
+      // Sotto il millesimo dell'ampiezza il battito è finito: si scrive lo zero
+      // esatto (cioè l'opacità di partenza) e si chiude. Con `decay: 0` non si
+      // arriva mai qui, ed è l'intento di quel valore.
+      const dead = env < 1e-3
+      // (1 − cos)/2 e non un seno: parte da 0, cioè dall'opacità che c'era.
+      // Con il seno il primo frame salterebbe subito a metà corsa.
+      const s = (1 - Math.cos(2 * Math.PI * inst.params.frequency * inst.elapsed)) / 2
+      inst.data.handle.lerpTo(inst.data.from, inst.params.opacityMin ?? 0, dead ? 0 : env * s)
+      if (dead) inst.data.settled = true
+    },
+    restart(inst) {
+      // Su un giro di loop il runtime azzera `elapsed` (l'inviluppo riparte da
+      // capo) ma non `data`: senza questo un lampeggio già esaurito resterebbe
+      // fermo. Stessa ragione di bounce.
+      inst.data.from = inst.data.handle?.readCurrent()
+      inst.data.settled = false
+    },
+    stop(inst, ctx, opts) {
+      // Smontaggio morbido, come setOpacity: la proprietà dei materiali passa
+      // alla fase di rilascio del runtime.
+      if (opts?.keepOpacity) return
+      inst.data.handle?.release()
+      inst.data.handle = null
+    },
+    inverse: () => null,
+    inverseNote: 'il lampeggio si spegne da sé',
+  },
+
+  /**
+   * Tinta temporanea di un insieme di mesh: il "mostrami questo pezzo in
+   * evidenza" che non si ottiene con l'opacità (isolare spegne il contesto,
+   * evidenziare lo tiene).
+   *
+   * ⚠️ Ogni parametro lasciato VUOTO significa "non toccare quella proprietà",
+   * non "azzerala" — stessa convenzione degli override opzionali di
+   * `focusGroup`. È ciò che permette di accendere solo l'emissiva su un pezzo
+   * nero senza doverne dichiarare anche colore, rugosità e metallicità.
+   *
+   * ⚠️ Le proprietà scrivibili sono tutte UNIFORM (vedi materialRegistry.js).
+   * Non allargare l'elenco a `clearcoat` o alla presenza di una texture senza
+   * leggere prima la trappola dei define in CLAUDE.md: sono cambi di cache key
+   * dello shader, cioè uno stallo di compilazione a metà animazione — e sotto
+   * un override di opacità non arrivano nemmeno allo shader.
+   */
+  setMaterial: {
+    label: 'Tinta / evidenzia',
+    group: 'materiali',
+    persistent: true,
+    durationDriven: true,
+    defaults: { wait: 'duration', duration: 0.4, easing: 'easeInOutCubic' },
+    params: [
+      { key: 'selector', type: 'selector', default: { kind: 'group', groupId: '' }, label: 'Mesh' },
+      { key: 'color', type: 'color', default: null, label: 'Colore' },
+      { key: 'emissive', type: 'color', default: null, label: 'Emissiva' },
+      { key: 'emissiveIntensity', type: 'number', default: null, min: 0, max: 20, step: 0.05, label: 'Intensità emissiva', optional: true },
+      { key: 'roughness', type: 'number', default: null, min: 0, max: 1, step: 0.01, label: 'Rugosità', optional: true, advanced: true },
+      { key: 'metalness', type: 'number', default: null, min: 0, max: 1, step: 0.01, label: 'Metallicità', optional: true, advanced: true },
+    ],
+    start(inst, ctx) {
+      const meshes = resolveSelector(ctx.getScene(), ctx.groups, inst.params.selector)
+      if (meshes.length === 0) return
+      inst.data.handle = ctx.materials.acquire(meshes)
+      inst.data.from = inst.data.handle.readCurrent()
+      // I colori si costruiscono UNA volta (conversione sRGB→lineare compresa),
+      // non a ogni frame dentro l'interpolazione.
+      inst.data.to = ctx.materials.targetProps(inst.params)
+    },
+    update(inst) {
+      // A regime si smette di scrivere: l'istanza è persistente (tiene i
+      // materiali), quindi il runtime continuerebbe a ticchettarla per
+      // riscrivere all'infinito lo stesso colore — e si contenderebbe i
+      // materiali col ripristino graduale di `clearFocus`.
+      if (inst.data.settled || !inst.data.handle) return
+      const k = progress(inst)
+      inst.data.handle.lerp(inst.data.from, inst.data.to, k)
+      if (k >= 1) inst.data.settled = true
+    },
+    restart(inst, ctx) {
+      inst.data.from = inst.data.handle?.readCurrent()
+      // Anche il bersaglio si ricalcola: il runtime rinfresca `inst.params` da
+      // ciò che l'editor ha scritto prima di riavviare l'istanza (vedi
+      // startStep), quindi tenersi i colori del giro precedente significherebbe
+      // ignorare una modifica fatta a loop in corso.
+      inst.data.to = ctx.materials.targetProps(inst.params)
+      inst.data.settled = false
+    },
+    stop(inst, ctx, opts) {
+      if (opts?.keepMaterials) return
+      inst.data.handle?.release()
+      inst.data.handle = null
+    },
+    // ⚠️ Niente inverso automatico, a differenza di `setOpacity` che tira a
+    // indovinare un 1: il valore di partenza di un colore lo conosce solo il
+    // registry a runtime, e non esiste un "colore neutro" da scrivere al posto
+    // suo. Il ritorno lo fa il rilascio (o «Torna all'insieme»), che ripristina
+    // la fotografia vera.
+    inverse: () => null,
+    inverseNote: 'il colore di partenza lo sa solo il runtime: lo rimette il rilascio',
   },
 
   // ── Trasformazioni ────────────────────────────────────────────────────────
@@ -787,6 +944,39 @@ export const ACTIONS = {
     },
     inverse: () => null,
     inverseNote: 'un rientro non deve restare in attesa di un evento',
+  },
+
+  /**
+   * Manda un segnale a CHI INTEGRA il componente, nel punto esatto della
+   * sequenza in cui l'autore lo mette: «adesso mostra la didascalia 2»,
+   * «adesso accendi il pulsante acquista».
+   *
+   * È il verso opposto di `waitTrigger` — quello aspetta l'host, questo lo
+   * avvisa — e insieme chiudono il giro: un host può ascoltare `evento:capitolo`
+   * e rispondere con `api.trigger('avanti')`.
+   *
+   * Arriva a chi ha fatto `api.subscribe(fn)` come
+   * `{ type: 'event', name, detail, id, slug }`. Passa dalla stessa CODA di
+   * `start`/`finish`/`stop`, quindi viene consegnato a fine `tick`, non dentro
+   * `useFrame`: un ascoltatore può richiamare `play()` senza rientrare nel
+   * runtime a metà aggiornamento (vedi animationRuntime.js).
+   */
+  emitEvent: {
+    label: 'Notifica l’host',
+    group: 'flusso',
+    defaults: { wait: 'none' },
+    params: [
+      { key: 'name', type: 'string', default: 'capitolo', label: 'Nome evento' },
+      { key: 'detail', type: 'string', default: '', label: 'Dettaglio' },
+    ],
+    start(inst, ctx) {
+      ctx.runtime.emitEvent(inst.params.name, inst.params.detail)
+    },
+    // ⚠️ Non invertibile per scelta, non per pigrizia: un rientro che rigiocasse
+    // le notifiche all'indietro racconterebbe all'host una sequenza che non è
+    // successa. Se serve un segnale di rientro, si autora esplicitamente.
+    inverse: () => null,
+    inverseNote: 'una notifica all’indietro sarebbe una bugia per l’host',
   },
 }
 

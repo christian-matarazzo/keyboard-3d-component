@@ -43,12 +43,15 @@ import { ease, clamp01 } from './easings'
  * frame riporta ogni materiale al suo valore di partenza — e ogni mesh spostata
  * al suo posto — di scatto, e passare da un'animazione all'altra faceva
  * lampeggiare l'isolate e teletrasportare l'esploso. Adesso lo stop apre una
- * FASE DI RILASCIO a due binari, che corrono insieme con tempi e curve propri:
+ * FASE DI RILASCIO a tre binari, che corrono insieme con tempi e curve propri:
  *   - OPACITÀ: si interpola dal valore corrente a quello fotografato
  *     all'acquire, e solo a fine corsa si rilascia davvero (`finish()`, unico
  *     punto in cui tornano `transparent`/`depthWrite` e cadono i cloni);
  *   - POSA: i pivot tornano alla loro posa di riposo interpolando, e vengono
- *     rilasciati (unwind restore-not-bake) solo a rientro concluso.
+ *     rilasciati (unwind restore-not-bake) solo a rientro concluso;
+ *   - TINTE: i materiali tinti da `setMaterial` tornano al colore fotografato.
+ *     Non ha manopole proprie: riusa i tempi dell'opacità, di cui è di fatto
+ *     l'altra metà (vedi `stop`).
  * Il rientro della posa si può spegnere (`transforms: false`), il che riporta il
  * comportamento storico. Le VARIANTI restano invece sincrone: la scelta di un
  * layout è stato dell'utente, non un valore da interpolare. Lo zoom era già
@@ -143,6 +146,22 @@ export function createAnimationRuntime(ctx) {
   const subscribe = (fn) => {
     listeners.add(fn)
     return () => listeners.delete(fn)
+  }
+
+  /**
+   * Segnale autorato verso l'host (azione `emitEvent`). Passa dalla stessa coda
+   * di start/finish/stop — è la ragione per cui esiste quella coda: `start()`
+   * di uno step gira dentro `tick`, e un ascoltatore che rispondesse con
+   * `play()` rientrerebbe nel runtime mentre `waveInstances` è in mezzo a un
+   * ciclo.
+   */
+  const emitEvent = (name, detail) => {
+    emit('event', {
+      name: String(name ?? ''),
+      detail: detail ?? '',
+      id: anim?.id ?? null,
+      slug: anim?.slug ?? null,
+    })
   }
 
   const isStepDone = (inst) => {
@@ -259,7 +278,7 @@ export function createAnimationRuntime(ctx) {
   /**
    * Avanza il rientro di uscita; a fine corsa chiude tutto e sblocca la coda.
    *
-   * I binari (opacità, posa delle mesh) hanno tempi e curve PROPRI e corrono
+   * I binari (opacità, posa delle mesh, tinte) hanno tempi e curve PROPRI e corrono
    * insieme sullo stesso orologio: rimettere a posto un esploso vuole in genere
    * più respiro di una dissolvenza, e obbligarli alla stessa durata avrebbe
    * significato tararne una sola e subire l'altra. Il rilascio finisce quando
@@ -336,6 +355,12 @@ export function createAnimationRuntime(ctx) {
         ? ctx.pivots.beginRestoreAll()
         : null
     const keepTransforms = !!restoreTransforms && !restoreTransforms.empty
+    // Terzo binario: le TINTE (`setMaterial`). Non ha manopole proprie e
+    // riusa i tempi dell'opacità — sono la stessa cosa per l'occhio, una
+    // dissolvenza di materiale, e una quarta coppia durata/curva
+    // nell'interfaccia sarebbe una scelta da fare senza saperne il motivo.
+    const restoreMaterials = soft && instances.length > 0 ? ctx.materials.beginRestoreAll() : null
+    const keepMaterials = !!restoreMaterials && !restoreMaterials.empty
     // Ordine INVERSO di start: un pivot acquisito per ultimo va disfatto per
     // primo, altrimenti si smonta sotto i piedi di chi lo condivide.
     for (let i = instances.length - 1; i >= 0; i--) {
@@ -347,7 +372,11 @@ export function createAnimationRuntime(ctx) {
         // (e con `transparent: false` il fade non si vedrebbe nemmeno), e
         // l'unwind dei pivot riporterebbe ogni mesh al suo posto in un frame —
         // cioè esattamente gli scatti che si vogliono evitare.
-        instances[i].action.stop?.(instances[i], ctx, { keepOpacity, keepTransforms })
+        instances[i].action.stop?.(instances[i], ctx, {
+          keepOpacity,
+          keepTransforms,
+          keepMaterials,
+        })
       } catch (err) {
         console.warn('[anim] errore nel teardown di', instances[i].step.id, err)
       }
@@ -387,6 +416,15 @@ export function createAnimationRuntime(ctx) {
       })
     } else {
       restoreTransforms?.finish()
+    }
+    if (keepMaterials && restoreMaterials.remaining > 0) {
+      entries.push({
+        restore: restoreMaterials,
+        duration: releaseTime(cfg.duration, DEFAULT_RELEASE.duration),
+        easing: releaseCurve(cfg.easing, DEFAULT_RELEASE.easing),
+      })
+    } else {
+      restoreMaterials?.finish()
     }
 
     if (entries.length === 0) {
@@ -596,5 +634,6 @@ export function createAnimationRuntime(ctx) {
     isUnlocked,
     resetProgress,
     subscribe,
+    emitEvent,
   }
 }
