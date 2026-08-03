@@ -48,16 +48,22 @@ collega a una piccola API imperativa (`onReady(api)`).
 npm install
 npm run dev          # playground su http://localhost:5174  (porta da $PORT)
 npm run build        # build SPA         → dist/
-npm run build:lib    # pacchetto npm     → dist-lib
+npm run build:lib    # pacchetto npm     → dist-lib/
 ```
 
 Aggiungi `?debug` all'URL per aprire l'ambiente di authoring.
 
-> **Niente test runner, niente linter.** Le verifiche si fanno guidando l'app e
-> rileggendo i valori dallo scene graph. In `?debug` `window.__r3f_state`
-> espone lo stato R3F: `state.advance(t)` fa avanzare un frame su richiesta,
-> utile per portare a convergenza uno smorzamento senza aspettare in tempo
-> reale.
+> ⚠️ **`dist/` e `dist-lib/` sono SORELLE, non annidate.** Il pacchetto
+> costruiva in `dist/lib/` e `npm run build` lo cancellava in silenzio: la SPA
+> ha `outDir: 'dist'` e Vite ci applica `emptyOutDir: true` di default. Nessun
+> errore, nessun avviso — ci si accorgeva al `publish`.
+
+> **Un solo controllo automatico, e gira da solo.** `build:lib` termina con
+> `postbuild:lib` → `scripts/ssr-smoke.mjs`, che **importa e renderizza su
+> Node** il pacchetto appena costruito. Per il resto non ci sono test runner né
+> linter: le verifiche si fanno guidando l'app e rileggendo i valori dallo scene
+> graph. In `?debug` `window.__r3f_state` espone lo stato R3F, e
+> `state.advance(t)` fa avanzare un frame su richiesta.
 
 ---
 
@@ -95,7 +101,8 @@ dalla camera**, non da un timer: le luci vanno in passo con la rotazione.
 ### 🎬 Sequencer di animazioni
 Animazioni autorate a **step e wave**, composte da azioni dichiarative:
 `goToPose`, `focusGroup`, `setOpacity`, `spinGroup`, `rotateBy`, `wobble`,
-`bounce`, `transformOffset`, `setVariant`, `waitTime`, `waitTrigger`.
+`bounce`, `transformOffset`, `setMaterial`, `setWireframe`, `setVariant`,
+`waitTime`, `waitTrigger`, `emitEvent`.
 
 Si citano per **slug** — `api.play('go-to-rotors')` — e possono avere
 prerequisiti (`requires`), quindi sbloccarsi a vicenda.
@@ -154,6 +161,11 @@ function Configuratore() {
 }
 ```
 
+> **SSR / Next.js.** Il pacchetto si **importa e renderizza su Node** senza
+> lanciare: nessun modulo tocca `window` al livello di import. Il Canvas non
+> disegna sul server — il primo render restituisce la sola shell DOM — e la
+> scena parte all'idratazione. È verificato a ogni `build:lib`, non promesso.
+
 ### Props
 
 | Prop | Default | Descrizione |
@@ -161,11 +173,11 @@ function Configuratore() {
 | `product` | `'ARRAY_MODEL_L'` | Id del registro, prodotto definito, o definizione derivata |
 | `onReady` | — | `(api) => void`, **una volta**, quando il modello è carico e il ponte è pronto |
 | `apiRef` | — | La stessa facciata via ref React (usabile insieme a `onReady`) |
-| `hud` | `false` | Monta l'overlay DOM integrato (telemetria, chip, selettori) |
+| `hud` | `false` | Monta l'overlay DOM integrato (telemetria, chip, selettori). **Lazy**: se resta spento non viene scaricato |
 | `branding` | `null` | `{ logoUrl, logoAlt, version, footer }` per l'HUD — nessun marchio di serie |
 | `escapeToIdle` | `true` | Uscita da `config` con `Esc`; **indipendente dall'HUD** |
 | `authoring` | `isDebug()` | Carica l'editor. Valutato **una volta**: è un `import()`, non un ramo di render |
-| `modelUrl` · `meshGroups` · `meshVariants` | dal prodotto | Override puntuali — per un modello nuovo si dichiara un prodotto |
+| `postfx` | `true` | Catena di post-processing (MSAA su render target + AO). ⚠️ Va deciso **in modo sincrono**: accenderlo a sessione avviata ricompilerebbe ogni materiale |
 
 ### API pubblica — `createPublicApi`
 
@@ -185,7 +197,7 @@ function Configuratore() {
 | Percorso | Contenuto |
 | --- | --- |
 | `models/keyboard.glb` | Il modello (~1,1 MB, Draco) |
-| `draco/` | Decoder self-hosted, passato esplicitamente a `useGLTF` |
+| `draco/` | Decoder self-hosted; il percorso viaggia in `product.dracoPath` |
 | `lightconfig/app-state-config.json` | **Luci, materiali, focus, animazioni** — senza, il modello resta al buio |
 
 Servili da un'altra origine con `assetsBaseUrl` sul prodotto: prefissa i soli
@@ -229,20 +241,55 @@ dell'array conta** (vince il primo che matcha).
 
 ## 🏗 Architettura
 
-```
-src/components/KeyboardComposer/
-├─ KeyboardComposer.jsx    shell DOM · crea lo store · risolve il prodotto · espone l'API
-├─ Scene.jsx               <Canvas> — monta runtime e (solo in authoring) la scena editor
-├─ KeyboardModel.jsx       GLB + auto-fit + useComposerControls (drag/tasti/molla/zoom)
-├─ poseGraph.js            primitive angolari + createPoseGraph (fabbrica, senza dati)
-│
-├─ products/               ⬅ TUTTO ciò che dipende dal modello
-├─ runtime/                ⬅ CODICE DI PRODUZIONE — non importa mai `leva`
-│                             publicApi · ConfigLoader · MaterialApplier · ShadowLights
-├─ authoring/              ⬅ IL CONFINE LAZY — pannelli Leva, gizmo, editor animazioni
-├─ state/                  composerStore (9 sezioni serializzate + `ui` + `view`)
-├─ animation/              schema · runtime · azioni · registri opacità/pivot
-└─ materials/              macchina di classificazione e clone (nessun dato di modello)
+Un solo componente rende **due alberi React** — la shell DOM e il Canvas R3F —
+e li tiene insieme con **due canali**: i *dati* scendono come prop e store, i
+*comandi* passano da un ref imperativo. Tutto l'authoring sta dietro un
+`import()`.
+
+```mermaid
+flowchart TB
+    HOST(["App ospite · la UI è tua"])
+    CFG[/"app-state-config.json"/]
+
+    subgraph SHELL["shell DOM · KeyboardComposer.jsx"]
+        direction LR
+        LOADER["ConfigLoader"]
+        STORE[("composerStore<br/>10 sezioni salvate<br/>+ ui + view")]
+        BRIDGE{{"apiRef<br/>8 scrittori"}}
+        HUDC["Hud<br/>lazy · spento di default"]
+    end
+
+    subgraph CANVAS["&lt;Canvas&gt; · R3F — sempre montato"]
+        direction LR
+        CTRL["KeyboardModel<br/>useComposerControls"]
+        RIG["LightRig<br/>luci per posa"]
+        SEQ["AnimationDirector<br/>il sequencer"]
+        RT["runtime/<br/>MaterialApplier · ShadowLights<br/>ShadowFreeze · PostFx"]
+    end
+
+    subgraph AUTH["authoring/ · chunk lazy — mai scaricato in produzione"]
+        direction LR
+        LEVA["pannelli Leva<br/>ModeTuner · PostFxTuner · …"]
+        EDIT["LightEditor · MeshController<br/>AnimationEditor · LightGizmos"]
+    end
+
+    CFG ==> LOADER ==> STORE
+    HOST -->|"onReady(api)"| BRIDGE
+    STORE ==>|"dati"| CANVAS
+    BRIDGE <==>|"comandi"| CANVAS
+    BRIDGE -.->|"poll 150 ms"| HUDC
+    STORE -.->|"dati"| AUTH
+    AUTH -.->|"set()"| STORE
+    AUTH -.->|"toJSON()"| CFG
+
+    classDef prod fill:#1d4ed8,stroke:#1e3a8a,color:#fff
+    classDef state fill:#047857,stroke:#064e3b,color:#fff
+    classDef lazy fill:#78716c,stroke:#44403c,color:#fff,stroke-dasharray:4 3
+    classDef ext fill:#334155,stroke:#0f172a,color:#fff
+    class CTRL,RIG,SEQ,RT,LOADER prod
+    class STORE,BRIDGE state
+    class LEVA,EDIT,HUDC lazy
+    class HOST,CFG ext
 ```
 
 **Il flusso dati, in tre regole:**
@@ -250,12 +297,143 @@ src/components/KeyboardComposer/
 | | |
 | --- | --- |
 | **Dati** | Nessun ponte: `KeyboardComposer` è l'antenato comune di Canvas e overlay, quindi animazioni, varianti e modalità scendono come **prop normali** |
-| **Comandi** | Un solo ref imperativo, `apiRef`, scritto **solo** con `Object.assign` — mai riassegnato: cinque scrittori vivono in sottoalberi React senza garanzie d'ordine |
+| **Comandi** | Un solo ref imperativo, `apiRef`, scritto **solo** con `Object.assign` — mai riassegnato: **otto** scrittori vivono in sottoalberi React senza garanzie d'ordine |
 | **Stato autorato** | Uno **store per istanza** (niente globali, niente CustomEvent): chi monta dopo legge ciò che trova già lì, quindi il caricamento non dipende più dall'ordine di mount |
 
-Le nove sezioni serializzate — `lights`, `materials`, `rotation`, `keylight`,
-`spotlight`, `focus`, `animations`, `variants`, `app` — **sono** la forma del
-JSON salvato, nello stesso ordine.
+### Il giro dello stato autorato
+
+Questo è il diagramma che spiega *perché* esiste lo store. Con i `CustomEvent`
+di prima, un evento emesso prima che l'ascoltatore esistesse era perso **per
+sempre**; ora chi arriva tardi legge lo stato che trova già lì.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant F as 📄 app-state-config.json
+    participant L as ConfigLoader<br/>(shell)
+    participant S as composerStore
+    participant R as Runtime<br/>(dentro il Canvas)
+    participant E as Editor<br/>(?debug)
+
+    Note over L: monta nella shell,<br/>prima del Canvas
+    F->>L: fetch(product.configUrl)
+    L->>S: hydrate(json)
+    Note over S,R: l'ordine di mount non conta più:<br/>chi monta dopo legge ciò che trova
+    S-->>R: useComposerSection (reattivo)
+    S-->>R: store.get(sezione) (dentro useFrame)
+
+    rect rgba(120,113,108,0.15)
+        Note over E: solo in ?debug
+        E->>S: set('materials', patch)
+        S-->>R: notify → il materiale cambia a video
+        E->>S: toJSON()
+        S-->>E: le 10 sezioni, nell'ordine
+        E->>F: download del blob
+    end
+```
+
+> ⚠️ Il file salvato è **`store.toJSON()`**, mai un elenco di sezioni scritto a
+> mano. Quando lo era, una sezione nuova (`postfx`) non finiva nel file e
+> nessuno se ne accorgeva: il JSON restava valido, si ricaricava senza errori, e
+> la taratura tornava ai default a ogni reload.
+
+### Cosa scarica davvero chi installa il pacchetto
+
+```mermaid
+flowchart LR
+    subgraph EAGER["📦 sempre"]
+        CORE["index-*.js<br/>183 kB · 59 kB gz"]
+        CSS["keyboard-composer.css<br/>12 kB"]
+    end
+
+    subgraph LAZYC["⏳ solo se serve"]
+        HUDX["Hud-*.js<br/>10 kB — se hud = true"]
+        AUTHX["authoring-*.js<br/>101 kB — se ?debug"]
+    end
+
+    subgraph PEERS["🔗 peer del progetto ospite"]
+        THREE["three · @react-three/fiber · drei"]
+        LEVAP["leva — peer OPZIONALE"]
+    end
+
+    EAGER -.->|"import()"| LAZYC
+    EAGER --> PEERS
+    AUTHX -.-> LEVAP
+
+    classDef eager fill:#1d4ed8,stroke:#1e3a8a,color:#fff
+    classDef lazy fill:#78716c,stroke:#44403c,color:#fff,stroke-dasharray:4 3
+    classDef peer fill:#334155,stroke:#0f172a,color:#fff
+    class CORE,CSS eager
+    class HUDX,AUTHX lazy
+    class THREE,LEVAP peer
+```
+
+> ⚠️ **Il confine vale per il JS, non per il CSS.** `build.lib` forza
+> `cssCodeSplit: false`, quindi i fogli di stile dell'editor e dell'HUD
+> finiscono comunque nell'unico `.css` caricato subito — circa 2,8 kB gz che
+> nessun consumatore di produzione usa. È **misurato e accettato**: toglierli
+> richiederebbe di sostituire a mano 249 riferimenti `styles.x` con stringhe
+> letterali, perché l'unica forma di import che evita l'estrazione (`?inline`)
+> non restituisce la mappa dei nomi di classe.
+
+### Mappa dei sorgenti
+
+```
+src/
+├─ components/KeyboardComposer/
+│  ├─ KeyboardComposer.jsx    shell DOM · crea lo store · risolve il prodotto · espone l'API
+│  ├─ Scene.jsx               <Canvas> — monta runtime e (solo in authoring) la scena editor
+│  ├─ KeyboardModel.jsx       GLB + auto-fit + useComposerControls (drag/tasti/molla/zoom)
+│  ├─ LightRig.jsx            SOLO il rig: griglia di luci, scatola adattiva, un useFrame
+│  ├─ lightConfig.js          la forma di un `lights[posa]`, condivisa fra rig ed editor
+│  ├─ poseGraph.js            primitive angolari + createPoseGraph (fabbrica, senza dati)
+│  │
+│  ├─ products/               ⬅ TUTTO ciò che dipende dal modello
+│  ├─ runtime/                ⬅ CODICE DI PRODUZIONE — non importa mai `leva`
+│  │                             publicApi · ConfigLoader · MaterialApplier
+│  │                             ShadowLights · ShadowFreeze · postfx/PostFx
+│  ├─ authoring/              ⬅ IL CONFINE LAZY — pannelli Leva, gizmo,
+│  │                             LightEditor, MeshController, AnimationEditor
+│  ├─ state/                  composerStore (10 sezioni serializzate + `ui` + `view`)
+│  ├─ animation/              schema · runtime · azioni · registri opacità/materiali/pivot
+│  └─ materials/              macchina di classificazione e clone (nessun dato di modello)
+│
+└─ ar/                        «Prova in AR» — SOLO playground, fuori dal pacchetto
+```
+
+Le dieci sezioni serializzate — `lights`, `materials`, `rotation`, `keylight`,
+`spotlight`, `focus`, `animations`, `variants`, `app`, `postfx` — **sono** la
+forma del JSON salvato, nello stesso ordine.
+
+### Il sequencer, in un colpo d'occhio
+
+```mermaid
+flowchart LR
+    A["Animazione<br/>slug · requires"] --> W["Wave<br/>step in parallelo"]
+    W --> S["Step<br/>azione + selettore + timing"]
+    S --> ACT["ACTIONS<br/>schema + impl + inverse,<br/>nello stesso oggetto"]
+
+    ACT --> REG
+
+    subgraph REG["registri · acquire → interpola → RIPRISTINA"]
+        direction LR
+        O["opacityRegistry"]
+        M["materialRegistry"]
+        P["pivotRegistry"]
+    end
+
+    REG --> MT[("materialTargets<br/>cloni refcontati")]
+
+    classDef n fill:#1d4ed8,stroke:#1e3a8a,color:#fff
+    classDef r fill:#047857,stroke:#064e3b,color:#fff
+    class A,W,S,ACT n
+    class O,M,P,MT r
+```
+
+> I registri **ripristinano, non fissano**: prendono uno snapshot all'acquisto,
+> contano i riferimenti, e allo `stop()` riportano il materiale al valore di
+> partenza. È ciò che permette a `stopAnimation()` di essere un teardown vero
+> invece di lasciare la scena dove l'animazione l'ha abbandonata.
 
 ---
 
@@ -268,18 +446,19 @@ non li scarica.
 | Modalità | Cosa sblocca |
 | --- | --- |
 | `Nessuno` | Solo il prodotto |
-| `Luci` | Editor per posa: click sull'helper, intensità/colore/decay, gizmo su key e spot |
+| `Luci` | Editor per posa: click sull'helper, intensità/colore/decay, undo con `Ctrl+Z`, gizmo su key e spot |
+| `Resa` | Le sezioni **globali**: materiali per gruppo, feel della navigazione, post-processing |
 | `Mesh` | Ispettore gruppo/mesh con `TransformControls`, halo e pivot runtime |
 | `Animazioni` | Editor a blocchi di step e wave |
 | `Focus` | Inquadrature nominate sui gruppi logici |
 
-Il pulsante **«Salva Configurazione»** serializza *tutto* in un blob unico: è
-quel file che va in `public/lightconfig/` per portare l'authoring in produzione.
+Il pulsante **«Salva»** serializza *tutto* in un blob unico: è quel file che va
+in `public/lightconfig/` per portare l'authoring in produzione.
 
-> ⚠️ **Le luci di produzione vivono nel JSON, non nel codice.** I `value:` dei
-> componenti sono solo il fallback se il fetch fallisce. Una vista nera è prima
-> di tutto una questione di contenuto del file — controllalo *prima* di
-> indagare su `LightRig.jsx`:
+> ⚠️ **Le luci di produzione vivono nel JSON, non nel codice.** I default nel
+> codice sono solo il fallback se il fetch fallisce. Una vista nera è prima di
+> tutto una questione di contenuto del file — controllalo *prima* di indagare su
+> `LightRig.jsx`:
 >
 > ```bash
 > node -e "const L=require('./public/lightconfig/app-state-config.json').lights;
@@ -294,6 +473,7 @@ quel file che va in `public/lightconfig/` per portare l'authoring in produzione.
 npm run asset:convert    # OBJ → GLB grezzo (obj2gltf, --max-old-space-size=8192)
 npm run asset:optimize   # weld → prune --keep-attributes → Draco
 npm run asset:inspect    # gltf-transform inspect
+npm run asset:ar         # GLB metrico + materiali cotti, per il pulsante AR del playground
 ```
 
 Vincoli **non negoziabili**:
@@ -315,7 +495,15 @@ Vincoli **non negoziabili**:
 | --- | --- |
 | ✅ **Luci** | Tutte e 21 le pose sono autorate nel JSON di produzione |
 | ✅ **Pacchetto** | `build:lib` esternalizza react/three/r3f/leva; `leva` è peer **opzionale** |
-| ⏳ **Ombre di contatto** | Assenti *per costruzione*: le `rectAreaLight` non supportano le ombre in three.js e le point light solo via cube map — **31 delle 34 luci non possono fisicamente proiettarne**. L'unica ombra reale è quella della direzionale |
-| ⏳ **Anti-aliasing** | Progettato (AO screen-space, shadow map congelata, accumulo a scena ferma), **non implementato**: non cercare un `EffectComposer` |
+| ✅ **SSR** | Il pacchetto si importa e renderizza su Node; verificato a ogni build |
+| ✅ **Post-processing** | `runtime/postfx/PostFx.jsx`: composer MSAA su render target, `GTAOPass` a mezza risoluzione con normali ricostruite dal depth, e scala di risoluzione **feed-forward** sul focus |
+| ⏳ **Ombre di contatto** | Assenti *per costruzione*: le `rectAreaLight` non supportano le ombre in three.js e le point light solo via cube map — **31 delle 34 luci non possono fisicamente proiettarne**. L'AO screen-space è ciò che sta al loro posto |
+| ⏳ **Accumulo temporale** | **Archiviato per misura, non rimandato**: a scena ferma due frame consecutivi sono *identici bit a bit*, e l'eccesso di variazione temporale dell'MSAA 4× sul riferimento supersampled è **0,018/255**. Non c'è sfarfallio da togliere |
 | ⏳ **Secondo prodotto** | Il registro ne contiene uno solo; l'infrastruttura è pronta |
-| ➖ **Test e linter** | Non configurati. Nota: **non si può fare il fingerprint del rig hashando i valori smorzati** — lo smorzamento è asintotico e il delta del primo frame varia a ogni run |
+| ➖ **Test e linter** | Solo lo smoke SSR su `build:lib`. Nota: **non si può fare il fingerprint del rig hashando i valori smorzati** — lo smorzamento è asintotico e il delta del primo frame varia a ogni run |
+
+> **La scena è fill-bound, non ALU-bound.** Misurato: la CPU è l'1,3% del frame,
+> il costo è lineare nei pixel (~60 ns ciascuno), e *togliere* luci lo peggiora.
+> Qualunque ottimizzazione che rimuova matematica dallo shader qui non farà
+> nulla; l'unica leva vera è il numero di pixel — che è ciò che `dynamicScale`
+> abbassa da solo quando un focus riempie la viewport.

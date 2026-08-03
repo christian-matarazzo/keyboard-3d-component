@@ -736,6 +736,12 @@ variant:
 - **Per-frame code avoids shader-define writes** (`transparent`,
   `needsUpdate`, light *counts*); only uniforms and renderer state change
   per frame.
+- **README.md carries its own mermaid diagrams** (architecture overview, the
+  authored-state round-trip, the consumer bundle/chunk layout, the animation
+  sequencer) that restate facts also tracked here — the component tree, the
+  COMPOSER_SECTIONS list, the apiRef writer count, the chunk split. A
+  structural change to any of those has two places to update, and the
+  diagrams are the easier one to leave silently stale.
 
 <!-- END AUTO-MANAGED -->
 
