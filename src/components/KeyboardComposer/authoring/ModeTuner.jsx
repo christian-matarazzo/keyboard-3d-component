@@ -31,7 +31,21 @@ export default function ModeTuner({ store, poseGraph }) {
     'ui',
     {
       editMode: {
-        options: { Nessuno: 'none', Luci: 'lights', Mesh: 'meshes', Animazioni: 'anim', Focus: 'focus' },
+        options: {
+          Nessuno: 'none',
+          Luci: 'lights',
+          // Resa: materiali per gruppo, feel della navigazione e
+          // post-processing. Le tre cartelle non hanno una superficie 3D
+          // propria — nessun gizmo, nessuna selezione — quindi restavano
+          // visibili in OGNI modalità, ed erano l'unico pezzo di pannello che
+          // non rispondeva a questo selettore. Stanno insieme perché sono le
+          // sezioni GLOBALI del prodotto: valgono per tutte le pose, a
+          // differenza delle luci (per posa) e dei focus (per gruppo).
+          Resa: 'render',
+          Mesh: 'meshes',
+          Animazioni: 'anim',
+          Focus: 'focus',
+        },
         value: 'none',
         label: 'Modalità',
       },

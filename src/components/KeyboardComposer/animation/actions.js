@@ -167,11 +167,29 @@ export const ACTIONS = {
     isSettled(inst, ctx) {
       return ctx.getApi()?.isFocusSettled?.() ?? true
     },
-    // ⚠️ Con `restoreOpacity` spento di proposito: in un'inverso generato ci
-    // sono già gli inversi espliciti dei singoli `setOpacity`, e il ripristino
-    // globale scriverebbe sugli stessi materiali nello stesso frame — due
-    // scrittori senza un vincitore definito.
-    inverse: () => ({ action: 'clearFocus', params: { restoreOpacity: false } }),
+    // ⚠️ Con `restoreOpacity` E `restoreTransforms` spenti di proposito: in un
+    // inverso generato ci sono già gli inversi espliciti dei singoli
+    // `setOpacity` e `transformOffset`/`rotateBy`, e il ripristino globale
+    // scriverebbe sugli stessi materiali (o sugli stessi pivot) — due scrittori
+    // senza un vincitore definito.
+    //
+    // Per i pivot il conflitto non è nemmeno simultaneo, ed è peggio: il
+    // `clearFocus` apre il gruppo dell'inverso (era l'ULTIMO della diretta,
+    // quindi l'ordine per gruppi lo porta in testa) e `finish()` azzera i
+    // canali, riportando tutto a riposo di colpo. Gli inversi espliciti che
+    // vengono dopo trovano gli offset già a zero, si interpolano da zero a zero
+    // e non muovono niente. Misurato: nell'inverso di GoToRotorsAlt i keycaps
+    // ricadevano a terra entro 0.5 s a opacità 0 e poi comparivano fermi, cioè
+    // esattamente la traslazione dall'alto che l'inverso doveva raccontare.
+    //
+    // ⚠️ `restoreMaterials` resta ACCESO, e l'asimmetria è voluta: `setMaterial`
+    // è l'unica delle tre a non avere un inverso esplicito (il colore di
+    // partenza lo conosce solo il registry), quindi qui il ripristino globale
+    // non compete con nessuno — è l'unico che toglie le tinte.
+    inverse: () => ({
+      action: 'clearFocus',
+      params: { restoreOpacity: false, restoreTransforms: false },
+    }),
   },
 
   // Non è solo l'inverso di focusGroup: è il "torna com'era" COMPLETO, quindi
@@ -462,6 +480,83 @@ export const ACTIONS = {
     // la fotografia vera.
     inverse: () => null,
     inverseNote: 'il colore di partenza lo sa solo il runtime: lo rimette il rilascio',
+  },
+
+  /**
+   * Commuta il disegno delle mesh in WIREFRAME — la vista «com'è fatto», che
+   * nessuna combinazione di opacità e tinta sa dare: l'opacità mostra il volume
+   * attraverso il volume, questo mostra la MAGLIA.
+   *
+   * ⚠️ È l'unica azione sui materiali che non interpola niente, e non è una
+   * mancanza: una primitiva di disegno non ha stati intermedi: o si disegnano
+   * triangoli o si disegnano linee. La dissolvenza la mette chi autora,
+   * mettendo questo step in mezzo a due `setOpacity` (è come è fatta
+   * l'animazione «Wireframe» nel JSON di prodotto). Per la stessa ragione
+   * `duration`/`easing` qui non hanno effetto e il default è `wait: 'none'`.
+   *
+   * ⚠️ **Va usata da vicino, e non è una preferenza estetica: MISURATO
+   * 2026-08-03, a inquadratura piena su questo asset il wireframe non si legge
+   * affatto.** 338 586 triangoli su ~800 px di larghezza coprono ogni pixel
+   * più volte, e il risultato è una massa piena di tinta uniforme, non una
+   * maglia. Provato a diradarlo escludendo i tre gruppi più densi (keycaps,
+   * damping, viti = 81,6% dei triangoli): la sola scocca, 36 664 triangoli, è
+   * ancora una massa piena. Non è un problema di taratura, è la densità
+   * dell'asset — e infatti l'animazione autorata fa `focusGroup` PRIMA di
+   * accendere, non dopo. Da vicino la topologia si legge benissimo.
+   * Nell'ordine giusto va anche più veloce (24-25 fps contro 13), perché il
+   * frustum culling butta via quasi tutte le linee.
+   *
+   * ⚠️ Vicolo cieco già percorso: `depthWrite: false` sullo step di opacità,
+   * per ottenere l'x-ray. Costa **6 fps** contro i 13 (tutte le facce interne
+   * disegnate in più) e non aggiunge nessuna leggibilità. Il depth write acceso
+   * è ciò che dà al wireframe una silhouette invece che una nuvola.
+   *
+   * ⚠️ Perché è lecito toccarlo a metà animazione, quando `clearcoat` non lo è:
+   * `wireframe` non è un define dello shader, quindi non ricompila niente. La
+   * dimostrazione — e la premessa che lo rende vero solo finché nessuno accende
+   * `flatShading` — sta in testa a materialRegistry.js, insieme all'unico costo
+   * reale, la costruzione una-tantum dell'index buffer delle linee.
+   */
+  setWireframe: {
+    label: 'Wireframe',
+    group: 'materiali',
+    // Come ogni azione che possiede materiali: l'interruttore deve restare
+    // acceso finché non arriva `stop()`, che lo rimette com'era dalla
+    // fotografia del registry.
+    persistent: true,
+    defaults: { wait: 'none' },
+    params: [
+      { key: 'selector', type: 'selector', default: { kind: 'all' }, label: 'Mesh' },
+      { key: 'on', type: 'boolean', default: true, label: 'Wireframe acceso' },
+    ],
+    start(inst, ctx) {
+      const meshes = resolveSelector(ctx.getScene(), ctx.groups, inst.params.selector)
+      if (meshes.length === 0) return
+      inst.data.handle = ctx.materials.acquire(meshes)
+      inst.data.handle.setWireframe(inst.params.on !== false)
+    },
+    // Niente `update`: si scrive una volta e basta. Riscrivere lo stesso
+    // booleano a ogni frame su un'istanza persistente sarebbe lavoro sprecato e
+    // — peggio — si contenderebbe i materiali col ripristino graduale di
+    // «Torna all'insieme», che perderebbe (vince l'ultimo scrittore del frame).
+    restart(inst) {
+      // Su un giro di loop l'handle c'è già: basta riaffermare l'interruttore,
+      // che nel frattempo un altro step (o un rientro) può aver rimesso a posto.
+      inst.data.handle?.setWireframe(inst.params.on !== false)
+    },
+    stop(inst, ctx, opts) {
+      // Smontaggio morbido come setMaterial: con `keepMaterials` la proprietà
+      // passa alla fase di rilascio del runtime. Lì il wireframe torna com'era
+      // all'inizio della dissolvenza e non alla fine — vedi beginRestoreAll in
+      // materialRegistry.js sul perché quel binario sia diverso dagli altri.
+      if (opts?.keepMaterials) return
+      inst.data.handle?.release()
+      inst.data.handle = null
+    },
+    // Invertibile davvero, a differenza di `setMaterial`: qui lo stato di
+    // partenza è noto senza chiedere niente al runtime — un modello si guarda
+    // solido, quindi l'inverso di «accendi» è «spegni».
+    inverse: () => ({ params: { on: false } }),
   },
 
   // ── Trasformazioni ────────────────────────────────────────────────────────

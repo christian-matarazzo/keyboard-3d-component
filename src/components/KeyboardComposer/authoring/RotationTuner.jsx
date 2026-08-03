@@ -1,5 +1,5 @@
 import { DEFAULT_ROTATION } from '../state/defaults'
-import { useLevaSection } from './useLevaSection'
+import { renderInMode, useLevaSection } from './useLevaSection'
 
 /**
  * I parametri di "feel" della navigazione: velocità del drag, molla di
@@ -44,7 +44,11 @@ export default function RotationTuner({ store }) {
       // non lo si tocca.
       focusOutDamp: { value: DEFAULT_ROTATION.focusOutDamp, min: 0.1, max: 3, step: 0.05, label: 'zoom-out (uscita)' },
     },
-    { folder: 'Rotazione' },
+    // Modalità "Resa" insieme a materiali e post-processing: vedi ModeTuner.jsx.
+    // La navigazione resta VIVA in quella modalità (solo 'meshes' la blocca), ed
+    // è la condizione perché queste manopole si possano tarare — si giudicano
+    // trascinando il modello, non guardandolo fermo.
+    { folder: 'Rotazione', render: renderInMode('render') },
   )
 
   return null

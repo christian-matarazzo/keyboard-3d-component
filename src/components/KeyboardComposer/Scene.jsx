@@ -9,6 +9,7 @@ import VariantController from './VariantController'
 import MaterialApplier from './runtime/MaterialApplier'
 import ShadowFreeze from './runtime/ShadowFreeze'
 import PostFx from './runtime/postfx/PostFx'
+import { isDebug } from './state/debug'
 import { useComposerSection } from './state/useComposerSection'
 
 // ⚠️ Stesso specificatore dell'import in KeyboardComposer.jsx, e non è un
@@ -186,8 +187,7 @@ export default function Scene({
       // Con ?debug espone scena/camera per la verifica automatica delle pose
       // (screenshot + drag sintetici), come il pannello leva.
       onCreated={(state) => {
-        if (new URLSearchParams(window.location.search).has('debug'))
-          window.__r3f_state = state
+        if (isDebug()) window.__r3f_state = state
       }}
       // Deseleziona quando si clicca sullo sfondo vuoto
       onPointerMissed={() => setSelectedMesh(null)}

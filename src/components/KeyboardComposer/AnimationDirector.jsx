@@ -8,8 +8,7 @@ import { createMaterialTargets } from './animation/materialTargets'
 import { createOpacityRegistry } from './animation/opacityRegistry'
 import { createMaterialRegistry } from './animation/materialRegistry'
 import { createPivotRegistry } from './animation/pivotRegistry'
-
-const DEBUG = new URLSearchParams(window.location.search).has('debug')
+import { isDebug } from './state/debug'
 
 /**
  * Esecutore delle animazioni autorate. Vive DENTRO il Canvas (fratello di
@@ -46,6 +45,12 @@ export default function AnimationDirector({
   release,
 }) {
   const { scene } = useGLTF(modelUrl, getDracoPath())
+
+  // ⚠️ Valutato nel corpo del componente, non a livello di modulo: `window` non
+  // esiste durante il render SSR di Next/Remix, e una costante in cima al file
+  // faceva fallire l'IMPORT del pacchetto, non il render. `isDebug()` è
+  // SSR-safe (vedi state/debug.js) e onora `setDebug`.
+  const DEBUG = isDebug()
 
   const sceneRef = useRef(scene)
   sceneRef.current = scene

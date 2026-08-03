@@ -13,10 +13,10 @@ import { getDracoPath } from './KeyboardModel'
 import { DEFAULT_VIEW_SETTINGS } from './state/defaults'
 import { applyConfig } from './runtime/productConfig'
 import { ShadowKeyLight, ShadowSpotLight } from './runtime/ShadowLights'
+import { isDebug } from './state/debug'
 import { useComposerSection } from './state/useComposerSection'
 
 const RIG_POSITION = [0, 0.1, 0]
-const DEBUG = new URLSearchParams(window.location.search).has('debug')
 
 // --- Stili degli overlay di debug ----------------------------------------
 // Erano oggetti inline ripetuti quasi identici (i due <select>, i due bottoni
@@ -179,6 +179,12 @@ export default function LightRig({
   // fermava l'altro, e lo stesso click selezionava sia una mesh sia una luce
   // sottostante. `editModeRef` rispecchia la prop dentro la closure di lunga
   // durata di useFrame, come già fa currentControlsRef.
+  //
+  // ⚠️ `isDebug()` qui e non una costante di modulo: leggere `window` all'import
+  // rendeva il pacchetto non importabile sotto SSR (vedi state/debug.js). Il
+  // valore è costante per sessione, quindi la closure di useFrame — ricreata a
+  // ogni render — legge sempre quello giusto.
+  const DEBUG = isDebug()
   const lightsInteractive = DEBUG && editMode === 'lights'
   const editModeRef = useRef(editMode)
   editModeRef.current = editMode
@@ -728,39 +734,28 @@ export default function LightRig({
     // che lo legge vedrebbe la versione caricata, non quella autorata.
     store?.replace('lights', configsRef.current)
 
-    // ⚠️ Le altre sezioni si leggono ancora dai globali `window.__STATE_*`, non
-    // dallo store, e NON è una svista: finché i loro valori vivono dentro i
-    // pannelli Leva, il globale è l'unica copia aggiornata: lo store contiene
-    // solo ciò che è stato CARICATO, non ciò che l'autore ha appena mosso.
-    // Ogni sezione passa allo store insieme al proprio pannello, una alla
-    // volta; a quel punto tutto questo diventa `store.toJSON()`.
-    const fullData = {
-      lights: configsRef.current,
-      materials: store.get('materials'),
-      rotation: store.get('rotation'),
-      keylight: store.get('keylight'),
-      spotlight: store.get('spotlight'),
-      // Inquadrature autorate dello zoom sui gruppi (FocusTuner in Scene.jsx).
-      // Non c'entra con le luci: sta qui perché questo è l'unico punto di
-      // salvataggio/caricamento di TUTTO lo stato tunabile dell'app.
-      focus: store.get('focus'),
-      // Animazioni autorate (AnimationEditor, stato in KeyboardComposer.jsx).
-      // Stessa ragione del `focus` qui sopra: non c'entrano con le luci, ma
-      // questo è l'unico punto di salvataggio/caricamento globale.
-      animations: store.get('animations'),
-      // Varianti di modello: SOLO i binding variante→animazione di swap.
-      // ⚠️ La selezione (quale layout è acceso) NON si salva: è stato
-      // dell'utente, vive in sessionStorage, e in produzione si riparte sempre
-      // dal `defaultOption` di materials/meshVariants.js. Vedi il commento in
-      // KeyboardComposer.jsx per il perché.
-      variants: store.get('variants'),
-      // Stato di prodotto non legato a luci/materiali: oggi la sola posa home
-      // (ingresso in landscape, rientro da config_mode, blocco della modalità
-      // Mesh — vedi Scene.jsx).
-      app: store.get('app'),
-    }
-
-    const json = JSON.stringify(fullData, null, 2)
+    // ⚠️ `store.toJSON()`, MAI di nuovo un elenco di sezioni scritto a mano qui.
+    // Fino a poco fa questa era la lista letterale delle otto sezioni note al
+    // momento in cui fu scritta — un residuo dei tempi in cui i valori vivevano
+    // nei globali `window.__STATE_*` e non nello store. Il difetto di quella
+    // forma non è la verbosità: è che una sezione NUOVA (`postfx`, aggiunta col
+    // post-processing) non compare nel file salvato e nessuno se ne accorge —
+    // il JSON resta valido, si ricarica senza errori, e la sezione mancante
+    // ricade sui default (vedi `hydrate`, che salta le sezioni assenti). Cioè
+    // esattamente una regressione silenziosa: si autora, si salva, e la
+    // taratura sparisce al reload.
+    //
+    // `toJSON` itera COMPOSER_SECTIONS, che è già la definizione della forma del
+    // file: aggiungere una sezione allo store la fa entrare nel salvataggio
+    // senza toccare questo punto. Le due direzioni (`hydrate` e `toJSON`) sono
+    // l'una l'inversa dell'altra perché leggono lo stesso elenco.
+    //
+    // Cosa resta fuori, per scelta e non per dimenticanza: `ui` (stato
+    // dell'editor) e `view` (impostazioni PER POSA, già specchiate dentro
+    // `lights` dal blocco qui sopra). E dentro `variants` c'è il solo binding
+    // variante→animazione di swap: la selezione è stato dell'utente, vive in
+    // sessionStorage e viene scartata in ingresso da `normalizeConfig`.
+    const json = JSON.stringify(store.toJSON(), null, 2)
     const blob = new Blob([json], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -1017,6 +1012,14 @@ export default function LightRig({
           />
           <mesh
             ref={el => { if (el) surfHelpers.current[face.index] = el }}
+            // Impalcatura dell'editor, non geometria di prodotto: senza il tag
+            // `collectMeshGroups` la classifica nel gruppo di fallback (`body`
+            // su questo modello) e da lì entra in ogni selettore delle
+            // animazioni. Sono 32 mesh — 6 facce + 26 sferette — che un
+            // `setOpacity` metteva sotto override e che un `transformOffset` su
+            // `body` reparenterebbe nei pivot, contendendo il nodo al useFrame
+            // del rig che ne riscrive posizione e scala ogni frame.
+            userData={{ __editorHelper: true }}
             onClick={(e) => handleEntityClick(e, 'surf', face.index)}
             onPointerOver={handlePointerOver}
             onPointerOut={handlePointerOut}
@@ -1038,6 +1041,7 @@ export default function LightRig({
           <pointLight intensity={0} ref={el => { if (el) L.lights.current[i] = el }} distance={fixedDistance} />
           <mesh
             ref={el => { if (el) L.helpers.current[i] = el }}
+            userData={{ __editorHelper: true }} // vedi la nota sulle facce sopra
             onClick={(e) => handleEntityClick(e, L.prefix, i)}
             onPointerOver={handlePointerOver}
             onPointerOut={handlePointerOut}

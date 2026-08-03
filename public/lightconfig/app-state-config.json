@@ -93,7 +93,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     },
     "TBL": {
       "margin": 1.5,
@@ -188,7 +192,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     },
     "CFT": {
       "margin": 1.5,
@@ -283,7 +291,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     },
     "TR": {
       "margin": 1.5,
@@ -378,7 +390,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     },
     "TBR": {
       "margin": 1.5,
@@ -473,7 +489,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     },
     "CFR": {
       "margin": 1.5,
@@ -568,7 +588,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     },
     "BFR": {
       "margin": 1.5,
@@ -663,7 +687,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     },
     "CFB": {
       "margin": 1.5,
@@ -758,7 +786,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     },
     "FRONT": {
       "margin": 1.5,
@@ -853,7 +885,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     },
     "TOP": {
       "margin": 1.5,
@@ -948,7 +984,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     },
     "CBR": {
       "margin": 1.5,
@@ -1043,7 +1083,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0.2,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     },
     "BACK": {
       "margin": 1.5,
@@ -1138,7 +1182,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     },
     "CBL": {
       "margin": 1.5,
@@ -1233,7 +1281,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0.2,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     },
     "CFL": {
       "margin": 1.5,
@@ -1328,7 +1380,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     },
     "BFL": {
       "margin": 1.5,
@@ -1423,7 +1479,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     },
     "BOTTOM": {
       "margin": 1.5,
@@ -1518,7 +1578,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     },
     "BBL": {
       "margin": 1.5,
@@ -1613,7 +1677,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     },
     "TBACK": {
       "margin": 1.5,
@@ -1708,7 +1776,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     },
     "BBACK": {
       "margin": 1.5,
@@ -1803,7 +1875,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0.2,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     },
     "BBE": {
       "margin": 1.5,
@@ -1898,7 +1974,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     },
     "BBR": {
       "margin": 1.5,
@@ -1993,7 +2073,11 @@
       "surf_front_intensity": 0,
       "surf_front_color": "#ffffff",
       "surf_back_intensity": 0,
-      "surf_back_color": "#ffffff"
+      "surf_back_color": "#ffffff",
+      "animMarginDamp": 0.25,
+      "animLightOnDamp": 0.08,
+      "animLightOffDamp": 0.25,
+      "animColorDamp": 0.35
     }
   },
   "materials": {
@@ -2081,7 +2165,8 @@
     "timeScale": 0.3,
     "fitMargin": 1.6,
     "zoomOutMobile": 1.25,
-    "focusDamp": 0.6
+    "focusDamp": 0.6,
+    "focusOutDamp": 0.6
   },
   "keylight": {
     "enabled": false,
@@ -2168,6 +2253,7 @@
       {
         "id": "anim_ms5z8skh8hv8s",
         "label": "GoToRotors",
+        "slug": "go-to-rotors",
         "hidden": false,
         "loop": {
           "mode": "none",
@@ -2176,7 +2262,8 @@
         },
         "restoreOnStop": true,
         "startFrom": "reset",
-        "interruptOn": "none",
+        "stopOnFinish": false,
+        "requires": "",
         "steps": [
           {
             "id": "s_ms5z9vlz69tt0",
@@ -2197,7 +2284,7 @@
             "action": "setOpacity",
             "enabled": true,
             "parallel": true,
-            "delay": 0.5,
+            "delay": 0.8,
             "wait": "duration",
             "duration": 1.5,
             "maxWait": 8,
@@ -2209,7 +2296,7 @@
                   "rotors"
                 ]
               },
-              "opacity": 0.2,
+              "opacity": 0.15,
               "depthWrite": true
             }
           },
@@ -2218,7 +2305,7 @@
             "action": "focusGroup",
             "enabled": true,
             "parallel": true,
-            "delay": 0.8,
+            "delay": 0.5,
             "wait": "settle",
             "duration": 0,
             "maxWait": 8,
@@ -2234,8 +2321,127 @@
         ]
       },
       {
-        "id": "anim_ms5za4ml0di7i",
-        "label": "RotorSPin",
+        "id": "anim_msc65srp8yay4",
+        "label": "GoToRotorsAlt",
+        "slug": "go-to-rotors2",
+        "hidden": false,
+        "loop": {
+          "mode": "none",
+          "times": 1,
+          "from": 0
+        },
+        "restoreOnStop": true,
+        "startFrom": "reset",
+        "stopOnFinish": false,
+        "requires": "",
+        "steps": [
+          {
+            "id": "s_msc65srp5xy26",
+            "action": "transformOffset",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "duration",
+            "duration": 1.5,
+            "maxWait": 8,
+            "easing": "linear",
+            "params": {
+              "selector": {
+                "kind": "group",
+                "groupId": "keycaps"
+              },
+              "perMesh": true,
+              "position": [
+                0,
+                50,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "id": "s_msc72umrm21st",
+            "action": "setOpacity",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0,
+            "wait": "duration",
+            "duration": 1.5,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "group",
+                "groupId": "keycaps"
+              },
+              "opacity": 0,
+              "depthWrite": true
+            }
+          },
+          {
+            "id": "s_msc6d6cq802ve",
+            "action": "setOpacity",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "duration",
+            "duration": 0.5,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "allExcept",
+                "groupIds": [
+                  "rotors",
+                  "keycaps"
+                ]
+              },
+              "opacity": 0.15,
+              "depthWrite": true
+            }
+          },
+          {
+            "id": "s_msc65srpdq37a",
+            "action": "goToPose",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "duration",
+            "duration": 1.2,
+            "maxWait": 8,
+            "easing": "linear",
+            "params": {
+              "poseKey": "TBR"
+            }
+          },
+          {
+            "id": "s_msc65srpn4pw5",
+            "action": "focusGroup",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.35,
+            "wait": "duration",
+            "duration": 0.9,
+            "maxWait": 8,
+            "easing": "linear",
+            "params": {
+              "groupId": "rotors",
+              "radiusFactor": 2,
+              "offsetX": null,
+              "offsetY": null,
+              "offsetZ": null
+            }
+          }
+        ]
+      },
+      {
+        "id": "anim_msc7jqrud1bgd",
+        "label": "GoToRotorsAlt · inverso",
+        "slug": "nuova-animazione",
         "hidden": false,
         "loop": {
           "mode": "none",
@@ -2244,7 +2450,124 @@
         },
         "restoreOnStop": true,
         "startFrom": "keep",
-        "interruptOn": "none",
+        "stopOnFinish": true,
+        "requires": "anim_msc65srp8yay4",
+        "steps": [
+          {
+            "id": "s_msc7jqrut1c8q",
+            "action": "goToPose",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "duration",
+            "duration": 1.2,
+            "maxWait": 8,
+            "easing": "linear",
+            "params": {
+              "poseKey": "TL"
+            }
+          },
+          {
+            "id": "s_msc7jqru8rn5q",
+            "action": "clearFocus",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0,
+            "wait": "settle",
+            "duration": 0.5,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "restoreOpacity": false,
+              "restoreTransforms": false,
+              "restoreMaterials": true
+            }
+          },
+          {
+            "id": "s_msc7jqruau9cr",
+            "action": "setOpacity",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "duration",
+            "duration": 0.5,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "allExcept",
+                "groupIds": [
+                  "rotors",
+                  "keycaps"
+                ]
+              },
+              "opacity": 1,
+              "depthWrite": true
+            }
+          },
+          {
+            "id": "s_msc7jqruvomjw",
+            "action": "transformOffset",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "duration",
+            "duration": 1.5,
+            "maxWait": 8,
+            "easing": "linear",
+            "params": {
+              "selector": {
+                "kind": "group",
+                "groupId": "keycaps"
+              },
+              "perMesh": true,
+              "position": [
+                0,
+                0,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "id": "s_msc7jqru6bol8",
+            "action": "setOpacity",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0,
+            "wait": "duration",
+            "duration": 1.5,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "group",
+                "groupId": "keycaps"
+              },
+              "opacity": 1,
+              "depthWrite": true
+            }
+          }
+        ]
+      },
+      {
+        "id": "anim_ms5za4ml0di7i",
+        "label": "RotorSPin",
+        "slug": "rotor-spin",
+        "hidden": false,
+        "loop": {
+          "mode": "none",
+          "times": 1,
+          "from": 0
+        },
+        "restoreOnStop": true,
+        "startFrom": "keep",
+        "stopOnFinish": false,
+        "requires": "",
         "steps": [
           {
             "id": "s_ms5zgvfn4owqc",
@@ -2262,7 +2585,6 @@
                 "groupId": "rotors"
               },
               "axis": "y",
-              "axisSpace": "model",
               "angleDeg": 360,
               "perMesh": true,
               "alternate": true
@@ -2273,6 +2595,7 @@
       {
         "id": "anim_ms5zlva66qnju",
         "label": "GoIdle",
+        "slug": "go-idle",
         "hidden": false,
         "loop": {
           "mode": "none",
@@ -2281,7 +2604,8 @@
         },
         "restoreOnStop": true,
         "startFrom": "keep",
-        "interruptOn": "none",
+        "stopOnFinish": true,
+        "requires": "",
         "steps": [
           {
             "id": "s_ms5zsoa5ni8wr",
@@ -2294,7 +2618,9 @@
             "maxWait": 8,
             "easing": "easeInOutCubic",
             "params": {
-              "restoreOpacity": true
+              "restoreOpacity": true,
+              "restoreTransforms": true,
+              "restoreMaterials": true
             }
           },
           {
@@ -2311,12 +2637,12 @@
               "poseKey": "TL"
             }
           }
-        ],
-        "stopOnFinish": true
+        ]
       },
       {
         "id": "anim_ms6045w4nd9do",
         "label": "GoToPatches",
+        "slug": "go-to-patches",
         "hidden": false,
         "loop": {
           "mode": "none",
@@ -2325,7 +2651,8 @@
         },
         "restoreOnStop": true,
         "startFrom": "reset",
-        "interruptOn": "none",
+        "stopOnFinish": false,
+        "requires": "",
         "steps": [
           {
             "id": "s_ms604orke8sse",
@@ -2423,8 +2750,9 @@
         ]
       },
       {
-        "id": "anim_ms60szc2xklnd",
-        "label": "SwitchToISO",
+        "id": "anim_msc6u4lpd8w1g",
+        "label": "GoToPatches · inverso",
+        "slug": "nuova-animazione-2",
         "hidden": false,
         "loop": {
           "mode": "none",
@@ -2433,29 +2761,331 @@
         },
         "restoreOnStop": true,
         "startFrom": "keep",
-        "interruptOn": "none",
+        "stopOnFinish": true,
+        "requires": "anim_ms6045w4nd9do",
         "steps": [
           {
-            "id": "s_ms65jw8n5o7nk",
-            "action": "setVariant",
+            "id": "s_msc6u4lppjndk",
+            "action": "goToPose",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "settle",
+            "duration": 0,
+            "maxWait": 8,
+            "easing": "linear",
+            "params": {
+              "poseKey": "TL"
+            }
+          },
+          {
+            "id": "s_msc6u4lpwzb1l",
+            "action": "clearFocus",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0,
+            "wait": "settle",
+            "duration": 0.5,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "restoreOpacity": false,
+              "restoreTransforms": false,
+              "restoreMaterials": true
+            }
+          },
+          {
+            "id": "s_msc6u4lp3um40",
+            "action": "setOpacity",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.7,
+            "wait": "duration",
+            "duration": 1,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "meshes",
+                "names": [
+                  "L_ARRAY_S06",
+                  "L_ARRAY_S07",
+                  "L_ARRAY_S08"
+                ]
+              },
+              "opacity": 1,
+              "depthWrite": true
+            }
+          },
+          {
+            "id": "s_msc6u4lpt7yep",
+            "action": "setOpacity",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.7,
+            "wait": "duration",
+            "duration": 1,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "group",
+                "groupId": "keycaps"
+              },
+              "opacity": 1,
+              "depthWrite": true
+            }
+          },
+          {
+            "id": "s_msc6u4lpt78d8",
+            "action": "setOpacity",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.7,
+            "wait": "duration",
+            "duration": 1,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "group",
+                "groupId": "rotors"
+              },
+              "opacity": 1,
+              "depthWrite": true
+            }
+          }
+        ]
+      },
+      {
+        "id": "anim_mscexplode001",
+        "label": "Esploso",
+        "slug": "esploso",
+        "hidden": false,
+        "loop": {
+          "mode": "none",
+          "times": 1,
+          "from": 0
+        },
+        "restoreOnStop": true,
+        "startFrom": "reset",
+        "stopOnFinish": false,
+        "requires": "",
+        "steps": [
+          {
+            "id": "s_mscexplodepose",
+            "action": "goToPose",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "settle",
+            "duration": 0,
+            "maxWait": 8,
+            "easing": "linear",
+            "params": {
+              "poseKey": "CFL"
+            }
+          },
+          {
+            "id": "s_mscexplodekc",
+            "action": "transformOffset",
             "enabled": true,
             "parallel": false,
             "delay": 0,
             "wait": "duration",
-            "duration": 1,
+            "duration": 1.4,
             "maxWait": 8,
-            "easing": "linear",
+            "easing": "easeInOutCubic",
             "params": {
-              "variantId": "layout",
-              "optionId": "iso",
-              "offsetIn": [
-                -50,
+              "selector": {
+                "kind": "group",
+                "groupId": "keycaps"
+              },
+              "perMesh": false,
+              "position": [
+                0,
+                95,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "id": "s_mscexplodept",
+            "action": "transformOffset",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.12,
+            "wait": "duration",
+            "duration": 1.3,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "allExcept",
+                "groupIds": [
+                  "keycaps",
+                  "body",
+                  "damping",
+                  "rotors",
+                  "tasselli",
+                  "landing",
+                  "viti"
+                ]
+              },
+              "perMesh": false,
+              "position": [
+                0,
+                62,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "id": "s_mscexplodert",
+            "action": "transformOffset",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.18,
+            "wait": "duration",
+            "duration": 1.3,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "group",
+                "groupId": "rotors"
+              },
+              "perMesh": false,
+              "position": [
+                70,
                 50,
                 0
               ],
-              "offsetOut": [
-                50,
-                50,
+              "rotation": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "id": "s_mscexplodets",
+            "action": "transformOffset",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.24,
+            "wait": "duration",
+            "duration": 1.2,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "group",
+                "groupId": "tasselli"
+              },
+              "perMesh": false,
+              "position": [
+                0,
+                38,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "id": "s_mscexplodedp",
+            "action": "transformOffset",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.36,
+            "wait": "duration",
+            "duration": 1.2,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "group",
+                "groupId": "damping"
+              },
+              "perMesh": false,
+              "position": [
+                0,
+                -35,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "id": "s_mscexplodeld",
+            "action": "transformOffset",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.48,
+            "wait": "duration",
+            "duration": 1.2,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "group",
+                "groupId": "landing"
+              },
+              "perMesh": false,
+              "position": [
+                0,
+                -62,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "id": "s_mscexplodevt",
+            "action": "transformOffset",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.6,
+            "wait": "duration",
+            "duration": 1.2,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "group",
+                "groupId": "viti"
+              },
+              "perMesh": false,
+              "position": [
+                0,
+                -88,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
                 0
               ]
             }
@@ -2463,49 +3093,471 @@
         ]
       },
       {
-        "id": "anim_ms65u7z8c4xap",
-        "label": "SwitchToANSI",
+        "id": "anim_mscexplode002",
+        "label": "Esploso · inverso",
+        "slug": "esploso-inverso",
         "hidden": false,
         "loop": {
-          "mode": "none"
+          "mode": "none",
+          "times": 1,
+          "from": 0
         },
         "restoreOnStop": true,
         "startFrom": "keep",
-        "interruptOn": "none",
+        "stopOnFinish": true,
+        "requires": "anim_mscexplode001",
         "steps": [
           {
-            "id": "s_ms65unw2zswe7",
-            "action": "setVariant",
+            "id": "s_mscrebuildvt",
+            "action": "transformOffset",
             "enabled": true,
             "parallel": false,
             "delay": 0,
             "wait": "duration",
-            "duration": 1,
+            "duration": 1.2,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "group",
+                "groupId": "viti"
+              },
+              "perMesh": false,
+              "position": [
+                0,
+                0,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "id": "s_mscrebuildld",
+            "action": "transformOffset",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.12,
+            "wait": "duration",
+            "duration": 1.2,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "group",
+                "groupId": "landing"
+              },
+              "perMesh": false,
+              "position": [
+                0,
+                0,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "id": "s_mscrebuilddp",
+            "action": "transformOffset",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.24,
+            "wait": "duration",
+            "duration": 1.2,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "group",
+                "groupId": "damping"
+              },
+              "perMesh": false,
+              "position": [
+                0,
+                0,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "id": "s_mscrebuildts",
+            "action": "transformOffset",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.36,
+            "wait": "duration",
+            "duration": 1.2,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "group",
+                "groupId": "tasselli"
+              },
+              "perMesh": false,
+              "position": [
+                0,
+                0,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "id": "s_mscrebuildrt",
+            "action": "transformOffset",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.42,
+            "wait": "duration",
+            "duration": 1.3,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "group",
+                "groupId": "rotors"
+              },
+              "perMesh": false,
+              "position": [
+                0,
+                0,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "id": "s_mscrebuildpt",
+            "action": "transformOffset",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.48,
+            "wait": "duration",
+            "duration": 1.3,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "allExcept",
+                "groupIds": [
+                  "keycaps",
+                  "body",
+                  "damping",
+                  "rotors",
+                  "tasselli",
+                  "landing",
+                  "viti"
+                ]
+              },
+              "perMesh": false,
+              "position": [
+                0,
+                0,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "id": "s_mscrebuildkc",
+            "action": "transformOffset",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0.6,
+            "wait": "duration",
+            "duration": 1.4,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "group",
+                "groupId": "keycaps"
+              },
+              "perMesh": false,
+              "position": [
+                0,
+                0,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "id": "s_mscrebuildpose",
+            "action": "goToPose",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "settle",
+            "duration": 0,
             "maxWait": 8,
             "easing": "linear",
             "params": {
-              "variantId": "layout",
-              "optionId": "ansi",
-              "offsetIn": [
-                -50,
-                50,
-                0
-              ],
-              "offsetOut": [
-                50,
-                50,
-                0
-              ]
+              "poseKey": "TL"
+            }
+          }
+        ]
+      },
+      {
+        "id": "anim_mscwireframe01",
+        "label": "Wireframe",
+        "slug": "wireframe",
+        "hidden": false,
+        "loop": {
+          "mode": "none",
+          "times": 1,
+          "from": 0
+        },
+        "restoreOnStop": true,
+        "startFrom": "reset",
+        "stopOnFinish": false,
+        "requires": "",
+        "steps": [
+          {
+            "id": "s_mscwfpose",
+            "action": "goToPose",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "settle",
+            "duration": 0,
+            "maxWait": 8,
+            "easing": "linear",
+            "params": {
+              "poseKey": "TL"
+            }
+          },
+          {
+            "id": "s_mscwffocus",
+            "action": "focusGroup",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "settle",
+            "duration": 0,
+            "maxWait": 8,
+            "easing": "linear",
+            "params": {
+              "groupId": "rotors",
+              "radiusFactor": 2,
+              "offsetX": null,
+              "offsetY": null,
+              "offsetZ": null
+            }
+          },
+          {
+            "id": "s_mscwffadeout",
+            "action": "setOpacity",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "duration",
+            "duration": 0.45,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "all"
+              },
+              "opacity": 0.04,
+              "depthWrite": true
+            }
+          },
+          {
+            "id": "s_mscwfon",
+            "action": "setWireframe",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "none",
+            "duration": 0,
+            "maxWait": 8,
+            "easing": "linear",
+            "params": {
+              "selector": {
+                "kind": "all"
+              },
+              "on": true
+            }
+          },
+          {
+            "id": "s_mscwftint",
+            "action": "setMaterial",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "duration",
+            "duration": 0.7,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "all"
+              },
+              "color": "#050809",
+              "emissive": "#4fc3f7",
+              "emissiveIntensity": 0.3,
+              "roughness": 1,
+              "metalness": 0
+            }
+          },
+          {
+            "id": "s_mscwffadein",
+            "action": "setOpacity",
+            "enabled": true,
+            "parallel": true,
+            "delay": 0,
+            "wait": "duration",
+            "duration": 0.7,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "all"
+              },
+              "opacity": 0.5,
+              "depthWrite": true
+            }
+          }
+        ]
+      },
+      {
+        "id": "anim_mscwireframe02",
+        "label": "Wireframe · inverso",
+        "slug": "wireframe-inverso",
+        "hidden": false,
+        "loop": {
+          "mode": "none",
+          "times": 1,
+          "from": 0
+        },
+        "restoreOnStop": true,
+        "startFrom": "keep",
+        "stopOnFinish": true,
+        "requires": "anim_mscwireframe01",
+        "steps": [
+          {
+            "id": "s_mscwfinvfade",
+            "action": "setOpacity",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "duration",
+            "duration": 0.45,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "selector": {
+                "kind": "all"
+              },
+              "opacity": 0.04,
+              "depthWrite": true
+            }
+          },
+          {
+            "id": "s_mscwfinvoff",
+            "action": "setWireframe",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "none",
+            "duration": 0,
+            "maxWait": 8,
+            "easing": "linear",
+            "params": {
+              "selector": {
+                "kind": "all"
+              },
+              "on": false
+            }
+          },
+          {
+            "id": "s_mscwfinvback",
+            "action": "clearFocus",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "settle",
+            "duration": 0.7,
+            "maxWait": 8,
+            "easing": "easeInOutCubic",
+            "params": {
+              "restoreOpacity": true,
+              "restoreTransforms": true,
+              "restoreMaterials": true
+            }
+          },
+          {
+            "id": "s_mscwfinvpose",
+            "action": "goToPose",
+            "enabled": true,
+            "parallel": false,
+            "delay": 0,
+            "wait": "settle",
+            "duration": 0,
+            "maxWait": 8,
+            "easing": "linear",
+            "params": {
+              "poseKey": "TL"
             }
           }
         ]
       }
     ]
   },
+  "variants": {
+    "swapAnimations": {}
+  },
   "app": {
-    "homePose": "TL",
-    "idleAnimation": "anim_ms5zlva66qnju",
-    "releaseDuration": 0.5,
-    "releaseEasing": "easeInOutCubic"
+    "idleAnimation": "",
+    "releaseDuration": 1.1,
+    "releaseEasing": "easeInOutCubic",
+    "releaseTransforms": true,
+    "releaseTransformsDuration": 0.7,
+    "releaseTransformsEasing": "easeInOutCubic",
+    "homePose": "TL"
+  },
+  "postfx": {
+    "msaaSamples": 4,
+    "hdrTarget": true,
+    "pixelRatioCap": 1.32,
+    "dynamicScale": true,
+    "dynamicScaleMin": 0.7,
+    "aoEnabled": false,
+    "aoResolutionScale": 0.5,
+    "aoRadius": 0.12,
+    "aoIntensity": 1,
+    "aoThickness": 1,
+    "aoDistanceExponent": 2,
+    "aoSamples": 16
   }
 }

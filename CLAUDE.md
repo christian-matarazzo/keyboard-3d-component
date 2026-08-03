@@ -132,7 +132,11 @@ src/
    ├─ focusFraming.js                   bounding-sphere group framing measure
    ├─ LightRig.jsx                      per-pose light editor; imports no `leva` —
    │                                    reads `store.get('view')`, exposes
-   │                                    `resetActiveView` on apiRef
+   │                                    `resetActiveView` on apiRef. Also owns
+   │                                    `handleSaveJSON`/`handleLoadJSON` (published as
+   │                                    `saveConfigJSON`/`loadConfigJSON`): the save is
+   │                                    `store.toJSON()`, never a hand-written section
+   │                                    list — see the ⚠️ there and Detected Patterns
    ├─ AnimationDirector.jsx             single useFrame driving the runtime; renders null
    ├─ VariantController.jsx             ISO/ANSI-style variant visibility; also calls
    │                                    `apiRef.invalidateShadows()` after every toggle
@@ -161,7 +165,12 @@ src/
    │  │                                   `renderInMode(mode)`, the shared `render` predicate
    │  │                                   for mode-gated folders
    │  ├─ ModeTuner.jsx                    the "⚙️ Editor · Modalità" folder (editMode +
-   │  │                                   homePose), writes `store.ui`
+   │  │                                   homePose), writes `store.ui`. Six modes:
+   │  │                                   none/lights/**render**/meshes/anim/focus —
+   │  │                                   `render` ("Resa") is the one that gates folders
+   │  │                                   with no 3D surface of their own (materials,
+   │  │                                   rotation, post-processing), which used to be
+   │  │                                   visible in every mode
    │  ├─ DebugPanel.jsx                   the `<Leva>` root + debug readouts, extracted
    │  │                                   from KeyboardComposer.jsx
    │  ├─ RotationTuner.jsx, ViewSettingsTuner.jsx, PostFxTuner.jsx, MaterialTuner.jsx,
@@ -310,13 +319,11 @@ src/
    │  │                                  tier PostFx.jsx already applies per frame);
    │  │                                  never the postfx on/off switch itself, that's
    │  │                                  a KeyboardComposer prop) + createInitialState
-   │  ├─ debug.js                        isDebug()/setDebug(), SSR-safe — now ADOPTED:
-   │  │                                  `KeyboardComposer` uses it to decide whether to
-   │  │                                  load authoring, and it's re-exported from
-   │  │                                  `index.js`. The per-file `DEBUG` literal is still
-   │  │                                  the live pattern in KeyboardModel.jsx, LightRig.jsx,
-   │  │                                  AnimationDirector.jsx, useComposerControls.js and
-   │  │                                  Scene.jsx (onCreated) — not yet switched over.
+   │  ├─ debug.js                        isDebug()/setDebug(), SSR-safe — now the ONLY
+   │  │                                  source of the flag: zero `URLSearchParams`
+   │  │                                  literals left in `src/`. The migration was
+   │  │                                  finished because it wasn't cosmetic — see
+   │  │                                  "The package must import on Node" in Manual notes
    │  └─ useComposerSection.js           reactive per-section read (useSyncExternalStore);
    │                                     store.get(section) is the non-reactive twin for useFrame
    ├─ animation/                        schema, runtime, actions, selectors, easings,
@@ -334,8 +341,15 @@ src/
    │  ├─ materialRegistry.js             color/roughness/metalness/emissive override
    │  │                                  (the `setMaterial` action) — twin of
    │  │                                  opacityRegistry: snapshot on acquire, interpolate,
-   │  │                                  restore-not-bake. ⚠️ UNIFORM properties only,
-   │  │                                  never a define (see the strain in Manual notes)
+   │  │                                  restore-not-bake. ⚠️ INTERPOLATED properties are
+   │  │                                  UNIFORM only, never a define (see the strain in
+   │  │                                  Manual notes). `wireframe` (the `setWireframe`
+   │  │                                  action) rides the same snapshot/refcount/restore
+   │  │                                  machinery as a WRITE-ONCE flag: it is neither —
+   │  │                                  three swaps the index buffer at draw time — so it
+   │  │                                  is safe mid-animation, and it is the one value
+   │  │                                  `beginRestoreAll` puts back at k=0 instead of k=1
+   │  │                                  (a draw mode has no in-between to fade)
    │  ├─ animationSchema.js               every animation gets a `slug` (slugified label,
    │  │                                   deduped) alongside its id; `findAnimation(items, key)`
    │  │                                   matches id OR slug, id first across every source —
@@ -391,6 +405,12 @@ scripts/make-ar-asset.mjs              generates public/ar/keyboard-ar.glb (see
                                         materials and hierarchy are all JSON — so the
                                         Draco-compressed binary chunk passes through
                                         byte for byte
+scripts/ssr-smoke.mjs                  imports the built `dist/lib` and
+                                        `renderToString()`s the component on Node —
+                                        an SSR regression guard, not an asset
+                                        pipeline step. Not yet wired into
+                                        package.json scripts. See "The package
+                                        must import on Node" in Manual notes
 ```
 
 Data flow, in two directions:
@@ -507,17 +527,22 @@ into the synchronous `three` chunk that every visitor downloads.
 Recurring shapes in this codebase — follow them rather than inventing a
 variant:
 
-- **`DEBUG` is recomputed per file**, never threaded as a prop:
-  `new URLSearchParams(window.location.search).has('debug')`. `editMode` used
-  to be the opposite (one `useControls` in `Scene.jsx`, threaded down); it now
-  lives in `store.ui`, written by `authoring/ModeTuner.jsx` and threaded down
-  as a prop like everything else — see Data flow above.
-  `state/debug.js` (`isDebug()`/`setDebug()`) centralizes the `DEBUG`
-  computation and is SSR-safe; it is now ADOPTED by `KeyboardComposer.jsx`
-  (decides whether to load `authoring/`) and re-exported from `index.js`. The
-  per-file `URLSearchParams` literal is still the live pattern in
+- **`DEBUG` is recomputed per file, never threaded as a prop — but it is
+  always `isDebug()`, and NEVER at module scope.** `editMode` used to be the
+  opposite (one `useControls` in `Scene.jsx`, threaded down); it now lives in
+  `store.ui`, written by `authoring/ModeTuner.jsx` and threaded down as a prop
+  like everything else — see Data flow above.
+  `state/debug.js` (`isDebug()`/`setDebug()`) is the single source: it is read
+  by `KeyboardComposer.jsx` (decides whether to load `authoring/`), by
   KeyboardModel.jsx, LightRig.jsx, AnimationDirector.jsx,
-  useComposerControls.js and Scene.jsx (`onCreated`) — not yet switched over.
+  useComposerControls.js, Scene.jsx (`onCreated`) and
+  authoring/AnimationEditor.jsx, and re-exported from `index.js`.
+  ⚠️ **The placement is the load-bearing half.** Each call site holds a
+  `const DEBUG = isDebug()` in the COMPONENT/HOOK BODY. Hoisting it back to
+  module scope compiles, builds green, and runs fine in the browser — and
+  breaks the npm package on Node, because module scope is evaluated at
+  `import` time. See "The package must import on Node" in Manual notes for the
+  measurement and the one-line guard.
 - **A Leva folder's `render` cannot close over an external boolean prop** —
   MEASURED, not assumed. Leva only re-evaluates `render` when a value the
   callback read *through `get`* changes; that's how it registers its
@@ -545,6 +570,26 @@ variant:
   not a build error — Rollup/Vite won't flag it, and it can reach production
   as a blank screen. Grep for a component's remaining JSX usages after
   removing its import; don't trust the build alone.
+- **The saved file is `store.toJSON()`, never a hand-written section list.**
+  `handleSaveJSON` (LightRig.jsx) used to build its payload by naming each
+  section, and `postfx` — added later — silently never reached the file: the
+  JSON stayed valid, reloaded without error, and the whole post-processing
+  tuning fell back to `DEFAULT_POSTFX` on every reload, because `hydrate` skips
+  absent sections by design. **A new section added to `COMPOSER_SECTIONS` must
+  be picked up by both directions for free**, or the next one repeats the bug.
+  ⚠️ The cheap static check for the round trip, worth re-running after touching
+  either direction: `hydrate` the shipped config into a fresh store and compare
+  `toJSON()` to the file. ⚠️ **It is NOT byte-identical any more — this line
+  used to claim it was, and taken literally it turns every run into a false
+  alarm.** Measured 2026-08-03: all ten sections survive, but four animations
+  drift (`GoToRotorsAlt · inverso`, `GoToPatches · inverso`, `Esploso`,
+  `Esploso · inverso`). They were hand-written into the JSON rather than saved
+  from the editor, so their keys are in a different order and `loop.times`/
+  `loop.from` are absent — `normalizeAnimation` fills them in, nothing is lost.
+  **Compare per animation, not per line**: stringify each item before and after
+  and expect the four known names, so a fifth stands out. A missing SECTION is
+  invisible in review AND in the browser; only that diff catches it, and it
+  still does.
 - **Ref mirrors for per-render values read inside stable closures**
   (`disabledRef`, `feelRef`, `focusImplRef`, `editModeRef`): the API effect
   runs once, so implementations are reached through a ref updated every
@@ -590,7 +635,13 @@ variant:
   (`MaterialTuner`/`FocusTuner` render N tuner components).
 - **Scene traversals must skip tagged nodes**: `userData.__editorHelper`
   and `userData.__variantHidden`. Every new traversal is one more site to
-  cover.
+  cover. ⚠️ `LightRig.jsx`'s own gizmo meshes (the 6 box-face helpers, the 26
+  point-light sphere helpers) were themselves a missed site until recently:
+  untagged, they fell into `collectMeshGroups`'s fallback bucket (`body` on
+  this model) and so were reachable by any animation selector targeting
+  `body` — a `setOpacity`/`transformOffset` on `body` would have fought the
+  `useFrame` that repositions/rescales them every frame. Now tagged
+  `__editorHelper` like every other authoring scaffold mesh.
 - **Per-frame code avoids shader-define writes** (`transparent`,
   `needsUpdate`, light *counts*); only uniforms and renderer state change
   per frame.
@@ -751,13 +802,67 @@ Other `?debug`-only console handles, all installed next to the code they drive:
 `TransformControls` gizmos in `authoring/MeshController.jsx` and
 `authoring/LightGizmos.jsx` on `onMouseDown`, so dragging a gizmo doesn't also
 rotate the model), `window.__focusGroup(id)` / `window.__clearFocus()`, and
-`window.__playAnimation(id, opts)` (`AnimationDirector.jsx`).
+`window.__playAnimation(id, opts)` / `__stopAnimation()` / `__animTrigger(name)`
+/ `__animState()` / `__animStats()` (`AnimationDirector.jsx`). The last two are
+the cheap way to check a teardown left nothing behind: `__animStats()` must read
+all zeros (`ownedMaterials`, `tintedMaterials`, `clonedMeshes`, `pivots`,
+`pivotedMeshes`) once an animation and its inverse have finished.
+⚠️ `window.__kb` is the PUBLIC API facade, and it comes from `App.jsx`, not from
+the component — playground only, same boundary as `PLAYGROUND_BRANDING`. It is
+the honest way to exercise what ships (`__kb.play('wireframe')`,
+`__kb.subscribe(console.log)`).
+⚠️ `window.__STORE` is **Leva's** store, not the composer's — checked, it
+exposes `getVisiblePaths`/`setValueAtPath`. The fiber walk above is still the
+only way to the authored store; don't let the name save you the trip.
 
 Since the store refactor there is no longer a reason to reproduce the
 production config by hand: `runtime/ConfigLoader.jsx` fetches
 `product.configUrl` in `?debug` too, so the authoring session already runs on
 the shipped values. `apiRef.current.loadConfigJSON()` (the "Carica JSON" button,
 published by `LightRig.jsx`) is still the way to try a *different* file.
+
+## The package must import on Node — and the browser never tells you
+
+The component is meant to be installed by a React e-commerce app, i.e. by
+Next/Remix, where **the first render runs on the server**. Nothing in this
+repo's normal workflow exercises that: `npm run dev`, `npm run build` and every
+browser measurement above all run where `window` exists.
+
+Measured 2026-08-03: `dist/lib` **could not be imported at all** under Node —
+`ReferenceError: window is not defined`, thrown at import time, before any
+component rendered. Cause: five modules held
+`const DEBUG = new URLSearchParams(window.location.search).has('debug')` at
+**module scope**, and four of them (KeyboardModel, LightRig, AnimationDirector,
+useComposerControls) sit in the eager chain
+`index.js → KeyboardComposer → Scene`. `state/debug.js` had already been
+written to prevent exactly this — its own header names Next/Remix — and the
+migration had stopped four files short.
+
+⚠️ **The failure mode is what makes this worth writing down: every local signal
+was green.** The dev server was fine, both builds were fine, and the browser
+was fine, because module scope is only hostile in an environment this repo
+never starts. A code review reads `const DEBUG = …` as a harmless constant; the
+bug is not in the expression but in *where it sits*.
+
+The guard is one line and runs without a browser:
+
+```bash
+node --input-type=module -e "import('./dist/lib/keyboard-composer.js')"
+```
+
+`scripts/ssr-smoke.mjs` is the stronger version — it also `renderToString`s the
+component, which catches a `window` in a component BODY that a bare import
+would miss (261 bytes of HTML: the shell renders, the Canvas subtree correctly
+renders nothing on the server). Worth running after any change to the eager
+import chain. Not yet wired into `package.json`.
+
+⚠️ Two things that are safe and should not be "fixed" on sight:
+`sessionStorage` in `KeyboardComposer.jsx`'s `useState` initializer is inside a
+`try/catch`, and a bare-identifier `ReferenceError` **is** catchable, so it
+returns `null` on Node exactly as it does in Safari private mode. And
+`authoring/AnimationEditor.jsx` lives behind the `import()`, so it never loads
+on the server — it was switched over anyway, because leaving one copy of the
+pattern alive is how it comes back.
 
 ## Measured numbers worth not re-deriving
 
@@ -784,6 +889,9 @@ published by `LightRig.jsx`) is still the way to try a *different* file.
 | **0 recompiled programs** | 8 tier transitions | `gl.info.programs.length` 11 → 11 across four focus/exit cycles. This is THE check that the tier change goes through `composer.setPixelRatio()` and not the `useLayoutEffect` — the rebuild path would construct a fresh `GTAOPass`, i.e. new materials, i.e. a compile stall triggered by the very knob that exists to avoid one. Re-run it after touching either path |
 | **2 reallocations per dolly** | entering focus, 150 frames sampled | Target width went 1276 → 1148.4 → 893.2 and stopped, i.e. `SCALE_STEP` + `SCALE_COOLDOWN_S` really do keep the ~0.6 s damped dolly from reallocating at every intermediate zoom. Sample `postfxTarget().width` per frame and count distinct values to re-check |
 | **`focusZoom` 1.56 on `keycaps`** | why the signal is a number, not a boolean | Focusing a group whose bounding sphere is *larger* than the fit zooms OUT, and costs less than the resting frame. Measured: rotors 0.19 → tier 0.7, keycaps 1.56 → clamped to 1, full resolution. A boolean "focus active" would have downscaled the one case that needed nothing |
+| **A wireframe of this asset does not read at full framing — at any density** | `setWireframe`, browser 2026-08-03 | 338,586 triangles over an ~800 px canvas cover every pixel several times: the result is a flat tone, not a mesh. ⚠️ The obvious fix does NOT work — dropping the three densest groups (keycaps + damping + viti = **81.6%** of triangles) leaves the bare shell at 36,664 triangles, and it is *still* a solid mass. It is the asset's density, not a tuning problem, so the authored animation does `focusGroup` BEFORE switching on, never after. Close up the topology is unmistakable. Per-group triangles, worth not re-counting: keycaps 144,704 · damping 69,490 · viti 62,152 · body 36,664 · rotors 20,160 · the other four ≈1,300 each |
+| **13 fps wide vs 24-25 fps zoomed** | the same wireframe | ⚠️ Inverts the rule the rest of this table teaches (a focus costs ~4× because it fills the viewport). Lines are the exception: wide, all ~2 M segments are on screen and overlapping; zoomed, frustum culling throws most of them away. So the legible framing is also the cheap one — there is no trade-off to arbitrate here |
+| **6 fps from `depthWrite: false`** | the wireframe fade | Dead end already walked, in search of an x-ray look: half the frame rate of `depthWrite: true` (every interior face drawn as well) and **zero** legibility gained. Depth write is what gives the wireframe a silhouette instead of a cloud |
 | **~8% from transparency** | ~105 meshes at `opacity 0.2` | 86.7 ms transparent vs 79.8 opaque, same camera. Real, but far from the story — the transparent pass loses early-Z and interleaves materials by z instead of batching them (`three.cjs:65639` vs `65665`), yet both of those land on the CPU/ordering axis that the 1.17 ms row already rules out. **What makes `GoToRotors` expensive is the focus zoom filling the viewport, not the fade** |
 | **`RADIUS_MIN = 0.8`** | `useComposerControls.js` | Lowered from 2.5 for the group focus. With a 200 mm lens `baseRadius` is ~36 scene units and a small group frames at ~1.7–3.5 — the old floor was an invisible ceiling on the product zoom |
 | **`FIT_RADIUS_MIN = 5.2`** | `useComposerControls.js` | Floor of the **whole-model fit only**. ⚠️ Never apply it to the focus path |
@@ -1034,6 +1142,30 @@ These are accepted costs of the current design, not bugs waiting to be filed.
   eases rather than snapping, but it is still a **return to rest, not a
   rewind**: it interpolates straight from wherever the scene is to the snapshot,
   ignoring the path the animation took to get there.
+- **A generated inverse has two ways to undo the same thing, and the wrong one
+  wins in silence.** `clearFocus` restores opacity, mesh poses and tints
+  *globally* from the registries, while `reverseAnimation` also emits the
+  per-step inverses (`setOpacity → 1`, `transformOffset → [0,0,0]`,
+  `rotateBy → −angle`). Where both exist the global restore wins — and not by
+  racing for the same frame, which is what makes it hard to see: `focusGroup` is
+  usually the LAST step of the direct animation, so the reversal by groups puts
+  its `clearFocus` FIRST in the inverse, and `beginRestoreAll().finish()` clears
+  every pivot channel *before* the explicit steps run. Those then interpolate
+  from zero to zero and the motion the inverse existed to show simply never
+  happens. Measured 2026-08-02 on `GoToRotorsAlt · inverso`: the keycaps dropped
+  back to rest within 0.5 s **at opacity 0** and then faded in standing still,
+  instead of descending from +50 as they faded. `focusGroup.inverse` therefore
+  emits `restoreOpacity: false` **and** `restoreTransforms: false`.
+  ⚠️ `restoreMaterials` stays ON, and that asymmetry is the actual rule worth
+  keeping: **the global restore is right exactly where no explicit inverse
+  exists.** `setMaterial` has none (the starting colour lives only in the
+  registry at runtime); opacity and transforms do. An action added with an
+  `inverse()` joins the first list; one added without it needs `clearFocus` to
+  keep covering it.
+  ⚠️ Inverses already **saved** in a product's config keep the flags they were
+  generated with — fixing the generator does not reach them. Grep the config for
+  `clearFocus` after touching this, and leave hand-authored "return to rest"
+  sequences (`GoIdle`) alone: there the global restore is the whole point.
 - **`measureModelBox` will see the spinning rotors.** It re-measures every
   `BOX_REFRESH_FRAMES` and damps the result, so a group whose AABB changes shape
   as it rotates can make the adaptive light box slowly breathe. If it turns out
@@ -1075,7 +1207,26 @@ These are accepted costs of the current design, not bugs waiting to be filed.
   rebuild as expected.
   ⚠️ Why it matters beyond clearcoat: uniform-valued props (color, roughness,
   metalness) are unaffected and apply normally, so the failure is **invisible
-  until a define is involved** — and the textured GLB will bring exactly those
+  until a define is involved** — `wireframe` is the one non-uniform property
+  that is nonetheless safe under a fade, because it is not a define either: it
+  is read at draw time (`WebGLRenderer.js:1111` swaps in
+  `getWireframeAttribute(geometry)` and draws LINES). It appears in the cache
+  key only through `WebGLPrograms.js:305`'s
+  `flatShading && wireframe === false`, and `flatShading` is never set anywhere
+  in `src/`, so the term is `false` either way. **Anyone introducing a
+  `flatShading: true` material silently makes `setWireframe` a 192 ms compile
+  stall.** Verified in browser 2026-08-03, and verified the right way —
+  `gl.info.programs.length` reads **11 before and 11 after**, across two plays
+  of the animation and one of its inverse. Its real cost is elsewhere: three
+  builds the line index buffer on the first draw with it on (6 indices per
+  triangle, ~2.03 M entries, ~8 MB across 338,586 triangles / 111 primitives).
+  Measured, the frame that flips it costs **148.7 ms the first time and 81 the
+  second**, against a 32 ms median — so ~68 ms is the one-time build and the
+  remaining 81 is the first line draw, which never goes away. The authored
+  «Wireframe» animation flips it at opacity 0.04 so that frame lands where
+  nothing is visible; it is deliberately NOT pre-warmed, which would charge
+  every session for a view most visitors never open. And the textured GLB will
+  bring the genuine defines
   (`map`, `normalMap`, `alphaMap` presence are all defines, and
   `programSignature` already tracks them for the warm-up). Authoring materials
   while an animation holds a fade is a normal thing to do in `?debug`.

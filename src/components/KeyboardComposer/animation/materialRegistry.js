@@ -21,14 +21,47 @@ import * as THREE from 'three'
  * scrive sotto: al rilascio si torna a ciò che c'era. Ortogonali per
  * costruzione, non per disciplina — stesso argomento di opacityRegistry.js.
  *
- * ⚠️ **Ogni proprietà qui dentro è una UNIFORM, e non è un caso.** Colore,
- * rugosità, metallicità, emissiva e la sua intensità entrano nello shader come
- * valori, non come define: scriverle per-frame non ricompila niente. Cambiare
- * invece una proprietà che è un define (`clearcoat` che attraversa lo zero, la
- * presenza di una `map`) durante un'animazione è la trappola già annotata in
- * CLAUDE.md — e con un override di opacità attivo non arriva nemmeno allo
- * shader. Se un giorno servisse animare il clearcoat, non basta aggiungerlo a
- * `PROPS`.
+ * ⚠️ **Ogni proprietà INTERPOLATA qui dentro è una UNIFORM, e non è un caso.**
+ * Colore, rugosità, metallicità, emissiva e la sua intensità entrano nello
+ * shader come valori, non come define: scriverle per-frame non ricompila
+ * niente. Cambiare invece una proprietà che è un define (`clearcoat` che
+ * attraversa lo zero, la presenza di una `map`) durante un'animazione è la
+ * trappola già annotata in CLAUDE.md — e con un override di opacità attivo non
+ * arriva nemmeno allo shader. Se un giorno servisse animare il clearcoat, non
+ * basta aggiungerlo a `SCALARS`.
+ *
+ * ⚠️ `wireframe` è l'UNICA eccezione, ed è ammessa perché non è né l'una né
+ * l'altra cosa: non è una uniform (non si interpola, è un interruttore) ma
+ * nemmeno un define. three lo legge al momento del disegno e si limita a
+ * cambiare la primitiva — `WebGLRenderer.js:1111` sostituisce l'index buffer
+ * con quello di `getWireframeAttribute(geometry)` e disegna LINES invece di
+ * TRIANGLES. Nella chiave di cache del programma compare una sola volta, e
+ * indirettamente: `WebGLPrograms.js:305` calcola
+ * `flatShading: material.flatShading === true && material.wireframe === false`.
+ * Su questo progetto `flatShading` non è mai impostato (resta `false` di
+ * default, verificato con un grep su tutto `src/`), quindi quel termine è
+ * `false` a wireframe acceso e spento: **accenderlo non ricompila nulla.**
+ * Chiunque introduca un materiale `flatShading: true` rompe questa premessa e
+ * si riporta in casa lo stallo da 192 ms.
+ *
+ * ⚠️ Costo che invece c'è, MISURATO in browser il 2026-08-03. three costruisce
+ * l'index buffer di wireframe alla prima draw call con l'interruttore acceso —
+ * 6 indici per triangolo, cioè ~2,03 M voci su questo asset (338 586 triangoli
+ * su 111 primitive) e ~8 MB di `Uint32Array`, lavoro CPU sincrono dentro un
+ * frame. Il frame in cui si accende costa **148,7 ms al primo giro e 81 al
+ * secondo** (mediana normale: 32, che su questa macchina è il pavimento
+ * dell'harness). La differenza fra i due, ~68 ms, è la costruzione una-tantum;
+ * gli 81 che restano sono il primo disegno a linee e non spariscono mai.
+ * Per questo l'animazione autorata accende il wireframe quando il modello è
+ * già sfumato a 0,04: il frame lungo cade dove non si vede. Non si scalda in
+ * anticipo di proposito — costerebbe quei megabyte e quel tempo a ogni
+ * sessione, anche a chi il wireframe non lo apre mai.
+ *
+ * ⚠️ E la conferma che l'analisi qui sopra sui define è giusta, non plausibile:
+ * `gl.info.programs.length` legge **11 prima e 11 dopo**, su due giri della
+ * diretta e uno dell'inverso. Zero ricompilazioni. È il controllo da rifare
+ * (non cronometrare i frame — vedi warmupTransparency.js) se qualcuno tocca i
+ * materiali di gruppo.
  */
 
 // Le proprietà scalari gestite, con i limiti che il registry impone comunque
@@ -48,6 +81,9 @@ const snapshotOf = (m) => ({
   roughness: m.roughness,
   metalness: m.metalness,
   emissiveIntensity: m.emissiveIntensity,
+  // Non entra in nessuna interpolazione (è un booleano): sta nella fotografia
+  // solo perché il ripristino sappia rimetterlo com'era. Vedi l'intestazione.
+  wireframe: m.wireframe === true,
 })
 
 export function createMaterialRegistry(targets) {
@@ -78,6 +114,7 @@ export function createMaterialRegistry(targets) {
     if (s.roughness != null) m.roughness = s.roughness
     if (s.metalness != null) m.metalness = s.metalness
     if (s.emissiveIntensity != null) m.emissiveIntensity = s.emissiveIntensity
+    if (s.wireframe != null) m.wireframe = s.wireframe
   }
 
   const disown = (material) => {
@@ -150,6 +187,21 @@ export function createMaterialRegistry(targets) {
           }
         }
       },
+      /**
+       * Interruttore del wireframe: si SCRIVE E BASTA, non si interpola — una
+       * primitiva di disegno non ha valori intermedi. È il motivo per cui non
+       * passa da `targetProps`/`lerp` come tutto il resto di questo file.
+       *
+       * La morbidezza la mette chi autora, non il registry: l'animazione
+       * integrata sfuma l'opacità quasi a zero, commuta qui, e risfuma. Vale
+       * anche per il costo — vedi la nota sull'index buffer in intestazione.
+       */
+      setWireframe(on) {
+        for (const m of mats) {
+          if (restoring.has(m)) continue
+          m.wireframe = on === true
+        }
+      },
       release() {
         if (released) return
         released = true
@@ -183,6 +235,13 @@ export function createMaterialRegistry(targets) {
     const from = snapshot.map(snapshotOf)
     const to = snapshot.map((m) => owned.get(m).prev)
     for (const m of snapshot) restoring.add(m)
+    // ⚠️ Il wireframe torna SUBITO, non a fine corsa insieme al resto: non
+    // essendo interpolabile, aspettare significherebbe farlo scattare
+    // sull'ultimo frame, cioè a modello ormai di nuovo opaco — il momento in
+    // cui il cambio di primitiva si vede di più. Rimesso qui, lo scatto cade
+    // quando il modello è ancora sfumato e restano da sfumare solo le tinte.
+    // (`disown` lo riscriverà identico dalla stessa fotografia: innocuo.)
+    for (let i = 0; i < snapshot.length; i++) snapshot[i].wireframe = to[i].wireframe === true
     let finished = false
     return {
       empty: snapshot.length === 0,

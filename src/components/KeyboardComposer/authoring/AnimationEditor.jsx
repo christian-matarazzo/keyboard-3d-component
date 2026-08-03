@@ -14,8 +14,7 @@ import {
   slugify,
 } from '../animation/animationSchema'
 import { cloneAnimation, cloneSteps, reverseAnimation } from '../animation/animationTransforms'
-
-const DEBUG = new URLSearchParams(window.location.search).has('debug')
+import { isDebug } from '../state/debug'
 
 // Le etichette dell'HUD sono duplicate per design (più pose condividono la
 // stessa label breve): si disambigua accodando la chiave, come in Scene.jsx.
@@ -327,6 +326,11 @@ export default function AnimationEditor({
     return map
   }, [current])
 
+  // Costante per sessione, valutata nel render e non all'import: questo modulo
+  // vive nel chunk lazy dell'authoring, quindi sotto SSR non verrebbe caricato
+  // comunque — ma la costante di modulo era lo stesso identico pattern che
+  // rompeva l'import del pacchetto altrove, e non ne resta nessuna copia.
+  const DEBUG = isDebug()
   if (!DEBUG || editMode !== 'anim') {
     // Pannello non a video: la scorciatoia da tastiera resta registrata (è un
     // effetto senza dipendenze) ma non deve poter annullare su uno stato vecchio.

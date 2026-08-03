@@ -4,13 +4,8 @@ import { useFrame, useThree } from '@react-three/fiber'
 import { easing } from 'maath'
 import { DEG, wrapYaw } from './poseGraph'
 import { measureGroupFraming } from './focusFraming'
+import { isDebug } from './state/debug'
 import { useComposerSection } from './state/useComposerSection'
-
-// La rotella è uno STRUMENTO DI AUTHORING, non un'interazione di prodotto: in
-// produzione lo zoom è solo quello autorato sui gruppi (vedi focusGroup). Il
-// flag è ricalcolato qui come negli altri file (mai threadato come prop) —
-// vedi la sezione "Debug flag" in CLAUDE.md.
-const DEBUG = new URLSearchParams(window.location.search).has('debug')
 
 // Mezza larghezza del modello + margine: usata per il fit responsive.
 const FIT_HALF_WIDTH = 2.0
@@ -219,6 +214,17 @@ export function useComposerControls(
   const gl = useThree((s) => s.gl)
   const camera = useThree((s) => s.camera)
   const size = useThree((s) => s.size)
+
+  // La rotella è uno STRUMENTO DI AUTHORING, non un'interazione di prodotto: in
+  // produzione lo zoom è solo quello autorato sui gruppi (vedi focusGroup).
+  //
+  // ⚠️ Valutato QUI e non a livello di modulo. Era `new URLSearchParams(
+  // window.location.search)` in cima al file, il che rendeva l'import stesso
+  // impossibile su Node: il pacchetto è destinato a un'app React con SSR
+  // (Next/Remix), dove il primo render gira sul server e `window` non esiste.
+  // `isDebug()` è SSR-safe e rispetta l'override di `setDebug` — vedi
+  // state/debug.js, che era già stato scritto per questo.
+  const DEBUG = isDebug()
 
   // Usiamo una ref per 'disabled' così da avere il valore aggiornato nei listener
   // senza dover ricreare gli eventi a ogni render.
@@ -542,7 +548,7 @@ export function useComposerControls(
   // Debug-only: salto secco a una posa (audit multi-posa via ?debug).
   // window.__setPose(pitchDeg, yawDeg) — non tocca il flusso di produzione.
   useEffect(() => {
-    if (!new URLSearchParams(window.location.search).has('debug')) return
+    if (!DEBUG) return
     window.__setPose = (pitchDeg, yawDeg) => {
       const p = pose.current
       p.pitch = p.targetX = (pitchDeg * Math.PI) / 180

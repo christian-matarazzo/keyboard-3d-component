@@ -50,6 +50,18 @@
  * depth write resta acceso per oltre il 90% della dissolvenza, cioè si torna
  * di fatto al comportamento che aveva l'artefatto.
  *
+ * ⚠️ **Un `setOpacity` autorato non deve avere come bersaglio esattamente
+ * questo valore**, ed è una trappola che non si vede leggendo il JSON. Con
+ * `opacity: 0.2` l'interpolazione arriva a `1 + (0.2 - 1) * 1`, cioè
+ * `0.19999999999999996`: la soglia viene attraversata NELL'ULTIMO FRAME della
+ * dissolvenza invece che durante. E `easeInOutCubic` ha la coda piatta (a
+ * k = 0.9 l'opacità è ancora 0.2032), quindi il salto qui sopra tabulato cade
+ * su un'immagine ormai ferma — che è il regime in cui si legge come scatto
+ * invece che come parte del movimento. Al ritorno succede in specchio, al
+ * primo frame del rientro. Il bersaglio va tenuto sotto la soglia con un
+ * margine (GoToRotors sta a 0.15: attraversa a k ≈ 0.755, mentre il dolly del
+ * focus sta ancora convergendo).
+ *
  * Vicoli ciechi già esplorati, per non ripercorrerli: `alphaHash` (transizione
  * continua per costruzione — a opacità 1 è pixel-identico all'opaco — e
  * indipendente dall'ordine, ma la grana stocastica senza accumulazione

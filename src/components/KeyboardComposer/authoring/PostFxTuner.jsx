@@ -1,5 +1,5 @@
 import { DEFAULT_POSTFX } from '../state/defaults'
-import { useLevaSection } from './useLevaSection'
+import { renderInMode, useLevaSection } from './useLevaSection'
 
 /**
  * Le manopole del post-processing: antialiasing e occlusione ambientale.
@@ -84,7 +84,8 @@ export default function PostFxTuner({ store }) {
       // banda, non aritmetica — vedi state/defaults.js.
       aoSamples: { value: DEFAULT_POSTFX.aoSamples, min: 4, max: 32, step: 1, label: 'campioni' },
     },
-    { folder: 'Post-processing' },
+    // Modalità "Resa" insieme a materiali e rotazione: vedi ModeTuner.jsx.
+    { folder: 'Post-processing', render: renderInMode('render') },
   )
 
   return null

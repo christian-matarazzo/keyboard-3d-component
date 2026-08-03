@@ -9,6 +9,7 @@ import {
   warmTransparentPrograms,
 } from './materials/warmupTransparency'
 import { useComposerControls } from './useComposerControls'
+import { isDebug } from './state/debug'
 import { ARRAY_MODEL_L } from './products/arrayModelL'
 
 /**
@@ -38,13 +39,6 @@ export const setDracoPath = (next) => {
 // esportata e usata come default da chi non passa nulla (Hud.jsx, preload).
 export const DEFAULT_MODEL_URL = ARRAY_MODEL_L.modelUrl
 
-// Selezione mesh/gruppo (gizmo di trasformazione, MeshController.jsx) è uno
-// strumento di authoring: attivo solo con ?debug E in editMode === 'meshes'
-// (vedi Scene.jsx) — condivide il canvas con l'editor luci di LightRig.jsx,
-// che raycasta indipendentemente sui suoi helper, quindi le due modalità
-// devono essere mutuamente esclusive o i click si sovrappongono.
-const DEBUG = new URLSearchParams(window.location.search).has('debug')
-
 // Larghezza finale del modello in unità scena, indipendente dalle unità
 // del file sorgente (l'OBJ è in centimetri).
 const TARGET_WIDTH = 3.2
@@ -52,6 +46,17 @@ const TARGET_WIDTH = 3.2
 export function KeyboardModel({ product, apiRef, store, onSizeComputed, onSelectMesh, controlsDisabled, editMode = 'none', homePoseKey = null, appMode = 'idle', focusOverrides = null }) {
   const { modelUrl, meshGroups, poseGraph } = product
   const { scene } = useGLTF(modelUrl, getDracoPath())
+
+  // Selezione mesh/gruppo (gizmo di trasformazione, MeshController.jsx) è uno
+  // strumento di authoring: attiva solo con ?debug E in editMode === 'meshes'
+  // (vedi Scene.jsx) — condivide il canvas con l'editor luci di LightRig.jsx,
+  // che raycasta indipendentemente sui suoi helper, quindi le due modalità
+  // devono essere mutuamente esclusive o i click si sovrappongono.
+  //
+  // ⚠️ Nel corpo del componente, non a livello di modulo: la costante in cima
+  // al file leggeva `window` all'import e rendeva il pacchetto non importabile
+  // sotto SSR. Vedi state/debug.js.
+  const DEBUG = isDebug()
 
   // Auto-fit: centra il modello e lo scala a TARGET_WIDTH, così camera e
   // ombre funzionano qualunque siano le unità dell'asset.
