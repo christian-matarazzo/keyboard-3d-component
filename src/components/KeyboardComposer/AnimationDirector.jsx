@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { useGLTF } from '@react-three/drei'
-import { getDracoPath } from './KeyboardModel'
 import { collectMeshList } from './materials/meshGroups'
 import { createAnimationRuntime } from './animation/animationRuntime'
 import { createMaterialTargets } from './animation/materialTargets'
@@ -31,7 +30,7 @@ import { isDebug } from './state/debug'
  * un'API separata di "anteprima non salvata".
  */
 export default function AnimationDirector({
-  modelUrl,
+  product,
   apiRef,
   store,
   animations,
@@ -44,7 +43,7 @@ export default function AnimationDirector({
   // mesh spostate. Autorati nell'editor e salvati nella sezione `app` del JSON.
   release,
 }) {
-  const { scene } = useGLTF(modelUrl, getDracoPath())
+  const { scene } = useGLTF(product.modelUrl, product.dracoPath)
 
   // ⚠️ Valutato nel corpo del componente, non a livello di modulo: `window` non
   // esiste durante il render SSR di Next/Remix, e una costante in cima al file

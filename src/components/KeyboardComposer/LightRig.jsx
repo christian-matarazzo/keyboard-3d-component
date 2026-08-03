@@ -2,42 +2,19 @@ import { useCallback, useMemo, useRef, useEffect, useState } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { easing } from 'maath'
 import * as THREE from 'three'
-import { Html, useGLTF } from '@react-three/drei'
+import { useGLTF } from '@react-three/drei'
 // Inizializzazione GLOBALE: deve avvenire prima che i materiali PBR
 // vengano compilati, altrimenti le RectAreaLight vengono ignorate.
 import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js'
 RectAreaLightUniformsLib.init()
 
 import { wrapYaw } from './poseGraph'
-import { getDracoPath } from './KeyboardModel'
-import { DEFAULT_VIEW_SETTINGS } from './state/defaults'
-import { applyConfig } from './runtime/productConfig'
+import { generateDefaultConfig, readViewSettings, VIEW_SETTING_KEYS } from './lightConfig'
 import { ShadowKeyLight, ShadowSpotLight } from './runtime/ShadowLights'
 import { isDebug } from './state/debug'
 import { useComposerSection } from './state/useComposerSection'
 
 const RIG_POSITION = [0, 0.1, 0]
-
-// --- Stili degli overlay di debug ----------------------------------------
-// Erano oggetti inline ripetuti quasi identici (i due <select>, i due bottoni
-// salva/carica): qui una sola volta, con le sole differenze come override sul
-// posto. Sono overlay dell'editor `?debug`, non UI di prodotto — per quella
-// valgono i CSS module (Hud.module.css).
-const SELECT_STYLE = {
-  background: 'rgba(20, 20, 20, 0.85)',
-  border: '1px solid rgba(255, 255, 255, 0.2)',
-  color: '#fff',
-  padding: '10px 14px',
-  borderRadius: '12px',
-  fontFamily: 'sans-serif',
-  fontSize: '13px',
-  fontWeight: '600',
-  cursor: 'pointer',
-  backdropFilter: 'blur(4px)',
-  boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
-  outline: 'none',
-  appearance: 'auto',
-}
 
 // --- SCATOLA LUCI ADATTIVA ------------------------------------------------
 // La scatola (griglia 3x3x3 di point light + 6 rectAreaLight per faccia) non
@@ -107,42 +84,6 @@ const boxFromModelSize = (modelSize) => ({
   minZ: -modelSize.z / 2, maxZ: modelSize.z / 2,
 })
 
-/**
- * Valori PER VISTA della cartella "Impostazioni Globali Vista". I default
- * abitano in state/defaults.js insieme a tutti gli altri; da lì leggono sia lo
- * schema Leva sia `generateDefaultConfig`, così un default cambiato in un punto
- * non può divergere dall'altro (prima erano due elenchi paralleli da tenere
- * allineati a mano, ed è il modo in cui un valore smette silenziosamente di
- * combaciare con quello scritto nei JSON già salvati).
- *
- * ⚠️ Queste chiavi finiscono nel JSON dentro `lights[posa]`, accanto a
- * `top_0_intensity` & co. Vale la stessa regola dei prefissi delle luci:
- * rinominarne una rimappa in silenzio ogni configurazione già salvata.
- */
-const VIEW_SETTING_KEYS = Object.keys(DEFAULT_VIEW_SETTINGS)
-
-/** Legge le impostazioni per vista da una config di posa, con i default per le chiavi assenti. */
-const readViewSettings = (config) => {
-  const out = {}
-  for (const k of VIEW_SETTING_KEYS) out[k] = config?.[k] ?? DEFAULT_VIEW_SETTINGS[k]
-  return out
-}
-
-const generateDefaultConfig = () => {
-  const def = { ...DEFAULT_VIEW_SETTINGS, showHelpers: true, showSurfaces: true }
-  for (let i = 0; i < 9; i++) { def[`top_${i}_intensity`] = 0; def[`top_${i}_color`] = '#ffffff'; def[`top_${i}_decay`] = 2; }
-  for (let i = 0; i < 8; i++) { def[`mid_${i}_intensity`] = 0; def[`mid_${i}_color`] = '#ffffff'; def[`mid_${i}_decay`] = 2; }
-  for (let i = 0; i < 9; i++) { def[`bot_${i}_intensity`] = 0; def[`bot_${i}_color`] = '#ffffff'; def[`bot_${i}_decay`] = 2; }
-  
-  const surfaces = ['top', 'bot', 'left', 'right', 'front', 'back']
-  surfaces.forEach(s => {
-    def[`surf_${s}_intensity`] = 0
-    def[`surf_${s}_color`] = '#ffffff'
-  })
-  
-  return def
-}
-
 export default function LightRig({
   modelSize,
   apiRef,
@@ -153,17 +94,25 @@ export default function LightRig({
   // helper senza possedere le luci.
   keyLightRef,
   spotLightRef,
+  // Riempito qui, letto da authoring/LightEditor.jsx: la maniglia con cui
+  // l'editor raggiunge ciò che il rig POSSIEDE (il dizionario per posa, mutato
+  // in loco e riletto ogni frame) senza che quella proprietà cambi lato.
+  // Stessa forma di keyLightRef/spotLightRef — vedi il blocco in testa a
+  // LightEditor.jsx. In produzione resta `undefined` e nessuno lo guarda.
+  // ⚠️ NON chiamarlo `rigRef`: quello è già il ref del <group> del rig, qui
+  // sotto, e sarebbe una ridichiarazione nello stesso scope.
+  editorRef,
 } = {}) {
   // GLB, grafo delle pose e percorso del JSON autorato vengono tutti dal
   // prodotto attivo: le luci sono indicizzate PER CHIAVE DI POSA, quindi un
   // file di configurazione ha senso solo insieme al grafo che lo indicizza
   // (vedi products/productSchema.js).
-  const { modelUrl, poseGraph, configUrl } = product
+  const { modelUrl, dracoPath, poseGraph } = product
   // Stessa cache di drei condivisa con KeyboardModel/MeshController/
   // MaterialTuner: nessun fetch aggiuntivo, è la STESSA istanza di scena su
   // cui l'editor mesh applica le sue trasformate — che è esattamente ciò che
   // qui va misurato dal vivo (vedi measureModelBox).
-  const { scene: modelScene } = useGLTF(modelUrl, getDracoPath())
+  const { scene: modelScene } = useGLTF(modelUrl, dracoPath)
   const rigRef = useRef()
   // Box misurato (target) e box smorzato (quello effettivamente usato per
   // posizionare luci e superfici).
@@ -194,9 +143,14 @@ export default function LightRig({
   const prevPoseRef = useRef(null) 
   const activePoseRef = useRef(null) 
   
-  const [activePose, setActivePose] = useState(null) 
-  const [selectedLight, setSelectedLight] = useState(null) 
-  const [lightEditor, setLightEditor] = useState({ intensity: 0, color: '#ffffff', decay: 2 })
+  const [activePose, setActivePose] = useState(null)
+
+  // La SELEZIONE dell'editor luci non vive più qui: sta in `store.ui`, la
+  // scrive authoring/LightEditor.jsx e questo componente la rilegge dentro
+  // useFrame in modo NON reattivo (`store.get`), per evidenziare l'helper
+  // giusto. È una stringa `${layer}_${index}`, mai un oggetto — vedi il blocco
+  // in testa a LightEditor.jsx per il perché di entrambe le scelte.
+  const clearSelection = useCallback(() => store.set('ui', { selectedLight: null }), [store])
 
   // Ref aggiuntivi per i Gruppi (utilizzati per animare dinamicamente il volume)
   const animatedMargin = useRef(1.0)
@@ -206,9 +160,11 @@ export default function LightRig({
   const botGroups = useRef([]); const botLights = useRef([]); const botHelpers = useRef([])
 
   // Unica descrizione delle tre fasce della griglia: la consumano il JSX della
-  // griglia, il loop di aggiornamento per-frame, gli <optgroup> del selettore
-  // e activeLightsList — prima erano quattro copie testuali da tenere
-  // allineate a mano.
+  // griglia e il loop di aggiornamento per-frame qui, più gli <optgroup> del
+  // selettore e l'elenco delle luci accese in authoring/LightEditor.jsx, che la
+  // riceve attraverso `editorRef` — prima erano quattro copie testuali da
+  // tenere allineate a mano, e restano una sola anche ora che i consumatori
+  // stanno in due file.
   //
   // ATTENZIONE: `prefix` e l'indice dentro `layers[prefix]` compongono le
   // chiavi del JSON di configurazione (`top_0_intensity`, `mid_3_color`, …).
@@ -225,8 +181,6 @@ export default function LightRig({
   const surfGroups = useRef({})
   const surfLights = useRef({})
   const surfHelpers = useRef({})
-  
-  const labelRef = useRef(null)
 
   const prevCamRef = useRef({ pitch: 0, yaw: 0, initialized: false })
   const transitionRef = useRef({ totalDist: 0, progress: 1 })
@@ -240,58 +194,9 @@ export default function LightRig({
   const currentControlsRef = useRef(controls)
   currentControlsRef.current = controls
 
-  // --- INIZIO IMPLEMENTAZIONE UNDO ---
-  const historyRef = useRef([])
-
-  // Salva una copia profonda (via JSON) prima di una modifica
-  const saveToHistory = () => {
-    const snapshot = JSON.stringify(configsRef.current)
-    const last = historyRef.current[historyRef.current.length - 1]
-    if (last !== snapshot) {
-      historyRef.current.push(snapshot)
-      // Limitiamo la history a 50 step per evitare memory leak
-      if (historyRef.current.length > 50) historyRef.current.shift()
-    }
-  }
-
-  useEffect(() => {
-    const handleUndo = (e) => {
-      // Intercetta Ctrl-Z (Windows/Linux) o Cmd-Z (Mac)
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
-        e.preventDefault()
-        
-        if (historyRef.current.length > 0) {
-          const prevState = historyRef.current.pop()
-          configsRef.current = JSON.parse(prevState)
-          
-          // Forza l'aggiornamento UI per la posa attiva
-          if (activePoseRef.current) {
-            const restoredConf = configsRef.current[activePoseRef.current]
-            if (restoredConf) {
-              setControls({
-                margin: restoredConf.margin,
-                showHelpers: restoredConf.showHelpers,
-                showSurfaces: restoredConf.showSurfaces !== undefined ? restoredConf.showSurfaces : restoredConf.showHelpers
-              })
-              
-              // Se stiamo ispezionando una luce, ripristina i suoi slider
-              if (selectedLight) {
-                setLightEditor({
-                  intensity: restoredConf[`${selectedLight.layer}_${selectedLight.index}_intensity`] || 0,
-                  color: restoredConf[`${selectedLight.layer}_${selectedLight.index}_color`] || '#ffffff',
-                  decay: restoredConf[`${selectedLight.layer}_${selectedLight.index}_decay`] || 2,
-                })
-              }
-            }
-          }
-        }
-      }
-    }
-    
-    window.addEventListener('keydown', handleUndo)
-    return () => window.removeEventListener('keydown', handleUndo)
-  }, [selectedLight, setControls])
-  // --- FINE IMPLEMENTAZIONE UNDO ---
+  // La cronologia di undo (Ctrl+Z sulle configurazioni di luce) è uscita di qui
+  // insieme al resto dell'editor: sta in authoring/LightEditor.jsx e raggiunge
+  // `configsRef` attraverso `rigRef`, più sotto.
 
   // Le luci per posa arrivano dallo store, non più da un fetch fatto qui
   // dentro: chi scarica il file è runtime/ConfigLoader.jsx, chi lo applica è
@@ -300,7 +205,7 @@ export default function LightRig({
   // Due ingressi, una funzione sola: la configurazione può già essere nello
   // store quando montiamo (è il caso normale — il fetch parte prima) oppure
   // arrivare dopo ("Carica JSON" dal pannello). Prima erano due blocchi
-  // identici riga per riga, uno nel fetch e uno in handleLoadJSON, ed è
+  // identici riga per riga, uno nel fetch e uno nel «Carica JSON», ed è
   // esattamente il tipo di duplicazione che diverge alla prima modifica.
   //
   // ⚠️ `configsRef` non diventa stato React: l'editor la muta IN LOCO e il
@@ -364,34 +269,20 @@ export default function LightRig({
       showHelpers: newConfig.showHelpers,
       showSurfaces: newConfig.showSurfaces !== undefined ? newConfig.showSurfaces : newConfig.showHelpers
     })
-    setSelectedLight(null) 
-  }, [activePose, setControls])
-
-  useEffect(() => {
-    if (selectedLight && activePoseRef.current) {
-      const conf = configsRef.current[activePoseRef.current]
-      if (conf) {
-        setLightEditor({
-          intensity: conf[`${selectedLight.layer}_${selectedLight.index}_intensity`] || 0,
-          color: conf[`${selectedLight.layer}_${selectedLight.index}_color`] || '#ffffff',
-          decay: conf[`${selectedLight.layer}_${selectedLight.index}_decay`] || 2,
-        })
-      }
-    }
-  }, [selectedLight, activePose])
+    // Cambiando posa la luce selezionata non ha più senso: le configurazioni
+    // sono per posa, e il pannello mostrerebbe i valori di un'altra vista.
+    clearSelection()
+    // La posa attiva risale a `ui` per l'editor, che la usa per l'etichetta e
+    // per l'elenco delle luci accese. Sezione mai serializzata, quindi non
+    // entra nel JSON di prodotto.
+    store.set('ui', { activePose })
+  }, [activePose, setControls, clearSelection, store])
 
   // Uscendo dalla modalità Luci si deseleziona: evita un pannello luce
   // "fantasma" ancora aperto mentre si è passati all'editor mesh.
   useEffect(() => {
-    if (editMode !== 'lights') setSelectedLight(null)
-  }, [editMode])
-
-  const updateLightValue = (key, val) => {
-    setLightEditor(prev => ({ ...prev, [key]: val }))
-    if (activePoseRef.current && selectedLight) {
-      configsRef.current[activePoseRef.current][`${selectedLight.layer}_${selectedLight.index}_${key}`] = val
-    }
-  }
+    if (editMode !== 'lights') clearSelection()
+  }, [editMode, clearSelection])
 
   // La topologia di base viene memorizzata ignorando il margine variabile, così
   // l'array React non causa re-render indesiderati e distruttivi al cambio del margine.
@@ -424,31 +315,34 @@ export default function LightRig({
     ]
   }, [modelSize])
 
-  // --- INIZIO LISTA LUCI ATTIVE ---
-  const activeLightsList = useMemo(() => {
-    if (!activePose || !configsRef.current[activePose]) return []
-    const conf = configsRef.current[activePose]
-    const active = []
-    
-    const checkLight = (layer, idx, name) => {
-      const intensity = conf[`${layer}_${idx}_intensity`] || 0
-      if (intensity > 0) {
-        active.push({
-          value: `${layer}_${idx}`,
-          label: `${name} (Int: ${intensity.toFixed(1)})`
-        })
-      }
+  // LA MANIGLIA PER L'EDITOR. Riempita a ogni render (non in un effetto: chi la
+  // legge è un componente fratello che può montare prima o dopo di questo, e un
+  // ref pieno è l'unico stato che non ha un ordine da rispettare).
+  // Espone solo ciò che il rig possiede davvero — il dizionario per posa, la
+  // posa attiva, le impostazioni di vista — più la topologia che serve a
+  // costruire i selettori. Niente di tutto questo è authoring: è il rig visto
+  // da fuori. Vedi authoring/LightEditor.jsx.
+  if (editorRef) {
+    editorRef.current = {
+      getConfigs: () => configsRef.current,
+      setConfigs: (next) => { configsRef.current = next },
+      getActivePose: () => activePoseRef.current,
+      getViewControls: () => currentControlsRef.current,
+      setViewControls: setControls,
+      layers,
+      faces,
+      gridLayers,
     }
-
-    faces.forEach(f => checkLight('surf', f.index, `Superficie ${f.index.toUpperCase()}`))
-    gridLayers.forEach(L => (layers[L.prefix] ?? []).forEach((_, i) => checkLight(L.prefix, i, `${L.label} ${i}`)))
-
-    return active
-  }, [activePose, lightEditor.intensity, faces, layers, gridLayers])
-  // --- FINE LISTA LUCI ATTIVE ---
+  }
 
   useFrame((state, delta) => {
     if (!modelSize) return
+
+    // Selezione corrente, letta NON reattivamente: cambia per click dell'utente,
+    // non per frame, e leggerla via useComposerSection ri-renderizzerebbe tutto
+    // il rig a ogni selezione. È la stessa coppia get/useComposerSection
+    // documentata in state/useComposerSection.js.
+    const selKey = store.get('ui').selectedLight ?? null
 
     const poseKey = apiRef?.current?.currentPoseKey?.()
     
@@ -468,12 +362,9 @@ export default function LightRig({
       setActivePose(poseKey)
     }
 
-    if (labelRef.current) {
-      const expectedText = activePoseRef.current ? `Vista attiva: ${activePoseRef.current}` : 'Caricamento Vista...'
-      if (labelRef.current.innerText !== expectedText) {
-        labelRef.current.innerText = expectedText
-      }
-    }
+    // (L'etichetta "Vista attiva: …" veniva scritta qui a mano dentro un nodo
+    // DOM dell'authoring, 60 volte al secondo. Ora la posa passa da `store.ui`
+    // e l'etichetta è un normale render di LightEditor.jsx.)
 
     const camEuler = new THREE.Euler().setFromQuaternion(state.camera.quaternion, 'YXZ')
     const currentPitch = -camEuler.x
@@ -582,7 +473,7 @@ export default function LightRig({
         if (helper) {
           helper.visible = isVisiblePoints
           if (isVisiblePoints) {
-            const isSelected = selectedLight?.layer === prefix && selectedLight?.index === i
+            const isSelected = selKey === `${prefix}_${i}`
             if (isSelected) {
               easing.damp(helper.scale, 'x', 1.2, dynamicDamp, delta)
               easing.damp(helper.scale, 'y', 1.2, dynamicDamp, delta)
@@ -657,7 +548,7 @@ export default function LightRig({
             easing.damp(helper.scale, 'x', args[0], currentCtrl.animMarginDamp, delta)
             easing.damp(helper.scale, 'y', args[1], currentCtrl.animMarginDamp, delta)
 
-            const isSelected = selectedLight?.layer === 'surf' && selectedLight?.index === s
+            const isSelected = selKey === `surf_${s}`
             if (isSelected) {
               easing.dampC(helper.material.color, '#00ff44', dynamicDamp, delta) 
               helper.material.opacity = 0.6
@@ -676,22 +567,6 @@ export default function LightRig({
     updateSurfGroup()
   })
 
-  // Handler condiviso dai due <select> dell'editor (elenco completo ed elenco
-  // delle sole luci accese nella vista): il valore dell'option è sempre
-  // `${layer}_${index}`. L'indice delle facce è una stringa ('top', 'left'…),
-  // quello della griglia un numero — da qui il parseInt condizionale.
-  const onSelectLight = (e) => {
-    if (!e.target.value) { setSelectedLight(null); return }
-    const [layer, idx] = e.target.value.split('_')
-    setSelectedLight({ layer, index: layer === 'surf' ? idx : parseInt(idx, 10) })
-  }
-
-  const handleEntityClick = (e, layerPrefix, i) => {
-    if (!lightsInteractive) return
-    e.stopPropagation()
-    setSelectedLight({ layer: layerPrefix, index: i })
-  }
-
   const handlePointerOver = (e) => {
     e.stopPropagation()
     document.body.style.cursor = 'pointer'
@@ -702,142 +577,23 @@ export default function LightRig({
     document.body.style.cursor = 'grab'
   }
 
+  // Click su un helper: scrive la selezione dove la leggono entrambi i lati.
+  // Il rig la consuma nel proprio useFrame per evidenziare la sferetta giusta,
+  // il pannello di authoring per sapere quale luce sta editando.
+  const handleEntityClick = (e, layerPrefix, i) => {
+    if (!lightsInteractive) return
+    e.stopPropagation()
+    store.set('ui', { selectedLight: `${layerPrefix}_${i}` })
+  }
+
   const fixedDistance = 6
-  const isSurfSelected = selectedLight?.layer === 'surf'
 
-  const handleSaveJSON = () => {
-    // La posa attiva potrebbe avere modifiche non ancora rientrate nella
-    // config (l'effetto di mirroring gira dopo il commit React): si allinea
-    // qui, subito prima di serializzare.
-    if (activePoseRef.current && currentControlsRef.current && configsRef.current[activePoseRef.current]) {
-      const conf = configsRef.current[activePoseRef.current]
-      for (const k of VIEW_SETTING_KEYS) conf[k] = currentControlsRef.current[k]
-      conf.showHelpers = currentControlsRef.current.showHelpers
-      conf.showSurfaces = currentControlsRef.current.showSurfaces
-    }
-    
-    // Ogni vista esce dal salvataggio COMPLETA delle proprie impostazioni.
-    // Senza questo passaggio le chiavi comparirebbero solo nelle pose che
-    // l'autore ha effettivamente attraversato durante la sessione (è l'effetto
-    // di mirroring a scriverle, e lavora solo sulla posa attiva), producendo un
-    // file popolato a macchia di leopardo a seconda di come si è navigato.
-    // Il caricamento se la caverebbe comunque — le chiavi assenti cadono sui
-    // default — ma un file che descrive tutte le viste allo stesso modo è
-    // ispezionabile e diffabile, e questo è il file che va in produzione.
-    for (const conf of Object.values(configsRef.current)) {
-      if (!conf) continue
-      for (const k of VIEW_SETTING_KEYS) if (conf[k] === undefined) conf[k] = DEFAULT_VIEW_SETTINGS[k]
-    }
-
-    // Le luci rientrano nello store prima di serializzare: `configsRef` è
-    // mutata in loco dall'editor, quindi lo store va riallineato o il prossimo
-    // che lo legge vedrebbe la versione caricata, non quella autorata.
-    store?.replace('lights', configsRef.current)
-
-    // ⚠️ `store.toJSON()`, MAI di nuovo un elenco di sezioni scritto a mano qui.
-    // Fino a poco fa questa era la lista letterale delle otto sezioni note al
-    // momento in cui fu scritta — un residuo dei tempi in cui i valori vivevano
-    // nei globali `window.__STATE_*` e non nello store. Il difetto di quella
-    // forma non è la verbosità: è che una sezione NUOVA (`postfx`, aggiunta col
-    // post-processing) non compare nel file salvato e nessuno se ne accorge —
-    // il JSON resta valido, si ricarica senza errori, e la sezione mancante
-    // ricade sui default (vedi `hydrate`, che salta le sezioni assenti). Cioè
-    // esattamente una regressione silenziosa: si autora, si salva, e la
-    // taratura sparisce al reload.
-    //
-    // `toJSON` itera COMPOSER_SECTIONS, che è già la definizione della forma del
-    // file: aggiungere una sezione allo store la fa entrare nel salvataggio
-    // senza toccare questo punto. Le due direzioni (`hydrate` e `toJSON`) sono
-    // l'una l'inversa dell'altra perché leggono lo stesso elenco.
-    //
-    // Cosa resta fuori, per scelta e non per dimenticanza: `ui` (stato
-    // dell'editor) e `view` (impostazioni PER POSA, già specchiate dentro
-    // `lights` dal blocco qui sopra). E dentro `variants` c'è il solo binding
-    // variante→animazione di swap: la selezione è stato dell'utente, vive in
-    // sessionStorage e viene scartata in ingresso da `normalizeConfig`.
-    const json = JSON.stringify(store.toJSON(), null, 2)
-    const blob = new Blob([json], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    // Stesso nome del file che il prodotto si aspetta di trovare servito: si
-    // scarica e si ricopia in `public/` al percorso di `configUrl`, senza
-    // rinominarlo a mano.
-    a.download = configUrl.split('/').pop() || 'app-state-config.json'
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-  }
-
-  const handleLoadJSON = () => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = 'application/json'
-    input.onchange = (e) => {
-      const file = e.target.files[0]
-      if (!file) return
-      const reader = new FileReader()
-      reader.onload = (ev) => {
-        try {
-          // Stessa via del fetch di produzione: applyConfig idrata lo store e
-          // avvisa i consumatori. Le luci rientrano dalla sottoscrizione
-          // dell'effetto qui sopra, non da questo handler.
-          applyConfig(store, JSON.parse(ev.target.result))
-          setSelectedLight(null)
-          alert('Configurazione Globale caricata con successo!')
-        } catch {
-          alert('Errore: Il JSON fornito non è valido.')
-        }
-      }
-      reader.readAsText(file)
-    }
-    input.click()
-  }
-
-  // I due comandi passano sul ponte imperativo condiviso: la pulsantiera
-  // "salva/carica" non vive più qui dentro come overlay `<Html>` sul canvas,
-  // ma nel DOM accanto al pannello Leva (DebugPanel, in KeyboardComposer.jsx),
-  // di cui è il prolungamento visivo. Restano qui gli handler, che sono i soli
-  // a vedere `configsRef` e a sapere quali sezioni serializzare.
-  //
-  // Wrapper sottili su un ref riaggiornato a ogni render (stesso idioma di
-  // `focusImplRef` in useComposerControls.js): l'effetto di pubblicazione gira
-  // una volta sola (`deps: [apiRef]`), ma le funzioni pubblicate non si
-  // congelano sulla closure del primo mount. `Object.assign`, mai
-  // `apiRef.current = {...}`: il ponte ha più scrittori (vedi CLAUDE.md).
-  const jsonImplRef = useRef({ save: null, load: null })
-  jsonImplRef.current.save = handleSaveJSON
-  jsonImplRef.current.load = handleLoadJSON
-
-  useEffect(() => {
-    if (!apiRef) return
-    Object.assign(apiRef.current, {
-      saveConfigJSON: () => jsonImplRef.current.save?.(),
-      loadConfigJSON: () => jsonImplRef.current.load?.(),
-      // Azzera le luci della vista attiva. Passa dal ponte perché il pulsante
-      // che lo lancia sta ora nel pannello di authoring, che non vede
-      // `configsRef` — ed è giusto così: quella config appartiene al rig.
-      resetActiveView: () => {
-        const pose = activePoseRef.current
-        if (!pose) return false
-        const def = generateDefaultConfig()
-        def.showHelpers = currentControlsRef.current.showHelpers
-        def.showSurfaces = currentControlsRef.current.showSurfaces
-        configsRef.current[pose] = def
-        // Anche le velocità di transizione tornano ai default: fanno parte
-        // della vista, quindi "resetta vista" le comprende.
-        setControls(readViewSettings(def))
-        setSelectedLight(null)
-        return pose
-      },
-    })
-    return () => {
-      delete apiRef.current.saveConfigJSON
-      delete apiRef.current.loadConfigJSON
-      delete apiRef.current.resetActiveView
-    }
-  }, [apiRef])
+  // Salvataggio/caricamento del JSON e "Resetta Vista" NON vivono più qui:
+  // stanno in authoring/LightEditor.jsx, che li pubblica sul ponte imperativo
+  // (`saveConfigJSON`/`loadConfigJSON`/`resetActiveView`) esattamente come
+  // faceva questo file. Tutti e tre i chiamanti erano già in authoring/
+  // (DebugPanel, ViewSettingsTuner), quindi la produzione non li perde: non li
+  // ha mai usati, se li portava dietro e basta.
 
   return (
     <group position={RIG_POSITION} ref={rigRef}>
@@ -853,154 +609,11 @@ export default function LightRig({
           (DebugPanel), agganciata al pannello Leva: qui sopra ne pubblichiamo
           solo i due comandi sul ponte imperativo. */}
 
-      {lightsInteractive && (controls.showHelpers || controls.showSurfaces) && (
-        <Html fullscreen style={{ pointerEvents: 'none', zIndex: 9999 }}>
-          
-          <div
-            ref={labelRef}
-            style={{
-              position: 'absolute',
-              bottom: '30px',
-              left: '30px',
-              background: 'rgba(20, 20, 20, 0.85)',
-              border: '1px solid rgba(255, 255, 255, 0.2)',
-              color: '#4dabf7',
-              padding: '10px 20px',
-              borderRadius: '16px',
-              fontFamily: 'monospace',
-              fontSize: '15px',
-              fontWeight: 'bold',
-              whiteSpace: 'nowrap',
-              backdropFilter: 'blur(4px)',
-              boxShadow: '0 4px 12px rgba(0,0,0,0.5)'
-            }}
-          />
+      {/* Il pannello dell'editor luci (selettori, slider, undo) è uscito di
+          qui: sta in authoring/LightEditor.jsx, montato da AuthoringScene.
+          Erano ~150 righe di <Html> con stili inline dentro un componente che
+          la produzione monta sempre. */}
 
-          {/* --- INIZIO PUNTO 3A: CONTENITORE DEI DUE SELETTORI --- */}
-          <div style={{
-            position: 'absolute',
-            bottom: '85px',
-            left: '30px',
-            pointerEvents: 'auto',
-            display: 'flex',        // Trasformato in flexbox per impilare i selettori
-            flexDirection: 'column', 
-            gap: '12px'             // Spazio tra il selettore globale e quello attivo
-          }}>
-            
-            {/* 1. SELETTORE ORIGINALE (Globale) */}
-            <select
-              value={selectedLight ? `${selectedLight.layer}_${selectedLight.index}` : ''}
-              onChange={onSelectLight}
-              style={SELECT_STYLE}
-            >
-              <option value="">-- Seleziona Luce GLOBALE --</option>
-              <optgroup label="Facce (Superfici)">
-                {faces.map(f => <option key={`surf_${f.index}`} value={`surf_${f.index}`}>Superficie {f.index.toUpperCase()}</option>)}
-              </optgroup>
-              {gridLayers.map(L => (
-                <optgroup key={L.prefix} label={`Griglia ${L.label}`}>
-                  {layers[L.prefix].map((_, i) => (
-                    <option key={`${L.prefix}_${i}`} value={`${L.prefix}_${i}`}>{L.label} {i}</option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-
-            {/* 2. NUOVO SELETTORE (Solo Luci Attive in questa vista) */}
-            <select
-              value={selectedLight ? `${selectedLight.layer}_${selectedLight.index}` : ''}
-              onChange={onSelectLight}
-              // Sfondo blu per distinguerlo dal selettore globale qui sopra.
-              style={{ ...SELECT_STYLE, background: 'rgba(20, 50, 80, 0.85)', border: '1px solid rgba(100, 180, 255, 0.4)' }}
-            >
-              <option value="">-- Luci ATTIVE --</option>
-              {activeLightsList.length === 0 && <option value="" disabled>Nessuna luce attiva in questa vista</option>}
-              {activeLightsList.map(l => (
-                <option key={`active_${l.value}`} value={l.value}>{l.label}</option>
-              ))}
-            </select>
-          </div>
-          {/* --- FINE PUNTO 3A --- */}
-
-          {selectedLight && (
-            <div
-              style={{
-                position: 'absolute',
-                right: '30px',
-                top: '50%',
-                transform: 'translateY(-50%)',
-                width: '260px',
-                background: 'rgba(20, 20, 20, 0.85)',
-                border: '1px solid rgba(255, 255, 255, 0.2)',
-                borderRadius: '16px',
-                padding: '20px',
-                color: '#fff',
-                fontFamily: 'sans-serif',
-                pointerEvents: 'auto', 
-                backdropFilter: 'blur(8px)',
-                boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '16px'
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h3 style={{ margin: 0, fontSize: '16px', color: '#4dabf7', textTransform: 'uppercase' }}>
-                  LUCE {selectedLight.layer} {selectedLight.index}
-                </h3>
-                <button 
-                  onClick={() => setSelectedLight(null)}
-                  style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', fontSize: '16px', fontWeight: 'bold' }}
-                >✕</button>
-              </div>
-
-              {/* --- INIZIO PUNTO 3B: AGGIUNTA onPointerDown={saveToHistory} AGLI INPUT --- */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                <label style={{ fontSize: '12px', fontWeight: '600' }}>
-                  Intensità: {lightEditor.intensity.toFixed(1)}
-                </label>
-                <input 
-                  type="range" 
-                  min="0" 
-                  max={isSurfSelected ? 100 : 50} 
-                  step={isSurfSelected ? 0.2 : 0.1} 
-                  value={lightEditor.intensity} 
-                  onPointerDown={saveToHistory} // SALVA STATO PRIMA DI TRASCINARE
-                  onChange={(e) => updateLightValue('intensity', parseFloat(e.target.value))}
-                  style={{ accentColor: '#4dabf7', cursor: 'ew-resize' }}
-                />
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                <label style={{ fontSize: '12px', fontWeight: '600' }}>Colore:</label>
-                <input 
-                  type="color" 
-                  value={lightEditor.color} 
-                  onPointerDown={saveToHistory} // SALVA STATO PRIMA DI CLICCARE IL COLORE
-                  onChange={(e) => updateLightValue('color', e.target.value)}
-                  style={{ width: '100%', height: '32px', border: 'none', borderRadius: '4px', cursor: 'pointer', background: 'transparent' }}
-                />
-              </div>
-
-              {!isSurfSelected && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                  <label style={{ fontSize: '12px', fontWeight: '600' }}>
-                    Decadimento: {lightEditor.decay.toFixed(1)}
-                  </label>
-                  <input 
-                    type="range" min="0" max="5" step="0.1" 
-                    value={lightEditor.decay} 
-                    onPointerDown={saveToHistory} // SALVA STATO PRIMA DI TRASCINARE
-                    onChange={(e) => updateLightValue('decay', parseFloat(e.target.value))}
-                    style={{ accentColor: '#4dabf7', cursor: 'ew-resize' }}
-                  />
-                </div>
-              )}
-              {/* --- FINE PUNTO 3B --- */}
-            </div>
-          )}
-        </Html>
-      )}
 
       {faces.map((face) => (
         <group key={face.id} ref={el => { if (el) surfGroups.current[face.index] = el }} rotation={face.rot}>

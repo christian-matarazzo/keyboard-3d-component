@@ -73,7 +73,7 @@ export default function Scene({
   // salvata: risale a KeyboardComposer.jsx, unico scrittore di __STATE_APP.
   onHomePoseChange,
 }) {
-  const { modelUrl, meshGroups, meshVariants, poseGraph } = product
+  const { meshGroups, meshVariants, poseGraph } = product
 
   const [modelSize, setModelSize] = useState(null)
   const [selectedMesh, setSelectedMesh] = useState(null)
@@ -88,6 +88,11 @@ export default function Scene({
   // questo è l'antenato comune dei due sottoalberi.
   const keyLightRef = useRef()
   const spotLightRef = useRef()
+  // Stessa giunzione, per l'editor delle luci: LightRig lo riempie con ciò che
+  // possiede (le config per posa, la posa attiva), authoring/LightEditor.jsx lo
+  // legge. Nasce qui perché anche qui è l'antenato comune dei due sottoalberi —
+  // e in produzione, senza AuthoringScene, resta semplicemente inutilizzato.
+  const lightEditorRef = useRef(null)
   // Inquadrature autorate dei gruppi: scendono fino a useComposerControls (via
   // KeyboardModel), che è chi le applica alla camera. Vengono dallo store, non
   // più raccolte a mano dai pannelli: prima il valore autorevole era la somma
@@ -221,7 +226,7 @@ export default function Scene({
         {/* Runtime: applica i materiali autorati al GLB. Prima era una riga
             dentro un pannello Leva, cioè i materiali di produzione dipendevano
             dal fatto che l'editor fosse montato. */}
-        <MaterialApplier store={store} modelUrl={modelUrl} groups={meshGroups} />
+        <MaterialApplier store={store} product={product} />
 
         {/* Rig volumetrico: griglia di point light + rectAreaLight per faccia
             attorno al bounding box del modello, più le due luci-ombra
@@ -236,6 +241,7 @@ export default function Scene({
           product={product}
           keyLightRef={keyLightRef}
           spotLightRef={spotLightRef}
+          editorRef={lightEditorRef}
         />
         {/* Congela le shadow map delle due luci-ombra e le rigenera solo quando
             la geometria (non la camera) può essere cambiata. Restituisce 264
@@ -265,6 +271,7 @@ export default function Scene({
             onSelectMesh={setSelectedMesh}
             keyLightRef={keyLightRef}
             spotLightRef={spotLightRef}
+            lightEditorRef={lightEditorRef}
           />
         )}
         {/* AGGIUNGI IL CONTROLLER */}
@@ -272,7 +279,7 @@ export default function Scene({
             render. Sempre montato (non gated da ?debug): in produzione è chi
             fa girare le animazioni lanciate dai chip dell'HUD. */}
         <AnimationDirector
-          modelUrl={modelUrl}
+          product={product}
           apiRef={apiRef}
           store={store}
           animations={animations}
@@ -285,7 +292,7 @@ export default function Scene({
             GLB convivono tutte (ISO e ANSI insieme), quindi senza questo si
             compenetrano. */}
         <VariantController
-          modelUrl={modelUrl}
+          product={product}
           apiRef={apiRef}
           variants={meshVariants}
           selection={variantSelection}

@@ -2,8 +2,6 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useProgress } from '@react-three/drei'
 import styles from './KeyboardComposer.module.css'
 import Scene from './Scene'
-import Hud from './Hud'
-import { setDracoPath } from './KeyboardModel'
 import { normalizeVariantSelection } from './materials/meshVariants'
 import { DEFAULT_PRODUCT_ID, resolveProduct } from './products'
 import { EMPTY_ANIMATIONS } from './animation/animationSchema'
@@ -19,6 +17,18 @@ import { isDebug } from './state/debug'
 // non pesa in produzione. Stesso specificatore usato da Scene.jsx per la metà
 // 3D: un chunk solo per entrambi.
 const AuthoringDom = lazy(() => import('./authoring').then((m) => ({ default: m.AuthoringDom })))
+
+// L'HUD è OPZIONALE e spento di default (`hud={false}`): chi integra il
+// componente disegna i propri pulsanti e li collega all'API. Era però un import
+// STATICO, quindi le sue ~430 righe più il suo CSS finivano nel bundle di
+// chiunque, compreso chi non lo accende mai. Stesso rimedio di `authoring/`, e
+// per la stessa ragione: il flag decide se CARICARLO, non solo se renderizzarlo.
+//
+// ⚠️ Il chunk separato vale per il JS, NON per il CSS: `build.lib` forza
+// `cssCodeSplit: false`, quindi `Hud.module.css` resta nel foglio di stile
+// unico ed eagerly caricato. È una limitazione nota e misurata — vedi
+// "The authoring CSS ships eagerly" nelle Manual notes.
+const Hud = lazy(() => import('./Hud'))
 
 // Scelta delle varianti ricordata per la SESSIONE della scheda: sopravvive a un
 // reload, si azzera chiudendo la scheda, che è dove riparte il default autorato.
@@ -63,13 +73,11 @@ export default function KeyboardComposer({
   //   product="ARRAY_MODEL_L"      id enumerativo del registro (PRODUCT_IDS)
   //   product={ARRAY_MODEL_L}      prodotto già definito
   //   product={{ ...ARRAY_MODEL_L, modelUrl: '…' }}   definizione derivata
+  // ⚠️ C'erano anche tre prop `modelUrl`/`meshGroups`/`meshVariants` che
+  // sovrascrivevano il campo omonimo del prodotto risolto. Zero chiamanti, e
+  // ridondanti: la terza forma qui sopra fa già la stessa cosa passando da
+  // `defineProduct`, cioè con la validazione, invece di scavalcarla.
   product = DEFAULT_PRODUCT_ID,
-  // Override puntuali, precedenti al concetto di prodotto e ancora supportati
-  // come scorciatoia: sovrascrivono il campo omonimo del prodotto risolto.
-  // Per un modello nuovo si dichiara un prodotto, non si passano queste tre.
-  modelUrl,
-  meshGroups,
-  meshVariants,
   // --- Integrazione -------------------------------------------------------
   // Chiamata UNA volta quando il componente è pronto a ricevere comandi, con
   // la facciata di runtime/publicApi.js. È il contratto consigliato: `poseApi`
@@ -107,12 +115,9 @@ export default function KeyboardComposer({
   const authoring = authoringRef.current
   // Un solo punto di risoluzione, memoizzato: il prodotto risolto è dipendenza
   // di effetti e di useMemo in tutto l'albero, quindi la sua IDENTITÀ deve
-  // essere stabile fra i render. Senza override e con un id del registro,
-  // `resolveProduct` restituisce lo stesso oggetto congelato ogni volta.
-  const resolved = useMemo(
-    () => resolveProduct(product, { modelUrl, meshGroups, meshVariants }),
-    [product, modelUrl, meshGroups, meshVariants],
-  )
+  // essere stabile fra i render. Con un id del registro `resolveProduct`
+  // restituisce lo stesso oggetto congelato ogni volta.
+  const resolved = useMemo(() => resolveProduct(product), [product])
   // Gli altri campi del prodotto scendono dentro `resolved`: qui servono solo
   // il grafo (posa home di default) e le varianti (selezione utente).
   const { poseGraph, meshVariants: activeMeshVariants } = resolved
@@ -121,12 +126,10 @@ export default function KeyboardComposer({
   const productRef = useRef(resolved)
   productRef.current = resolved
 
-  // ⚠️ Prima di qualunque `useGLTF`, e quindi in fase di render e non in un
-  // effetto: il percorso del decoder Draco entra nella chiave di cache di drei,
-  // e cambiarlo dopo il primo caricamento significherebbe un secondo decoder e
-  // un secondo scaricamento del GLB. Idempotente e senza stato React — vedi
-  // setDracoPath in KeyboardModel.jsx per il perché è globale.
-  setDracoPath(resolved.dracoPath)
+  // (Qui c'era `setDracoPath(resolved.dracoPath)`, una scrittura su un globale
+  // di modulo effettuata DURANTE il render. Il percorso del decoder viaggia ora
+  // dentro `resolved` fino a ogni `useGLTF` — vedi il blocco in testa a
+  // KeyboardModel.jsx.)
   const { progress } = useProgress()
   // Stato (non derivato al volo da `progress`): con l'asset già in cache
   // (visita successiva, mobile o desktop) `progress` può essere 100 già al
@@ -445,16 +448,18 @@ export default function KeyboardComposer({
           onHomePoseChange={handleHomePoseChange}
         />
         {hud && (
-          <Hud
-            poseApi={poseApi}
-            store={store}
-            animations={animations}
-            product={resolved}
-            variantSelection={variantSelection}
-            appMode={appMode}
-            onAppModeChange={changeAppMode}
-            branding={branding}
-          />
+          <Suspense fallback={null}>
+            <Hud
+              poseApi={poseApi}
+              store={store}
+              animations={animations}
+              product={resolved}
+              variantSelection={variantSelection}
+              appMode={appMode}
+              onAppModeChange={changeAppMode}
+              branding={branding}
+            />
+          </Suspense>
         )}
       </div>
     </section>

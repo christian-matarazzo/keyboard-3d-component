@@ -5,7 +5,14 @@ import react from '@vitejs/plugin-react'
  * UN SORGENTE, DUE ARTEFATTI.
  *
  *   vite build              → la SPA del playground (dist/), con editor e HUD
- *   vite build --mode lib   → il pacchetto npm (dist/lib/), senza i peer
+ *   vite build --mode lib   → il pacchetto npm (dist-lib/), senza i peer
+ *
+ * ⚠️ Le due uscite sono SORELLE, non annidate: `dist-lib/` sta ACCANTO a
+ * `dist/`, non dentro. Finché il pacchetto viveva in `dist/lib/` un
+ * `npm run build` lo cancellava — la SPA ha `outDir: 'dist'` e Vite ci applica
+ * `emptyOutDir: true` di default, quindi svuotava anche la sottocartella del
+ * pacchetto. Nessun errore, nessun avviso: si restava semplicemente senza
+ * artefatto npm, e ci si accorgeva al `npm publish` o al primo import.
  *
  * Non sono due progetti né due workspace: è lo stesso albero letto da due
  * punti d'ingresso diversi. Il confine fra ciò che pesa in produzione e ciò
@@ -48,12 +55,13 @@ export default defineConfig(({ mode }) => {
     // ⚠️ Nella build di libreria `public/` NON va copiata dentro l'output.
     // Vite lo farebbe di default, ed è giusto per una SPA; per un pacchetto
     // significa spedire GLB, JSON e — soprattutto — i FONT DEL CLIENTE dentro
-    // `dist/lib`, cioè gli stessi file già inclusi da `files` in package.json,
+    // `dist-lib`, cioè gli stessi file già inclusi da `files` in package.json,
     // due volte, con in più un font su licenza che non deve viaggiare affatto.
     publicDir: isLib ? false : 'public',
     build: isLib
       ? {
-          outDir: 'dist/lib',
+          // Fuori da `dist/`, non dentro: vedi il ⚠️ in testa al file.
+          outDir: 'dist-lib',
           emptyOutDir: true,
           lib: {
             entry: 'src/components/KeyboardComposer/index.js',

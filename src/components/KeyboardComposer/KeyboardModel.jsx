@@ -11,41 +11,41 @@ import {
 import { useComposerControls } from './useComposerControls'
 import { isDebug } from './state/debug'
 import { ARRAY_MODEL_L } from './products/arrayModelL'
+import { DEFAULT_DRACO_PATH } from './products/productSchema'
 
 /**
- * Percorso del decoder Draco, condiviso da tutti i `useGLTF` del componente.
+ * ⚠️ IL PERCORSO DEL DECODER DRACO ERA UN GLOBALE DI MODULO, e non lo è più.
  *
- * ⚠️ È DELIBERATAMENTE GLOBALE, e non una prop. `useGLTF(url, dracoPath)`
- * costruisce un DRACOLoader per percorso e la cache di drei è indicizzata di
- * conseguenza: due valori diversi fra i sette chiamanti significano due
- * decoder istanziati e — peggio — DUE SCARICAMENTI dello stesso GLB da 1,5 MB.
- * Un valore per processo è quindi la forma corretta del dato, non una
- * scorciatoia; il decoder è una risorsa dell'ambiente, non del prodotto.
+ * `getDracoPath()`/`setDracoPath()` erano `let dracoPath` qui dentro, scritto
+ * da `KeyboardComposer` DURANTE IL RENDER e letto dai sette chiamanti di
+ * `useGLTF`. L'argomento a favore era vero ma incompleto: la cache di drei è
+ * indicizzata per `(url, dracoPath)`, quindi due valori diversi fra i chiamanti
+ * significano due decoder e DUE SCARICAMENTI dello stesso GLB da 1,5 MB.
  *
- * Lo imposta `KeyboardComposer` da `product.dracoPath` prima che qualunque
- * `useGLTF` giri. Chi monta due prodotti con decoder diversi nella stessa
- * pagina vince l'ultimo — ed è un caso che non ha senso, dato che il decoder è
- * lo stesso file per chiunque.
+ * Solo che il modo di garantire un valore solo non è un globale: è passare lo
+ * STESSO valore, e quel valore esiste già ed è congelato — `product.dracoPath`,
+ * normalizzato da `defineProduct`. Ogni `useGLTF` lo riceve ora dal prodotto
+ * che sta già ricevendo, quindi la coerenza è strutturale invece che
+ * temporale ("chiama setDracoPath prima che qualcuno legga").
+ *
+ * Il globale contraddiceva inoltre l'argomento con cui è nato lo store
+ * (state/composerStore.js, punto 2 «UNA PAGINA, DUE COMPONENTI»): due
+ * <KeyboardComposer> con prodotti diversi si sovrascrivevano il percorso a
+ * vicenda a ogni render, e vinceva l'ultimo che rendeva.
  */
-let dracoPath = '/draco/'
 
-export const getDracoPath = () => dracoPath
-
-export const setDracoPath = (next) => {
-  if (typeof next === 'string' && next) dracoPath = next
-}
-// Compatibilità: il GLB del primo prodotto. Il percorso vero arriva sempre da
-// `product.modelUrl` (vedi products/), questa costante resta solo perché è
-// esportata e usata come default da chi non passa nulla (Hud.jsx, preload).
-export const DEFAULT_MODEL_URL = ARRAY_MODEL_L.modelUrl
+// Il GLB del primo prodotto: default di `preloadKeyboardModel` per chi lo
+// chiama senza argomenti. Il percorso vero arriva sempre da `product.modelUrl`,
+// quindi questa costante è LOCALE — era esportata e non la importava nessuno.
+const DEFAULT_MODEL_URL = ARRAY_MODEL_L.modelUrl
 
 // Larghezza finale del modello in unità scena, indipendente dalle unità
 // del file sorgente (l'OBJ è in centimetri).
 const TARGET_WIDTH = 3.2
 
 export function KeyboardModel({ product, apiRef, store, onSizeComputed, onSelectMesh, controlsDisabled, editMode = 'none', homePoseKey = null, appMode = 'idle', focusOverrides = null }) {
-  const { modelUrl, meshGroups, poseGraph } = product
-  const { scene } = useGLTF(modelUrl, getDracoPath())
+  const { modelUrl, dracoPath, meshGroups, poseGraph } = product
+  const { scene } = useGLTF(modelUrl, dracoPath)
 
   // Selezione mesh/gruppo (gizmo di trasformazione, MeshController.jsx) è uno
   // strumento di authoring: attiva solo con ?debug E in editMode === 'meshes'
@@ -211,7 +211,13 @@ export function KeyboardModel({ product, apiRef, store, onSizeComputed, onSelect
 /**
  * Da chiamare il prima possibile nel sito host per anticipare il fetch.
  * Accetta l'URL di un GLB o direttamente un prodotto (`products/`).
+ *
+ * ⚠️ Passando una STRINGA il decoder è quello di default: la cache di drei è
+ * indicizzata per `(url, dracoPath)`, quindi un prodotto con `dracoPath`
+ * personalizzato pre-scaldato per URL scaricherebbe il GLB DUE volte — una qui
+ * e una al mount. Chi ha un decoder proprio passi il prodotto, non l'URL.
  */
 export function preloadKeyboardModel(source = DEFAULT_MODEL_URL) {
-  useGLTF.preload(typeof source === 'string' ? source : source.modelUrl, getDracoPath())
+  const isUrl = typeof source === 'string'
+  useGLTF.preload(isUrl ? source : source.modelUrl, isUrl ? DEFAULT_DRACO_PATH : source.dracoPath)
 }

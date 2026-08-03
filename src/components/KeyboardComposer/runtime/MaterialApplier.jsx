@@ -1,6 +1,5 @@
 import { useEffect, useMemo } from 'react'
 import { useGLTF } from '@react-three/drei'
-import { getDracoPath } from '../KeyboardModel'
 import { applyMaterialProps, prepareGroupMaterials } from '../materials/groupMaterials'
 import { useComposerSection } from '../state/useComposerSection'
 
@@ -18,11 +17,12 @@ import { useComposerSection } from '../state/useComposerSection'
  * "materiale di sistema" da applicare — sovrascriverebbe l'unica fonte
  * autorevole con un grigio inventato.
  */
-export default function MaterialApplier({ store, modelUrl, groups }) {
+export default function MaterialApplier({ store, product }) {
+  const { modelUrl, dracoPath, meshGroups: groups } = product
   // Stessa cache di drei condivisa con KeyboardModel/LightRig/MeshController:
   // nessun fetch aggiuntivo. `prepareGroupMaterials` è idempotente, quindi non
   // si fanno assunzioni sull'ordine di montaggio fra fratelli.
-  const { scene } = useGLTF(modelUrl, getDracoPath())
+  const { scene } = useGLTF(modelUrl, dracoPath)
   const materialsByGroup = useMemo(() => prepareGroupMaterials(scene, groups), [scene, groups])
   const materials = useComposerSection(store, 'materials')
 

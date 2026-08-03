@@ -4,6 +4,6 @@
 import { createElement } from 'react'
 import { renderToString } from 'react-dom/server'
 
-const mod = await import('../dist/lib/keyboard-composer.js')
+const mod = await import('../dist-lib/keyboard-composer.js')
 const html = renderToString(createElement(mod.default, { product: 'ARRAY_MODEL_L' }))
 console.log('RENDER OK — bytes:', html.length)

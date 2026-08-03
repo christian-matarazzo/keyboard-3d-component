@@ -1,6 +1,5 @@
 import { useMemo } from 'react'
 import { useGLTF } from '@react-three/drei'
-import { getDracoPath } from '../KeyboardModel'
 import { prepareGroupMaterials } from '../materials/groupMaterials'
 import { DEFAULT_MATERIAL } from '../state/defaults'
 import { renderInMode, useLevaSection } from './useLevaSection'
@@ -55,8 +54,9 @@ function MaterialGroupTuner({ store, group, materials }) {
 }
 
 /** Un folder Leva per gruppo di mesh, dall'elenco del prodotto attivo. */
-export default function MaterialTuner({ store, modelUrl, groups }) {
-  const { scene } = useGLTF(modelUrl, getDracoPath())
+export default function MaterialTuner({ store, product }) {
+  const { modelUrl, dracoPath, meshGroups: groups } = product
+  const { scene } = useGLTF(modelUrl, dracoPath)
   const materialsByGroup = useMemo(() => prepareGroupMaterials(scene, groups), [scene, groups])
 
   return groups.map((group) => (

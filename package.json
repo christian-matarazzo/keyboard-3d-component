@@ -7,23 +7,24 @@
     "*.css"
   ],
   "files": [
-    "dist/lib",
+    "dist-lib",
     "public/models",
     "public/draco",
     "public/lightconfig"
   ],
   "exports": {
     ".": {
-      "import": "./dist/lib/keyboard-composer.js",
-      "default": "./dist/lib/keyboard-composer.js"
+      "import": "./dist-lib/keyboard-composer.js",
+      "default": "./dist-lib/keyboard-composer.js"
     },
-    "./style.css": "./dist/lib/keyboard-composer.css",
+    "./style.css": "./dist-lib/keyboard-composer.css",
     "./package.json": "./package.json"
   },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "build:lib": "vite build --mode lib",
+    "postbuild:lib": "node scripts/ssr-smoke.mjs",
     "preview": "vite preview",
     "asset:convert": "node --max-old-space-size=8192 node_modules/obj2gltf/bin/obj2gltf.js -i assets-src/Array_L_WEB_Retopo.obj -o assets-src/keyboard-raw.glb",
     "asset:optimize": "gltf-transform weld assets-src/keyboard-raw.glb assets-src/kb-1.glb && gltf-transform prune assets-src/kb-1.glb assets-src/kb-2.glb --keep-attributes && gltf-transform draco assets-src/kb-2.glb public/models/keyboard.glb --quantize-normal 12 --quantize-position 14",

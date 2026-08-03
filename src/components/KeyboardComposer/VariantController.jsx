@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react'
 import { useGLTF } from '@react-three/drei'
-import { getDracoPath } from './KeyboardModel'
 import { applyVariantVisibility } from './materials/meshVariants'
 
 /**
@@ -21,12 +20,12 @@ import { applyVariantVisibility } from './materials/meshVariants'
  * roba dell'animazione, non di questo effetto.
  */
 export default function VariantController({
-  modelUrl,
+  product,
   apiRef,
   variants,
   selection,
 }) {
-  const { scene } = useGLTF(modelUrl, getDracoPath())
+  const { scene } = useGLTF(product.modelUrl, product.dracoPath)
   const holdsRef = useRef(new Set())
 
   useEffect(() => {

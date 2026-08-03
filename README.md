@@ -48,7 +48,7 @@ collega a una piccola API imperativa (`onReady(api)`).
 npm install
 npm run dev          # playground su http://localhost:5174  (porta da $PORT)
 npm run build        # build SPA         → dist/
-npm run build:lib    # pacchetto npm     → dist/lib
+npm run build:lib    # pacchetto npm     → dist-lib
 ```
 
 Aggiungi `?debug` all'URL per aprire l'ambiente di authoring.

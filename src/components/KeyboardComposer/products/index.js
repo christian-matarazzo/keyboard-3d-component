@@ -22,25 +22,31 @@ export const PRODUCT_IDS = Object.freeze(
   Object.fromEntries(Object.keys(PRODUCTS).map((id) => [id, id])),
 )
 
-export const PRODUCT_LIST = Object.freeze(Object.values(PRODUCTS))
-
 // Prodotto di default del componente: finché ce n'è uno solo è lui, e resta
 // il fallback quando non viene indicato niente.
 export const DEFAULT_PRODUCT_ID = PRODUCT_IDS.ARRAY_MODEL_L
 
-/** Prodotto per id, o `null` se l'id non è nel registro. */
-export const getProduct = (id) => PRODUCTS[id] ?? null
-
-/** Vero se la stringa è un id valido — per validare input esterni. */
-export const isProductId = (id) => typeof id === 'string' && id in PRODUCTS
+/**
+ * Prodotto per id, o `null` se l'id non è nel registro. Locale: serve solo a
+ * iniettare il registro dentro `resolveProduct` qui sotto.
+ *
+ * ⚠️ Qui vivevano anche `PRODUCT_LIST` (`Object.values(PRODUCTS)`) e
+ * `isProductId`, entrambi esportati dalla radice del pacchetto e con ZERO
+ * chiamanti — dentro il repo e fuori. Erano superficie pubblica scritta per un
+ * bisogno immaginato: con un prodotto solo, "l'elenco dei prodotti" è una lista
+ * di uno e "valida questo id" è un confronto con una stringa. Entrambi si
+ * riottengono in una riga da `PRODUCTS`, che resta esportato; il momento di
+ * riaggiungerli è quando esiste un secondo modello E qualcuno li chiama.
+ */
+const getProduct = (id) => PRODUCTS[id] ?? null
 
 /**
  * Come `resolveProduct` dello schema, ma con il registro già agganciato: è la
  * forma che usa `KeyboardComposer.jsx`. Accetta un id, un prodotto già
  * definito, una definizione grezza o `null`/`undefined` (→ default).
  */
-export function resolveProduct(source, overrides = {}) {
-  return resolveProductBase(source ?? DEFAULT_PRODUCT_ID, overrides, getProduct)
+export function resolveProduct(source) {
+  return resolveProductBase(source ?? DEFAULT_PRODUCT_ID, getProduct)
 }
 
 export { defineProduct }

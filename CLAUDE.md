@@ -38,8 +38,13 @@ code.
 npm install
 npm run dev              # vite dev server (port from $PORT, fallback 5174)
 npm run build            # production build (SPA/playground, dist/)
-npm run build:lib        # npm package build (dist/lib) — separate Vite mode,
+npm run build:lib        # npm package build (dist-lib/) — separate Vite mode,
                           # externalizes react/react-dom/three/@react-three/*/leva
+                          # ⚠️ ends with `postbuild:lib` → scripts/ssr-smoke.mjs,
+                          # which imports AND server-renders the built package on
+                          # Node. It is the only check in this repo that runs by
+                          # itself; a green Vite build alone never proved the
+                          # package was importable under SSR
 npm run preview          # preview the production build
 
 npm run asset:convert    # OBJ -> raw GLB (obj2gltf, --max-old-space-size=8192)
@@ -64,6 +69,14 @@ config file. `publicDir` is forced to `false` only in lib mode: Vite's
 default of copying `public/` into the output would duplicate assets already
 declared in package.json's `files` and ship the licensed client fonts inside
 the npm tarball.
+
+⚠️ **The two outputs are SIBLINGS — `dist/` and `dist-lib/` — and that is a
+fix, not a preference.** The package used to build into `dist/lib/`, i.e.
+*inside* the SPA's output directory, and `npm run build` deleted it: the SPA
+build has `outDir: 'dist'` and Vite applies `emptyOutDir: true` by default, so
+it emptied the package's subfolder too. No error, no warning — `build:lib`
+followed by `build` simply left no artifact, and you found out at `npm publish`
+or at the first import. Don't nest them again to tidy up the root.
 
 ⚠️ A green build does not verify a removal — see the matching entry in
 Detected Patterns below.
@@ -110,7 +123,10 @@ src/
    │                                    `runtime/postfx/PostFx` (gated on the `postfx`
    │                                    prop, frozen into a ref at mount) and, only
    │                                    when `authoring`, the lazy AuthoringScene
-   ├─ KeyboardModel.jsx                 GLB load (getDracoPath()/setDracoPath()),
+   ├─ KeyboardModel.jsx                 GLB load (`useGLTF(product.modelUrl,
+   │                                    product.dracoPath)` — il percorso del decoder
+   │                                    NON è più un globale di modulo, vedi il ⚠️ in
+   │                                    testa al file),
    │                                    auto-fit, useComposerControls host
    ├─ useComposerControls.js            drag/keys/spring/camera/zoom/focus; `rotation`
    │                                    read from the store (useComposerSection + a
@@ -123,20 +139,33 @@ src/
    │                                    (no pose data — that lives per product)
    ├─ products/                         ONE CONFIGURATOR, MANY MODELS
    │  ├─ index.js                       PRODUCTS registry, PRODUCT_IDS enum,
-   │  │                                 getProduct/resolveProduct
+   │  │                                 DEFAULT_PRODUCT_ID, resolveProduct. `getProduct`
+   │  │                                 is module-LOCAL (it only injects the registry
+   │  │                                 into resolveProduct); `PRODUCT_LIST` and
+   │  │                                 `isProductId` were deleted — zero callers
    │  ├─ productSchema.js               defineProduct/resolveProduct + typedefs;
    │  │                                 `assetsBaseUrl` (prefixes only URLs that start
-   │  │                                 with `/`) and `dracoPath` per product
+   │  │                                 with `/`) and `dracoPath` per product; also
+   │  │                                 exports `DEFAULT_DRACO_PATH` (`/draco/`) so
+   │  │                                 `preloadKeyboardModel`'s string-URL form can't
+   │  │                                 drift from `defineProduct`'s own default
    │  └─ arrayModelL/                   the first product: poseGraph (21 poses),
    │                                    meshGroups, meshVariants, model+config URLs
    ├─ focusFraming.js                   bounding-sphere group framing measure
-   ├─ LightRig.jsx                      per-pose light editor; imports no `leva` —
-   │                                    reads `store.get('view')`, exposes
-   │                                    `resetActiveView` on apiRef. Also owns
-   │                                    `handleSaveJSON`/`handleLoadJSON` (published as
-   │                                    `saveConfigJSON`/`loadConfigJSON`): the save is
-   │                                    `store.toJSON()`, never a hand-written section
-   │                                    list — see the ⚠️ there and Detected Patterns
+   ├─ lightConfig.js                    LA FORMA di un `lights[posa]`:
+   │                                    VIEW_SETTING_KEYS/readViewSettings/
+   │                                    generateDefaultConfig. Estratte da LightRig
+   │                                    quando l'editor è uscito di lì — due
+   │                                    consumatori reali (il rig le legge, l'editor
+   │                                    le scrive), non un'estrazione preventiva
+   ├─ LightRig.jsx                      SOLO il rig, dal 2026-08-03: griglia di luci,
+   │                                    scatola adattiva, un useFrame. NON è più
+   │                                    "l'editor luci" — il pannello, l'undo e il
+   │                                    salva/carica sono in authoring/LightEditor.jsx
+   │                                    (~390 righe uscite dal chunk di produzione).
+   │                                    Riempie `editorRef` per l'editor e legge la
+   │                                    selezione da `store.ui.selectedLight` dentro
+   │                                    useFrame; non scrive più su apiRef
    ├─ AnimationDirector.jsx             single useFrame driving the runtime; renders null
    ├─ VariantController.jsx             ISO/ANSI-style variant visibility; also calls
    │                                    `apiRef.invalidateShadows()` after every toggle
@@ -145,6 +174,11 @@ src/
    ├─ Hud.jsx                           optional DOM overlay (telemetry, chips, mode
    │                                    button); `branding` prop (logo/version/footer),
    │                                    no hardcoded lockup; off by default (`hud=false`)
+   │                                    and LAZY: `lazy(() => import('./Hud'))` in
+   │                                    KeyboardComposer.jsx, so its ~430 lines ship in
+   │                                    their own chunk instead of every consumer's
+   │                                    bundle. ⚠️ The JS splits, the CSS does NOT —
+   │                                    see "The authoring CSS ships eagerly"
    ├─ authoring/                        THE LAZY BOUNDARY — the only module the rest of
    │  │                                 the component reaches via `import()`, so `leva`
    │  │                                 and every authoring component ship in a chunk
@@ -187,6 +221,16 @@ src/
    │  │                                   lights; moves `keyLightRef`/`spotLightRef` (the
    │  │                                   real lights are rendered by
    │  │                                   runtime/ShadowLights.jsx) without owning them
+   │  ├─ LightEditor.jsx                  L'EDITOR DELLE LUCI, uscito da LightRig.jsx:
+   │  │                                   il pannello `<Html>`, la cronologia di undo
+   │  │                                   (Ctrl+Z, 50 passi) e salva/carica — pubblica
+   │  │                                   `saveConfigJSON`/`loadConfigJSON`/
+   │  │                                   `resetActiveView` su apiRef (tutti e tre i
+   │  │                                   chiamanti erano già in authoring/). Raggiunge
+   │  │                                   il rig via `editorRef`; la selezione passa da
+   │  │                                   `store.ui.selectedLight`. Sta in
+   │  │                                   AuthoringScene e non in AuthoringDom perché
+   │  │                                   `<Html>` va montato dentro il Canvas
    │  ├─ MeshController.jsx               mesh/group inspector (TransformControls, halos)
    │  └─ AnimationEditor.jsx (+.module.css) ?debug block editor for animations. Four
    │                                       things it owns that the markup doesn't show:
@@ -382,7 +426,9 @@ public/
 │                                       everything the configurator would otherwise
 │                                       apply at runtime. Never read by the
 │                                       configurator itself
-├─ draco/                               decoder, passed explicitly to useGLTF
+├─ draco/                               decoder; il percorso arriva da
+│                                       `product.dracoPath` e viene passato
+│                                       esplicitamente a ogni useGLTF
 └─ lightconfig/app-state-config.json    ALL authored state of ARRAY_MODEL_L —
                                         the sections are exactly
                                         state/composerStore.js's COMPOSER_SECTIONS
@@ -391,7 +437,7 @@ public/
                                         postfx). Path comes from `product.configUrl`;
                                         new products default to
                                         /lightconfig/<ID>/app-state-config.json
-dist/lib/                              the npm package artifact (`npm run build:lib`),
+dist-lib/                              the npm package artifact (`npm run build:lib`),
                                         built from this same source tree, not a
                                         separate project — see Build & Development
                                         Commands
@@ -405,11 +451,13 @@ scripts/make-ar-asset.mjs              generates public/ar/keyboard-ar.glb (see
                                         materials and hierarchy are all JSON — so the
                                         Draco-compressed binary chunk passes through
                                         byte for byte
-scripts/ssr-smoke.mjs                  imports the built `dist/lib` and
+scripts/ssr-smoke.mjs                  imports the built `dist-lib` and
                                         `renderToString()`s the component on Node —
                                         an SSR regression guard, not an asset
-                                        pipeline step. Not yet wired into
-                                        package.json scripts. See "The package
+                                        pipeline step. Runs AUTOMATICALLY as
+                                        `postbuild:lib`, so `npm run build:lib`
+                                        fails if the package stops being
+                                        importable on the server. See "The package
                                         must import on Node" in Manual notes
 ```
 
@@ -417,7 +465,9 @@ Data flow, in two directions:
 - **Commands** cross the DOM/Canvas boundary through one imperative ref,
   `apiRef` — a multi-writer bridge written **only** via
   `Object.assign(apiRef.current, {...})`, never reassigned. **Eight writing
-  files, nine call sites**: VariantController, LightRig, AnimationDirector,
+  files, nine call sites**: VariantController, `authoring/LightEditor.jsx`
+  (`saveConfigJSON`/`loadConfigJSON`/`resetActiveView` — it took them over from
+  LightRig, which no longer writes to the bridge at all), AnimationDirector,
   Scene, useComposerControls, `runtime/ShadowFreeze.jsx` (`invalidateShadows`),
   `runtime/postfx/PostFx.jsx` (`postfxTarget`), and KeyboardComposer.jsx itself
   twice (app mode, then the variant commands).
@@ -445,6 +495,17 @@ Data flow, in two directions:
   pose's live light settings, mirrored by `LightRig.jsx` into `lights[pose]`
   on change — it's what the "Resetta Vista" panel button and
   `apiRef.resetActiveView` operate on.
+- **`store.ui` also carries the light editor's SELECTION**
+  (`selectedLight`, a `` `${layer}_${index}` `` **string**) and the rig's
+  `activePose`. Same shape as `editMode`/`homePose` and for the same reason:
+  the two sides read it in different regimes — `authoring/LightEditor.jsx`
+  reactively (it redraws the panel), `LightRig.jsx` non-reactively inside
+  `useFrame` via `store.get('ui')` (it highlights the right helper), so neither
+  a prop nor a ref would serve both. ⚠️ It is a string and not `{layer, index}`
+  because `set` compares sections with `shallowEqual`, i.e. `Object.is` per
+  value: a fresh object every click is always unequal to itself and would
+  publish a new snapshot — and a re-render — even when reselecting the same
+  light.
 - **Authored values** are not hardcoded defaults — `runtime/ConfigLoader.jsx`
   fetches `product.configUrl` (in production *and* in `?debug`) and hydrates
   the per-instance store via `runtime/productConfig.js`'s `applyConfig`.
@@ -565,13 +626,43 @@ variant:
   optimization — `useComposerSection` is built on `useSyncExternalStore`,
   which compares snapshots by identity and render-loops if it ever receives
   an equal-but-new-identity object.
+- **Superficie pubblica: si esporta ciò che qualcuno chiama, non ciò che
+  potrebbe servire.** Tolti nel 2026-08-03, tutti con ZERO chiamanti dentro e
+  fuori (il pacchetto non è mai stato pubblicato): `PRODUCT_LIST` e
+  `isProductId` (cancellati — con un prodotto solo sono una lista di uno e un
+  confronto fra stringhe, e si riscrivono in una riga da `PRODUCTS`),
+  `getProduct` (resta ma è locale a `products/index.js`), `DEFAULT_MODEL_URL`
+  (locale a KeyboardModel.jsx), le tre prop `modelUrl`/`meshGroups`/
+  `meshVariants` di `KeyboardComposer` e il parametro `overrides` di
+  `resolveProduct` che le applicava. Export della radice: 16 → 13.
+  ⚠️ Le tre prop non erano solo inutilizzate, erano una SECONDA STRADA per fare
+  ciò che `product={{ ...ARRAY_MODEL_L, modelUrl: '…' }}` già faceva — con in
+  più il difetto di scavalcare `defineProduct`, cioè la validazione. Il criterio
+  non è "un export non costa niente": è che due strade per lo stesso risultato
+  divergono, e quella non validata è la peggiore delle due.
+- **Nessun globale di modulo per un valore che dipende dal prodotto.** Il
+  percorso del decoder Draco è stato l'ultimo (`let dracoPath` +
+  `getDracoPath`/`setDracoPath` in KeyboardModel.jsx, scritto da
+  `KeyboardComposer` DURANTE il render e letto da sette `useGLTF`). L'argomento
+  che lo giustificava era corretto ma incompleto: la cache di drei è indicizzata
+  per `(url, dracoPath)`, quindi due valori diversi fra i chiamanti = due
+  decoder e **due scaricamenti** dello stesso GLB da 1,5 MB. Solo che il modo di
+  garantire un valore solo non è un globale — è passare lo stesso oggetto
+  congelato. Ora tutti e sette leggono `product.dracoPath`, quindi la coerenza è
+  STRUTTURALE invece che temporale ("chiama `setDracoPath` prima che qualcuno
+  legga"). ⚠️ Il globale contraddiceva anche l'argomento con cui è nato lo store
+  (composerStore.js, punto 2 «UNA PAGINA, DUE COMPONENTI»): due
+  `<KeyboardComposer>` con prodotti diversi se lo sovrascrivevano a ogni render.
+  Il controllo statico che sostituisce l'ispezione del pannello Network: ogni
+  `useGLTF(` deve prendere ENTRAMBI gli argomenti dallo stesso `product`.
 - **A green build does not verify a removal.** An undefined capitalized JSX
   tag left behind after deleting its import is a runtime `ReferenceError`,
   not a build error — Rollup/Vite won't flag it, and it can reach production
   as a blank screen. Grep for a component's remaining JSX usages after
   removing its import; don't trust the build alone.
 - **The saved file is `store.toJSON()`, never a hand-written section list.**
-  `handleSaveJSON` (LightRig.jsx) used to build its payload by naming each
+  `handleSaveJSON` (now `authoring/LightEditor.jsx`, formerly LightRig.jsx)
+  used to build its payload by naming each
   section, and `postfx` — added later — silently never reached the file: the
   JSON stayed valid, reloaded without error, and the whole post-processing
   tuning fell back to `DEFAULT_POSTFX` on every reload, because `hydrate` skips
@@ -819,7 +910,8 @@ Since the store refactor there is no longer a reason to reproduce the
 production config by hand: `runtime/ConfigLoader.jsx` fetches
 `product.configUrl` in `?debug` too, so the authoring session already runs on
 the shipped values. `apiRef.current.loadConfigJSON()` (the "Carica JSON" button,
-published by `LightRig.jsx`) is still the way to try a *different* file.
+published by `authoring/LightEditor.jsx`) is still the way to try a *different*
+file.
 
 ## The package must import on Node — and the browser never tells you
 
@@ -828,7 +920,8 @@ Next/Remix, where **the first render runs on the server**. Nothing in this
 repo's normal workflow exercises that: `npm run dev`, `npm run build` and every
 browser measurement above all run where `window` exists.
 
-Measured 2026-08-03: `dist/lib` **could not be imported at all** under Node —
+Measured 2026-08-03: the built package **could not be imported at all** under
+Node —
 `ReferenceError: window is not defined`, thrown at import time, before any
 component rendered. Cause: five modules held
 `const DEBUG = new URLSearchParams(window.location.search).has('debug')` at
@@ -847,14 +940,16 @@ bug is not in the expression but in *where it sits*.
 The guard is one line and runs without a browser:
 
 ```bash
-node --input-type=module -e "import('./dist/lib/keyboard-composer.js')"
+node --input-type=module -e "import('./dist-lib/keyboard-composer.js')"
 ```
 
 `scripts/ssr-smoke.mjs` is the stronger version — it also `renderToString`s the
 component, which catches a `window` in a component BODY that a bare import
 would miss (261 bytes of HTML: the shell renders, the Canvas subtree correctly
-renders nothing on the server). Worth running after any change to the eager
-import chain. Not yet wired into `package.json`.
+renders nothing on the server). It runs as **`postbuild:lib`**, i.e. every
+`npm run build:lib` ends with it and fails if it fails; there is nothing to
+remember to run. (npm's pre/post lifecycle does fire for a script name
+containing a colon — checked, not assumed.)
 
 ⚠️ Two things that are safe and should not be "fixed" on sight:
 `sessionStorage` in `KeyboardComposer.jsx`'s `useState` initializer is inside a
@@ -863,6 +958,45 @@ returns `null` on Node exactly as it does in Safari private mode. And
 `authoring/AnimationEditor.jsx` lives behind the `import()`, so it never loads
 on the server — it was switched over anyway, because leaving one copy of the
 pattern alive is how it comes back.
+
+## The authoring CSS ships eagerly — measured, and deliberately accepted
+
+The `authoring/` boundary is airtight for JS and **leaky for CSS**, and the
+asymmetry is not a bug in this repo's code: `build.lib` makes Vite default
+`build.cssCodeSplit` to `false`, so every stylesheet in the graph — including
+the one belonging to the lazily-imported authoring chunk — is merged into the
+single eagerly-loaded `keyboard-composer.css`. Verified 2026-08-03 by grepping
+the built file for `AnimationEditor.module.css`'s own class names
+(`_chain`, `_chainArrow`, `_editor`, `_jsonDock`, `_meshCount` — all present).
+
+Of ~1,047 source CSS lines in the package: `AnimationEditor.module.css` 544
+(authoring-only) + `Hud.module.css` 397 (the HUD defaults to OFF) +
+`KeyboardComposer.module.css` 106 (the only one unconditionally needed).
+
+⚠️ **Do not "fix" this without re-reading the next paragraph** — the obvious fix
+does not work, and finding that out costs a build experiment:
+
+- `import x from './a.module.css?inline'` **is** the only import form that keeps
+  the CSS out of the extracted stylesheet (measured: no `.css` file emitted at
+  all). But it returns *only* the CSS string — `default` and nothing else. The
+  hashed class map is gone.
+- Importing BOTH forms of the same file gives you the map and the text, and the
+  stylesheet is still emitted. So it ships twice. Measured, not assumed.
+- Therefore the injection route requires replacing every `styles.x` reference
+  with a literal class name: **249 call sites** (AnimationEditor 213 / 59
+  distinct, Hud 29 / 26, DebugPanel 7 / 6), in a repo with no linter and no
+  test, where a single typo silently unstyles one control and every build stays
+  green.
+
+**The trade was declined on the numbers.** The whole stylesheet is 12.33 kB /
+**3.30 kB gzipped**; the authoring + HUD share is ~2.8 kB gzipped, against the
+465 kB gzipped `three` chunk every visitor already downloads — about 0.6%.
+⚠️ Note the ratio ("90% of the CSS is optional") and the absolute (2.8 kB gz)
+point in opposite directions here, and the absolute is the one that decides.
+Ranking this by the ratio was the mistake worth not repeating.
+
+If it ever does become worth doing, the cheap half is `Hud.module.css` alone
+(29 call sites, ~half the waste), not the editor.
 
 ## Measured numbers worth not re-deriving
 

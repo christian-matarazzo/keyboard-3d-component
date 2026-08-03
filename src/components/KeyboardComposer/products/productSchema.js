@@ -60,6 +60,15 @@ import { createPoseGraph } from '../poseGraph'
 const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
 
 /**
+ * Percorso del decoder Draco quando un prodotto non ne dichiara uno.
+ * Esportato perché `preloadKeyboardModel` deve poter pre-scaldare con LO STESSO
+ * valore: la cache di drei è indicizzata per `(url, dracoPath)`, quindi un
+ * default duplicato a mano che diverga da questo significherebbe due decoder e
+ * due scaricamenti dello stesso GLB.
+ */
+export const DEFAULT_DRACO_PATH = '/draco/'
+
+/**
  * Valida e congela una definizione di prodotto, costruendo il pose graph.
  *
  * Le due verifiche di coerenza (`homePose` esistente, id di gruppo unici) non
@@ -106,12 +115,14 @@ export function defineProduct(def) {
     assetsBaseUrl: base || null,
     modelUrl: withBase(def.modelUrl),
     configUrl: withBase(def.configUrl ?? `/lightconfig/${id}/app-state-config.json`),
-    // ⚠️ Il decoder Draco è una risorsa di PROCESSO, non di prodotto: drei
-    // costruisce un DRACOLoader per percorso, e due percorsi diversi fra i
-    // sette chiamanti di `useGLTF` significano due decoder e due scaricamenti
-    // dello stesso GLB. Il valore viene applicato una volta sola, globalmente
-    // — vedi setDracoPath in KeyboardModel.jsx.
-    dracoPath: withBase(def.dracoPath ?? '/draco/'),
+    // ⚠️ Il decoder Draco entra nella CHIAVE DI CACHE di drei insieme all'URL:
+    // due percorsi diversi fra i chiamanti di `useGLTF` significano due decoder
+    // e due scaricamenti dello stesso GLB. Sta qui, congelato dentro il
+    // prodotto, proprio perché così tutti i chiamanti ne ricevono uno solo
+    // per costruzione — era un globale di modulo in KeyboardModel.jsx, scritto
+    // durante il render, e due prodotti sulla stessa pagina se lo
+    // sovrascrivevano a vicenda.
+    dracoPath: withBase(def.dracoPath ?? DEFAULT_DRACO_PATH),
     poseGraph,
     meshGroups: Object.freeze([...def.meshGroups]),
     meshVariants: Object.freeze([...(def.meshVariants ?? [])]),
@@ -121,14 +132,20 @@ export function defineProduct(def) {
 /**
  * Porta a un `Product` congelato qualunque forma sia stata passata come prop:
  * un id del registro, un prodotto già definito, o una definizione grezza.
- * `overrides` applica le prop legacy di `KeyboardComposer`
- * (`modelUrl`/`meshGroups`/`meshVariants`), che restano supportate come
- * scorciatoia per chi vuole cambiare un pezzo senza dichiarare un prodotto.
+ *
+ * ⚠️ C'era un terzo parametro, `overrides`, che applicava le prop legacy di
+ * `KeyboardComposer` (`modelUrl`/`meshGroups`/`meshVariants`/`assetsBaseUrl`/
+ * `dracoPath`). Nessuno lo usava: zero chiamanti nel repo, e il pacchetto non
+ * è mai stato pubblicato. Non serviva nemmeno come scorciatoia, perché lo
+ * stesso risultato si ottiene già con una definizione derivata —
+ * `product={{ ...ARRAY_MODEL_L, modelUrl: '…' }}` — che passa da qui e viene
+ * validata da `defineProduct` come qualunque altro prodotto. Cioè: una seconda
+ * strada per fare la stessa cosa, con in più il rischio che le due divergano.
  *
  * `lookup` è iniettato (non importato) per non creare un ciclo con il registro
  * in `index.js`, che a sua volta importa questo file.
  */
-export function resolveProduct(source, overrides = {}, lookup = null) {
+export function resolveProduct(source, lookup = null) {
   let base = source
   if (typeof source === 'string') {
     base = lookup?.(source)
@@ -136,14 +153,10 @@ export function resolveProduct(source, overrides = {}, lookup = null) {
   }
   if (!base) throw new Error('[product] nessun prodotto indicato')
 
-  const patch = {}
-  for (const key of ['modelUrl', 'meshGroups', 'meshVariants', 'assetsBaseUrl', 'dracoPath'])
-    if (overrides[key] !== undefined) patch[key] = overrides[key]
+  // Un prodotto del registro è già congelato e validato: si passa lo STESSO
+  // oggetto — l'identità stabile conta, è dipendenza di effetti e di useMemo a
+  // valle. Una definizione grezza va invece validata e congelata ora.
+  if (base.poseGraph?.findPoseKey) return base
 
-  // Nessun override: il prodotto del registro è già congelato e validato, si
-  // passa lo stesso oggetto — l'identità stabile conta, è dipendenza di effetti
-  // e di useMemo a valle.
-  if (Object.keys(patch).length === 0 && base.poseGraph?.findPoseKey) return base
-
-  return defineProduct({ ...base, ...patch })
+  return defineProduct(base)
 }

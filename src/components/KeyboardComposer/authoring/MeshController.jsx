@@ -3,7 +3,6 @@ import * as THREE from 'three'
 import { useGLTF, TransformControls } from '@react-three/drei'
 import { useControls } from 'leva'
 import { renderInMode } from './useLevaSection'
-import { getDracoPath } from '../KeyboardModel'
 import { collectMeshGroups, collectMeshList } from '../materials/meshGroups'
 import { wrapMeshInPivot, wrapGroupInPivot } from '../animation/pivot'
 
@@ -26,9 +25,10 @@ const HALO_COLOR = '#4dabf7'
  * autorate: identica al wrap, diversa allo SMONTAGGIO — qui `bake: true` (la
  * modifica dell'utente si cuoce nella mesh e persiste), lì ripristino esatto.
  */
-export default function MeshController({ modelUrl, selectedMesh, onSelectMesh, store, editMode = 'none', meshGroups }) {
+export default function MeshController({ product, selectedMesh, onSelectMesh, store, editMode = 'none' }) {
+  const { modelUrl, dracoPath, meshGroups } = product
   const active = editMode === 'meshes'
-  const { scene } = useGLTF(modelUrl, getDracoPath())
+  const { scene } = useGLTF(modelUrl, dracoPath)
 
   const meshList = useMemo(() => collectMeshList(scene, meshGroups), [scene, meshGroups])
   const meshOptions = useMemo(() => {

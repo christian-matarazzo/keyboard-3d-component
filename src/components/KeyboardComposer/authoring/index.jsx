@@ -8,6 +8,7 @@ import ViewSettingsTuner from './ViewSettingsTuner'
 import MaterialTuner from './MaterialTuner'
 import FocusTuner from './FocusTuner'
 import LightGizmos from './LightGizmos'
+import LightEditor from './LightEditor'
 import { useComposerSection } from '../state/useComposerSection'
 
 /**
@@ -71,6 +72,11 @@ export function AuthoringDom({
  * La metà 3D: ciò che deve stare dentro il Canvas perché disegna o raycasta.
  * `keyLightRef`/`spotLightRef` sono la giunzione coi due lumi renderizzati dal
  * runtime (runtime/ShadowLights.jsx): l'editor li muove senza possederli.
+ * `lightEditorRef` è la stessa idea applicata al rig volumetrico — LightRig.jsx
+ * lo riempie, LightEditor lo legge (vedi il blocco in testa a LightEditor.jsx).
+ *
+ * ⚠️ `LightEditor` usa `<Html>` di drei, quindi rende DOM pur stando dentro il
+ * Canvas: è il motivo per cui vive qui e non in AuthoringDom.
  */
 export function AuthoringScene({
   store,
@@ -80,25 +86,32 @@ export function AuthoringScene({
   onSelectMesh,
   keyLightRef,
   spotLightRef,
+  lightEditorRef,
 }) {
   const { editMode } = useComposerSection(store, 'ui')
 
   return (
     <>
-      <MaterialTuner store={store} modelUrl={product.modelUrl} groups={product.meshGroups} />
+      <MaterialTuner store={store} product={product} />
       <MeshController
-        modelUrl={product.modelUrl}
+        product={product}
         selectedMesh={selectedMesh}
         onSelectMesh={onSelectMesh}
         store={store}
         editMode={editMode}
-        meshGroups={product.meshGroups}
       />
       <LightGizmos
         store={store}
         keyLightRef={keyLightRef}
         spotLightRef={spotLightRef}
         active={editMode === 'lights'}
+      />
+      <LightEditor
+        store={store}
+        apiRef={apiRef}
+        product={product}
+        rigRef={lightEditorRef}
+        editMode={editMode}
       />
     </>
   )

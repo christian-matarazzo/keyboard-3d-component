@@ -1,5 +1,6 @@
 node_modules
 dist
+dist-lib
 assets-src/
 *.obj
 *.local

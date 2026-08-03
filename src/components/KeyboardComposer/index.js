@@ -6,13 +6,16 @@ export { preloadKeyboardModel } from './KeyboardModel'
 // il componente sceglie un modello con `product={PRODUCT_IDS.ARRAY_MODEL_L}`
 // (o la stringa equivalente), oppure ne dichiara uno proprio con
 // `defineProduct` — vedi products/productSchema.js.
+// ⚠️ Tre export sono stati tolti da qui perché non li chiamava NESSUNO, né
+// dentro il repo né fuori (il pacchetto non è mai stato pubblicato):
+// `PRODUCT_LIST` e `isProductId`, cancellati — con un prodotto solo erano una
+// lista di uno e un confronto fra stringhe, e si riscrivono in una riga da
+// `PRODUCTS` — e `getProduct`, che resta ma è diventato locale a
+// `products/index.js`, dove serve a iniettare il registro in `resolveProduct`.
 export {
   PRODUCTS,
   PRODUCT_IDS,
-  PRODUCT_LIST,
   DEFAULT_PRODUCT_ID,
-  getProduct,
-  isProductId,
   resolveProduct,
   defineProduct,
   ARRAY_MODEL_L,
