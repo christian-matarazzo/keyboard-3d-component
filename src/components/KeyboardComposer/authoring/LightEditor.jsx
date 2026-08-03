@@ -90,6 +90,35 @@ const PANEL_STYLE = {
 const FIELD_STYLE = { display: 'flex', flexDirection: 'column', gap: '5px' }
 const LABEL_STYLE = { fontSize: '12px', fontWeight: '600' }
 
+/**
+ * Endpoint del dev server che sovrascrive il file dentro `public/`.
+ *
+ * ⚠️ La stringa è DUPLICATA da `scripts/vite-plugin-author-save.mjs`, che ne è
+ * l'altra metà, e la duplicazione è voluta: quel modulo importa `node:fs`, e
+ * importarlo da qui — anche solo per una costante — lo trascinerebbe nel grafo
+ * del componente, cioè in un pacchetto che deve poter essere importato dentro
+ * un browser e su Node in SSR. Se cambia qui va cambiata anche là.
+ */
+const SAVE_ENDPOINT = '/__author/save-config'
+
+/**
+ * Ripiego storico: il file finisce in Download e va ricopiato a mano in
+ * `public/` al percorso di `configUrl`. È ciò che succede quando l'endpoint non
+ * c'è — cioè fuori dal dev server di questo repo, dove il componente è una
+ * dipendenza installata e nessuno gli ha messo accanto un plugin che scriva su
+ * disco. Non è un errore, è l'unico salvataggio possibile lì.
+ */
+const downloadJSON = (json, filename) => {
+  const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
 export default function LightEditor({ store, apiRef, product, rigRef, editMode = 'none' }) {
   const { configUrl } = product
   const controls = useComposerSection(store, 'view')
@@ -202,7 +231,16 @@ export default function LightEditor({ store, apiRef, product, rigRef, editMode =
   }, [activePose, draft.intensity, rigRef])
 
   // --- Salva / carica / resetta -------------------------------------------
-  const handleSaveJSON = () => {
+  /**
+   * Serializza tutto lo stato autorato e SOVRASCRIVE il file servito
+   * (`product.configUrl` dentro `public/`) passando dall'endpoint del dev
+   * server. Restituisce un esito — `{ ok, path }` oppure
+   * `{ ok: false, fallback: 'download', error }` — perché il pulsante che lo
+   * invoca sta in un altro componente (DebugPanel) e deve poter dire cosa è
+   * successo senza un `alert` a ogni salvataggio, in un flusso dove si salva
+   * decine di volte per sessione.
+   */
+  const handleSaveJSON = async () => {
     const p = pose()
     const view = rig()?.getViewControls?.()
     // La posa attiva potrebbe avere modifiche non ancora rientrate nella
@@ -253,18 +291,31 @@ export default function LightEditor({ store, apiRef, product, rigRef, editMode =
     // `view` (impostazioni PER POSA, già specchiate dentro `lights` dal blocco
     // qui sopra).
     const json = JSON.stringify(store.toJSON(), null, 2)
-    const blob = new Blob([json], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    // Stesso nome del file che il prodotto si aspetta di trovare servito: si
-    // scarica e si ricopia in `public/` al percorso di `configUrl`, senza
-    // rinominarlo a mano.
-    a.download = configUrl.split('/').pop() || 'app-state-config.json'
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
+
+    // ⚠️ Si scrive ESATTAMENTE il percorso da cui il prodotto legge
+    // (`product.configUrl`, lo stesso che `ConfigLoader` fetcha): il file
+    // salvato e il file caricato non possono divergere perché sono lo stesso.
+    // Era proprio quello il difetto del download — il salvataggio riusciva, la
+    // copia in `public/` no, e si ricaricava la versione vecchia credendo di
+    // guardare la nuova.
+    try {
+      const res = await fetch(SAVE_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: configUrl, json }),
+      })
+      // Un dev server senza il plugin risponde 404 con una pagina HTML: non
+      // basta guardare se il fetch ha risolto.
+      if (!res.ok) throw new Error((await res.json().catch(() => null))?.error ?? `HTTP ${res.status}`)
+      return { ok: true, path: configUrl }
+    } catch (err) {
+      // Nessun endpoint (pacchetto installato altrove, anteprima statica) o
+      // scrittura rifiutata: si torna al download, che è pur sempre un
+      // salvataggio. L'esito lo dice, così il pulsante non finge un successo.
+      console.warn(`[LightEditor] salvataggio su ${configUrl} non riuscito, ripiego sul download:`, err)
+      downloadJSON(json, configUrl.split('/').pop() || 'app-state-config.json')
+      return { ok: false, fallback: 'download', error: String(err?.message ?? err) }
+    }
   }
 
   const handleLoadJSON = () => {
@@ -309,6 +360,9 @@ export default function LightEditor({ store, apiRef, product, rigRef, editMode =
   useEffect(() => {
     if (!apiRef) return
     Object.assign(apiRef.current, {
+      // Restituisce la PROMESSA dell'esito (vedi handleSaveJSON): chi lo chiama
+      // può dire se il file servito è stato sovrascritto o se si è ripiegato
+      // sul download.
       saveConfigJSON: () => implRef.current.save?.(),
       loadConfigJSON: () => implRef.current.load?.(),
       // Azzera le luci della vista attiva.

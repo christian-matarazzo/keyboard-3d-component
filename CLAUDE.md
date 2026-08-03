@@ -37,6 +37,12 @@ code.
 ```bash
 npm install
 npm run dev              # vite dev server (port from $PORT, fallback 5174)
+                         # ⚠️ also mounts POST /__author/save-config
+                         # (scripts/vite-plugin-author-save.mjs, `apply: 'serve'`),
+                         # the endpoint the editor's "Salva" button uses to
+                         # OVERWRITE public/<configUrl> in place. Outside the dev
+                         # server that endpoint doesn't exist and the button falls
+                         # back to downloading the file
 npm run build            # production build (SPA/playground, dist/)
 npm run build:lib        # npm package build (dist-lib/) — separate Vite mode,
                           # externalizes react/react-dom/three/@react-three/*/leva
@@ -230,7 +236,14 @@ src/
    │  │                                   il rig via `editorRef`; la selezione passa da
    │  │                                   `store.ui.selectedLight`. Sta in
    │  │                                   AuthoringScene e non in AuthoringDom perché
-   │  │                                   `<Html>` va montato dentro il Canvas
+   │  │                                   `<Html>` va montato dentro il Canvas.
+   │  │                                   ⚠️ `saveConfigJSON` SOVRASCRIVE
+   │  │                                   `public/<configUrl>` via POST a
+   │  │                                   `/__author/save-config` (il plugin dev in
+   │  │                                   scripts/), e restituisce una PROMESSA di esito
+   │  │                                   `{ok, path}` / `{ok:false, fallback:'download'}`
+   │  │                                   — senza endpoint (pacchetto installato altrove)
+   │  │                                   ripiega sul vecchio download
    │  ├─ MeshController.jsx               mesh/group inspector (TransformControls, halos)
    │  └─ AnimationEditor.jsx (+.module.css) ?debug block editor for animations. Four
    │                                       things it owns that the markup doesn't show:
@@ -459,6 +472,18 @@ scripts/ssr-smoke.mjs                  imports the built `dist-lib` and
                                         fails if the package stops being
                                         importable on the server. See "The package
                                         must import on Node" in Manual notes
+scripts/vite-plugin-author-save.mjs    dev-server-only (`apply: 'serve'`) plugin
+                                        wired in vite.config.js: POST
+                                        /__author/save-config writes a JSON body
+                                        into `publicDir` after validating path
+                                        (root-relative, `.json`, resolved inside
+                                        public/, existing directory) and content
+                                        (re-parsed), atomically (tmp + rename).
+                                        It is what makes the editor's "Salva"
+                                        overwrite the served config instead of
+                                        downloading a copy. ⚠️ Never reachable from
+                                        `dist/` or `dist-lib/` — a Vite plugin is
+                                        build tooling, not bundled code
 ```
 
 Data flow, in two directions:
@@ -964,6 +989,44 @@ returns `null` on Node exactly as it does in Safari private mode. And
 `authoring/AnimationEditor.jsx` lives behind the `import()`, so it never loads
 on the server — it was switched over anyway, because leaving one copy of the
 pattern alive is how it comes back.
+
+## "Salva" overwrites `public/` — why it can, and the one fact it rests on
+
+The editor's save used to produce a download that had to be copied by hand into
+`public/` at `configUrl`. The failure mode was silent and repeated: you author,
+you save, you reload — and you are looking at the old file, because the copy
+never happened. Since 2026-08-03 the button POSTs to
+`/__author/save-config` (`scripts/vite-plugin-author-save.mjs`) and the dev
+server writes the file in place.
+
+**The whole thing rests on one measured fact: writing into `public/` does NOT
+reload the page.** Verified on Vite 6.4.3 by reading `handleHMRUpdate` — a file
+that is not in the module graph and is not `.html` exits with
+`[no modules matched]` and sends no `full-reload` — and confirmed against a
+running dev server (three writes, zero `page reload` lines in its log). If that
+ever changes, saving would destroy the authoring session that invoked it (undo
+history included) and this is the paragraph to come back to.
+
+Checked against a live dev server, 2026-08-03, without a browser — the probe is
+plain `fetch` from Node and worth repeating after touching either half:
+round-trip of the shipped file leaves it **byte-identical** (sha256 unchanged,
+96,841 B); a real change lands and is readable back; `/../package.json` → 400,
+a non-`.json` path → 400, a truncated body → 400 **with the file untouched**, a
+missing directory → 400, `GET` → 405.
+
+⚠️ Two things not to "simplify": the body is re-parsed as JSON before anything
+touches the disk (a truncated write to the file the product boots from is not
+recoverable *from the editor itself* — the fetch fails, the store falls back to
+defaults, and the authored state is nowhere), and the write is tmp + rename for
+the same reason. And no trailing newline is added: the file is compared against
+`store.toJSON()` (see the round-trip check in Detected Patterns), and
+`JSON.stringify(…, null, 2)` produces none.
+
+The client keeps the download as a fallback and says so in the panel
+("scaricato (dev server assente)"). That is not politeness — outside this
+repo's dev server the component is an installed dependency with no endpoint
+behind it, and a save that silently did nothing would be worse than the problem
+this replaced.
 
 ## The authoring CSS ships eagerly — measured, and deliberately accepted
 

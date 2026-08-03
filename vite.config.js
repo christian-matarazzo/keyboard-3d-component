@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import authorSave from './scripts/vite-plugin-author-save.mjs'
 
 /*
  * UN SORGENTE, DUE ARTEFATTI.
@@ -46,7 +47,12 @@ export default defineConfig(({ mode }) => {
   const isLib = mode === 'lib'
 
   return {
-    plugins: [react()],
+    // `authorSave` è marcato `apply: 'serve'`: esiste solo mentre il dev server
+    // gira, ed è ciò che permette al pulsante "Salva" dell'editor di
+    // sovrascrivere `public/<configUrl>` invece di scaricare un file da
+    // ricopiare a mano. Non entra in nessuno dei due artefatti — vedi il
+    // commento in testa a scripts/vite-plugin-author-save.mjs.
+    plugins: [react(), authorSave()],
     server: {
       // Il launcher della preview assegna la porta via env PORT; 5174 è il
       // fallback per l'avvio manuale.

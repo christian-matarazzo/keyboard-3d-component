@@ -69,6 +69,32 @@
   letter-spacing: 0.05em;
 }
 
+/* Esito dell'ultimo salvataggio, al posto del titolo (vedi DebugPanel: il
+   riquadro deve restare alto JSON_DOCK_H). Niente maiuscoletto qui — il titolo
+   è un'etichetta, questi sono messaggi, e la differenza di forma serve a far
+   capire a colpo d'occhio che la riga sta dicendo qualcosa. */
+.jsonStatusOk,
+.jsonStatusErr,
+.jsonStatusWait {
+  text-transform: none;
+  letter-spacing: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.jsonStatusOk {
+  color: #3fbb63;
+}
+
+.jsonStatusErr {
+  color: #ff6b6b;
+}
+
+.jsonStatusWait {
+  color: #fefefe;
+}
+
 .jsonRow {
   display: flex;
   gap: 7px; /* space.colGap di Leva */

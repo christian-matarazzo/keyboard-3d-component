@@ -328,7 +328,8 @@ sequenceDiagram
         S-->>R: notify → il materiale cambia a video
         E->>S: toJSON()
         S-->>E: le 10 sezioni, nell'ordine
-        E->>F: download del blob
+        E->>F: POST /__author/save-config → sovrascrive il file servito
+        Note over E,F: solo col dev server (plugin `apply: 'serve'`);<br/>altrove ripiega sul download
     end
 ```
 
@@ -452,8 +453,12 @@ non li scarica.
 | `Animazioni` | Editor a blocchi di step e wave |
 | `Focus` | Inquadrature nominate sui gruppi logici |
 
-Il pulsante **«Salva»** serializza *tutto* in un blob unico: è quel file che va
-in `public/lightconfig/` per portare l'authoring in produzione.
+Il pulsante **«Salva»** serializza *tutto* in un file unico e **sovrascrive
+direttamente quello servito** (`product.configUrl` dentro `public/`), passando
+da un endpoint del solo dev server. L'esito compare al posto del titolo del
+riquadro: *salvato · nome-file* oppure *scaricato (dev server assente)* — fuori
+da `npm run dev` l'endpoint non esiste e si torna al download da ricopiare a
+mano.
 
 > ⚠️ **Le luci di produzione vivono nel JSON, non nel codice.** I default nel
 > codice sono solo il fallback se il fetch fallisce. Una vista nera è prima di

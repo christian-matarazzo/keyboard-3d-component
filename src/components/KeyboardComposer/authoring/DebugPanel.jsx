@@ -32,6 +32,16 @@ const clamp = (v, min, max) => Math.max(min, Math.min(max, v))
 // viewport quando il pannello Leva è più alto della finestra.
 const JSON_DOCK_H = 60
 
+// Classi dell'esito del salvataggio. Mappa esplicita e non
+// `styles['jsonStatus_' + tone]`: le chiavi di un CSS module dipendono da
+// `css.modules.localsConvention`, e comporle a stringa significa che cambiando
+// quell'impostazione la riga resta senza colore in silenzio.
+const STATUS_CLASS = {
+  ok: styles.jsonStatusOk,
+  err: styles.jsonStatusErr,
+  wait: styles.jsonStatusWait,
+}
+
 /**
  * Pannello Leva con bordo sinistro trascinabile per allargarlo/stringerlo, più
  * la pulsantiera "salva/carica configurazione" agganciata sotto di esso.
@@ -51,6 +61,15 @@ export default function DebugPanel({ poseApi }) {
   const [width, setWidth] = useState(PANEL_WIDTH_DEFAULT)
   const dragRef = useRef({ pointerId: null, startX: 0, startW: 0 })
   const levaHostRef = useRef(null)
+  // Esito dell'ultimo salvataggio, `{ text, tone }`. Da quando "Salva"
+  // sovrascrive il file servito invece di scaricarlo, l'azione non ha più un
+  // segnale suo: nessuna barra dei download che lampeggia, nessuna finestra di
+  // sistema. Un `alert` per conferma sarebbe insopportabile in un flusso dove
+  // si salva decine di volte per sessione, quindi il riscontro va qui — e
+  // prende il POSTO del titolo invece di aggiungersi ad esso, così l'altezza
+  // del riquadro resta quella di JSON_DOCK_H.
+  const [saveStatus, setSaveStatus] = useState(null)
+  const statusTimer = useRef(null)
   // Quota a cui agganciare la pulsantiera: bordo inferiore + bordi laterali
   // del pannello Leva, in coordinate di viewport (il pannello è `fixed`).
   const [dock, setDock] = useState(null)
@@ -89,6 +108,30 @@ export default function DebugPanel({ poseApi }) {
     const id = setInterval(read, 200)
     return () => clearInterval(id)
   }, [])
+
+  // Il timer va spento allo smontaggio: `editMode` può cambiare mentre un esito
+  // è ancora a schermo.
+  useEffect(() => () => clearTimeout(statusTimer.current), [])
+
+  const flashStatus = (text, tone) => {
+    clearTimeout(statusTimer.current)
+    setSaveStatus({ text, tone })
+    // L'errore resta più a lungo: è l'unico posto in cui viene detto (il
+    // dettaglio completo va in console).
+    statusTimer.current = setTimeout(() => setSaveStatus(null), tone === 'err' ? 6000 : 2500)
+  }
+
+  const onSave = async () => {
+    const save = poseApi?.current?.saveConfigJSON
+    if (!save) return flashStatus('editor non pronto', 'err')
+    flashStatus('salvataggio…', 'wait')
+    const res = await save()
+    if (res?.ok) return flashStatus(`salvato · ${res.path.split('/').pop()}`, 'ok')
+    // Ripiego riuscito: il file è stato scaricato, non sovrascritto. Va detto,
+    // o si crede di aver aggiornato `public/` e non è vero — che è esattamente
+    // il difetto che questo cambiamento è venuto a togliere.
+    flashStatus('scaricato (dev server assente)', 'err')
+  }
 
   const onPointerDown = (e) => {
     dragRef.current = { pointerId: e.pointerId, startX: e.clientX, startW: width }
@@ -133,20 +176,27 @@ export default function DebugPanel({ poseApi }) {
           a sinistra, sopra il lockup del cliente): i due pulsanti sono la
           scrittura e la lettura di TUTTO ciò che si autora dai pannelli Leva,
           quindi stanno attaccati a quelli — stessa larghezza, stesso margine
-          destro, stessa palette. Gli handler vivono in LightRig.jsx (è il solo
-          a vedere `configsRef`) e arrivano qui dal ponte imperativo. */}
+          destro, stessa palette. Gli handler vivono in authoring/LightEditor.jsx
+          (è il solo a vedere `configsRef`) e arrivano qui dal ponte imperativo.
+          ⚠️ "Salva" SOVRASCRIVE il file servito, non lo scarica: la riga del
+          titolo qui sotto è l'unico riscontro che l'operazione dà. */}
       {dock && (
         <div
           className={styles.jsonDock}
           style={{ top: `${dock.top}px`, right: `${dock.right}px`, width: `${dock.width}px` }}
         >
-          <div className={styles.jsonTitle}>Stato · configurazione</div>
+          <div
+            className={`${styles.jsonTitle} ${(saveStatus && STATUS_CLASS[saveStatus.tone]) || ''}`}
+            title={saveStatus?.text}
+          >
+            {saveStatus ? saveStatus.text : 'Stato · configurazione'}
+          </div>
           <div className={styles.jsonRow}>
             <button
               type="button"
               className={`${styles.jsonBtn} ${styles.jsonBtnPrimary}`}
-              onClick={() => poseApi?.current?.saveConfigJSON?.()}
-              title="Scarica app-state-config.json con tutto lo stato autorato"
+              onClick={onSave}
+              title="Sovrascrive il file servito (public/…/app-state-config.json) con tutto lo stato autorato"
             >
               Salva
             </button>
