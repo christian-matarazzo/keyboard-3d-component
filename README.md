@@ -345,7 +345,7 @@ sequenceDiagram
         E->>S: toJSON()
         S-->>E: le 10 sezioni, nell'ordine
         E->>F: POST /__author/save-config → sovrascrive il file servito
-        Note over E,F: solo col dev server (plugin `apply: 'serve'`);<br/>altrove ripiega sul download
+        Note over E,F: solo col dev server (plugin `apply: 'serve'`)<br/>altrove ripiega sul download
     end
 ```
 
