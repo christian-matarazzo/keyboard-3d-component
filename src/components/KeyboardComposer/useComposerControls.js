@@ -4,10 +4,19 @@ import { useFrame, useThree } from '@react-three/fiber'
 import { easing } from 'maath'
 import { DEG, wrapYaw } from './poseGraph'
 import { measureGroupFraming } from './focusFraming'
+import { coverageFraction, worstCaseHalfExtents } from './cameraFraming'
 import { isDebug } from './state/debug'
 import { useComposerSection } from './state/useComposerSection'
 
-// Mezza larghezza del modello + margine: usata per il fit responsive.
+// Mezza larghezza da inquadrare quando il modello NON ha ancora comunicato la
+// propria taglia (`modelSize` nullo: primi render, o chiamante che non la passa).
+//
+// ⚠️ Era la costante su cui si basava tutto il fit, tarata a mano sul modello
+// vergine di ARRAY_MODEL_L — 2.0 contro una mezza larghezza reale di 1.6, cioè
+// un margine implicito del 25% dentro un numero che si chiamava "half width".
+// Ora il fit misura le estensioni proiettate del modello REALE su tutto il grafo
+// delle pose (vedi cameraFraming.js) e questo resta solo come ripiego, per non
+// avere un frame a inquadratura indefinita in attesa del GLB.
 const FIT_HALF_WIDTH = 2.0
 // Altezza del pivot del modello: la camera è livellata su questa quota
 // (le viste frontali/laterali del cliente hanno elevazione zero).
@@ -208,6 +217,15 @@ export function useComposerControls(
     // (`{ [groupId]: { radiusFactor, offsetX, offsetY, offsetZ } }`).
     meshGroups,
     focusOverrides = null,
+    // Estensione FINALE del modello in unità di scena (il `finalSize`
+    // dell'auto-fit di KeyboardModel.jsx, cioè già scalato). Serve a due cose
+    // che prima erano entrambe una costante:
+    //  - il fit d'insieme, che ora inquadra le estensioni proiettate REALI su
+    //    tutto il grafo delle pose invece di FIT_HALF_WIDTH;
+    //  - `apiRef.frameCoverage()`, la frazione di viewport coperta, che è il
+    //    segnale di carico della scala dinamica (vedi cameraFraming.js).
+    // Nullo = si ricade sul comportamento storico.
+    modelSize = null,
   } = {},
 ) {
   if (!poseGraph) throw new Error('[useComposerControls] serve `poseGraph` (vedi products/)')
@@ -249,6 +267,26 @@ export function useComposerControls(
   // lascerebbe quelle closure sul grafo vecchio senza questa ref.
   const poseGraphRef = useRef(poseGraph)
   poseGraphRef.current = poseGraph
+  const modelSizeRef = useRef(modelSize)
+  modelSizeRef.current = modelSize
+
+  // Mezza larghezza che il fit ha inquadrato, PRIMA del margine: il
+  // denominatore del fattore di focus (vedi applyFocus) e mezzo termine del
+  // calcolo di copertura. Cambia con l'aspect, quindi vive in un ref e non in
+  // una costante.
+  const fitNeedRef = useRef(FIT_HALF_WIDTH)
+  // `tan(fov/2)` e aspect correnti: scritti dal fit (che è l'unico posto che
+  // imposta la focale) e riletti da frameCoverage, che gira dentro un useFrame
+  // altrui e non deve ricalcolare una tangente per frame.
+  const tanHalfVRef = useRef(0)
+  const aspectRef = useRef(1)
+  // Scratch dell'orientamento della camera. Era `new THREE.Euler(...)` DENTRO il
+  // useFrame, cioè un oggetto al frame per tutta la sessione: nulla di grave da
+  // solo, ma è allocazione in un ciclo che gira 60 volte al secondo per ore, e
+  // la richiesta di "niente scatti" comprende anche le pause del GC. Un ref e
+  // non un globale di modulo: due <KeyboardComposer> sulla stessa pagina
+  // condividerebbero lo scratch (vedi il punto 2 di composerStore.js).
+  const eulerRef = useRef(new THREE.Euler(0, 0, 0, 'YXZ'))
 
   // NUOVO: Svincoliamo l'interpolazione dal group 3D
   const curAngles = useRef({ pitch: initialRotation.x, yaw: initialRotation.y })
@@ -379,13 +417,28 @@ export function useComposerControls(
       framing.center.y + (override.offsetY ?? 0),
       framing.center.z + (override.offsetZ ?? 0),
     )
-    // radius/FIT_HALF_WIDTH = "quanto è più piccolo di ciò che baseRadius
-    // inquadra" (vedi FOCUS_ZOOM_MIN/MAX per il perché il rapporto è
-    // invariante). Il raggio misurato è quello della SFERA, quindi generoso
-    // per costruzione: `radiusFactor` autorato è il modo previsto per
-    // stringere l'inquadratura fino a quella di prodotto.
+    // Distanza che inquadra il gruppo, espressa come FATTORE su baseRadius
+    // (vedi FOCUS_ZOOM_MIN/MAX per il perché il rapporto è invariante). Il
+    // raggio misurato è quello della SFERA, quindi generoso per costruzione:
+    // `radiusFactor` autorato è il modo previsto per stringere l'inquadratura
+    // fino a quella di prodotto.
+    //
+    // Sviluppando, la distanza assoluta vale `R · radiusFactor · focusMargin /
+    // (tan(fov/2) · aspect)`: la mezza larghezza del fit e il suo margine si
+    // elidono fra numeratore e denominatore, quindi l'inquadratura del gruppo è
+    // invariante a resize, cambio di focale e RISTRETTIMENTO DELL'INSIEME.
+    //
+    // ⚠️ `focusMargin` è la manopola che rende vera quell'ultima parola, e vale
+    // 1.6 di default perché 1.6 era il vecchio `fitMargin`. Fino a ieri il
+    // denominatore era `FIT_HALF_WIDTH` nudo e il margine del fit d'insieme
+    // entrava nella distanza del focus PER CASO: stringere l'inquadratura
+    // generale da 1.6 a 1.3 avrebbe avvicinato del 23% ogni focus autorato —
+    // rotori compresi — senza che nessuno l'avesse chiesto, e senza alcun segno
+    // nel JSON. Ora le due inquadrature hanno una manopola ciascuna.
+    const fm = feelRef.current.focusMargin ?? feelRef.current.fitMargin
     focusZoomTarget.current = clamp(
-      (framing.radius / FIT_HALF_WIDTH) * (override.radiusFactor ?? 1),
+      (framing.radius * (override.radiusFactor ?? 1) * fm) /
+        (fitNeedRef.current * feelRef.current.fitMargin),
       FOCUS_ZOOM_MIN,
       FOCUS_ZOOM_MAX,
     )
@@ -491,22 +544,85 @@ export function useComposerControls(
       currentFocus() {
         return focusGroupRef.current
       },
-      // Fattore di zoom del focus, nel suo valore ANIMATO: 1 = inquadratura
-      // d'insieme, <1 = ravvicinata. Non serve alla navigazione — è il SEGNALE
-      // DI CARICO che runtime/postfx/PostFx.jsx usa per scalare la risoluzione
-      // di rendering, e sta qui perché questo è l'unico posto che lo conosce.
+      // Frazione del viewport (0..1) che il modello copre nell'inquadratura
+      // VERSO CUI si sta andando — non in quella corrente. È il SEGNALE DI
+      // CARICO su cui runtime/postfx/PostFx.jsx sceglie la risoluzione di
+      // rendering, e sta qui perché questo è l'unico posto che conosce la
+      // distanza della camera. `null` finché la taglia del modello non è nota: il
+      // chiamante deve interpretarlo come "nessuna informazione", cioè piena
+      // risoluzione.
       //
-      // ⚠️ Un booleano "focus attivo" non basterebbe, ed è il motivo per cui si
-      // espone il numero: la porzione di viewport coperta dal modello — cioè
-      // tutto il costo di questa scena — va come 1/focusZoom², quindi un gruppo
-      // grande inquadrato con `radiusFactor` alto (che si avvicina di pochissimo)
-      // e i rotori visti da vicino sono lo stesso booleano e due costi diversi.
+      // ⚠️ Ha SOSTITUITO `focusZoomFactor()`, che era il vecchio segnale e non ha
+      // più chiamanti (cancellato: la regola di questo repo è che si pubblica ciò
+      // che qualcuno chiama). L'argomento che quel campo portava — «un booleano
+      // "focus attivo" non basterebbe, perché un gruppo grande inquadrato con
+      // radiusFactor alto e i rotori visti da vicino sono lo stesso booleano e due
+      // costi diversi» — resta vero e qui è compreso: una superficie distingue
+      // quei due casi meglio di un fattore di zoom, perché sa anche quando la
+      // copertura ha SATURATO e quanto è grande la finestra. Vedi cameraFraming.js.
       //
-      // Non comprende `userZoom`: la rotella è registrata solo in ?debug (vedi
-      // l'invariante sulla distanza camera più sopra), quindi in produzione non
-      // esiste un secondo modo di riempire il viewport.
-      focusZoomFactor() {
-        return focusZoom.current.value
+      // A differenza del campo che sostituisce, COMPRENDE `userZoom`: la rotella
+      // è registrata solo in ?debug, quindi in produzione non cambia nulla, ma
+      // uno zoom dato a mano riempie il viewport esattamente come un focus e
+      // costa uguale — non c'era motivo di escluderlo da una misura di superficie.
+      //
+      // ⚠️ Guarda l'inquadratura di DESTINAZIONE e non quella corrente, ed è metà
+      // della risposta agli scatti: la scala cambia UNA volta, nell'istante in cui
+      // il focus viene comandato e la camera è ancora ferma, invece di
+      // attraversare due gradini a metà della carrellata (~0.6 s smorzati)
+      // riallocando i render target mentre il modello si muove — «2 reallocations
+      // per dolly», in CLAUDE.md. E arriva in ANTICIPO: prima il primo terzo della
+      // carrellata girava ancora al gradino vecchio, cioè alla piena risoluzione,
+      // proprio mentre il costo saliva.
+      //
+      // ⚠️ Ma il raggio è il MINORE fra animato e target, non il target, e la
+      // differenza conta solo in USCITA — dove però conta molto. Anticipare è
+      // giusto entrando (si scende di risoluzione prima che il costo arrivi) e
+      // sbagliato uscendo: `clearFocus` riporta il target all'insieme subito,
+      // quindi il solo target rimetterebbe la piena risoluzione mentre la camera è
+      // ancora addosso al modello — cioè proprio nel mezzo più costoso dello
+      // zoom-out, che è il movimento con cui si chiude OGNI animazione. Il minimo
+      // dei due prende sempre il più vicino, quindi anticipa in entrata e attende
+      // in uscita, senza un ramo esplicito.
+      frameCoverage() {
+        const ext = modelSizeRef.current
+        const t = tanHalfVRef.current
+        if (!ext || !(t > 0)) return null
+        const radius = Math.min(
+          cameraRadius.current,
+          clamp(
+            baseRadius.current * userZoom.current * focusZoomTarget.current,
+            RADIUS_MIN,
+            RADIUS_MAX,
+          ),
+        )
+        const visibleHalfH = radius * t
+        const visibleHalfW = visibleHalfH * aspectRef.current
+        const pitch = pose.current.targetX
+        const yaw = pose.current.targetY
+        // Scostamento fra il centro del modello e il punto che la camera guarda,
+        // proiettato sui due assi dello schermo. Il centro del modello è
+        // (0, PIVOT_Y, 0): l'auto-fit di KeyboardModel.jsx lo centra
+        // sull'origine del proprio group e Scene.jsx alza quel group di PIVOT_Y,
+        // che è anche il pivot a riposo — quindi senza focus questi due termini
+        // sono esattamente zero.
+        const px = pivotTarget.current
+        const ox = -px.x
+        const oy = PIVOT_Y - px.y
+        const oz = -px.z
+        const cy = Math.cos(yaw)
+        const sy = Math.sin(yaw)
+        const cp = Math.cos(pitch)
+        const sp = Math.sin(pitch)
+        return coverageFraction({
+          size: ext,
+          pitch,
+          yaw,
+          offsetX: ox * cy + oz * sy,
+          offsetY: ox * sp * sy + oy * cp - oz * sp * cy,
+          visibleHalfW,
+          visibleHalfH,
+        })
       },
       // --- Sonde di "movimento finito" -----------------------------------
       // In questo componente non esiste alcun callback di fine animazione: il
@@ -539,7 +655,7 @@ export function useComposerControls(
       delete apiRef.current.focusGroup
       delete apiRef.current.clearFocus
       delete apiRef.current.currentFocus
-      delete apiRef.current.focusZoomFactor
+      delete apiRef.current.frameCoverage
       delete apiRef.current.isPoseSettled
       delete apiRef.current.isFocusSettled
     }
@@ -595,8 +711,25 @@ export function useComposerControls(
 
   // Fit responsive a distanza fissa (nessuno zoom utente), camera LIVELLATA
   // sulla quota del pivot: le viste front/left/right del cliente sono a
-  // elevazione zero, ogni inclinazione viene dal pitch del modello. In
-  // portrait il modello è in verticale, quindi si fitta sull'altezza.
+  // elevazione zero, ogni inclinazione viene dal pitch del modello.
+  //
+  // ⚠️ SU DUE ASSI, e prima era su uno solo. Il fit vincolava la sola LARGHEZZA
+  // (`FIT_HALF_WIDTH / (tanHalfV · aspect)`), lasciando l'altezza a quel che
+  // veniva: su una finestra quasi quadrata (aspect 1.11) il modello occupava il
+  // 51% della larghezza e il 39% dell'altezza, cioè un terzo del frame buttato
+  // in verticale; su 16:9, dove il vincolo vero è l'altezza, non lo guardava
+  // affatto. Ora la mezza larghezza da inquadrare è il MAGGIORE fra il vincolo
+  // di larghezza e quello di altezza riportato in larghezza — un'unica
+  // espressione che copre anche il portrait, dove il ramo separato faceva
+  // esattamente questo a mano (usava FIT_HALF_WIDTH come mezza ALTEZZA).
+  //
+  // E i due numeri non sono più una costante tarata a occhio: sono le estensioni
+  // proiettate del modello REALE, prese sul caso peggiore di tutto il grafo
+  // delle pose (cameraFraming.js). Su ARRAY_MODEL_L valgono halfW 1.638 /
+  // halfH 1.114 contro il 2.0 di FIT_HALF_WIDTH, cioè il modello sta nel frame
+  // 1.22× più grande a parità di margine — e con `fitMargin` scesa da 1.6 a 1.3
+  // (state/defaults.js) 1.50× in tutto, senza che nessuna posa tagli e senza che
+  // nessun focus si sposti di un'unità (vedi `focusMargin` in applyFocus).
   useEffect(() => {
     camera.setFocalLength(focalLength) // imposta il fov dalla focale (film 35mm)
     const aspect = size.width / Math.max(size.height, 1)
@@ -604,22 +737,42 @@ export function useComposerControls(
     // frame.current.yawOffset), così un resize non rompe la navigazione.
     const portrait = aspect < 1
     const tanHalfV = Math.tan((camera.fov * Math.PI) / 360)
-    let fit = portrait
-      ? FIT_HALF_WIDTH / tanHalfV
-      : FIT_HALF_WIDTH / (tanHalfV * aspect)
-    fit *= feel.fitMargin
+    const worst = modelSize
+      ? worstCaseHalfExtents(modelSize, poseGraph.poses, frame.current.yawOffset)
+      : { halfW: FIT_HALF_WIDTH, halfH: FIT_HALF_WIDTH }
+    const need = Math.max(worst.halfW, worst.halfH * aspect)
+    fitNeedRef.current = need
+    tanHalfVRef.current = tanHalfV
+    aspectRef.current = aspect
+    let fit = (need * feel.fitMargin) / (tanHalfV * aspect)
     if (portrait) fit *= feel.zoomOutMobile
     // Scrive la BASE, non il raggio: lo zoom manuale (userZoom) viene
     // riapplicato sopra da applyRadius() e quindi non si perde nemmeno su
     // resize o al caricamento di un JSON che cambia fitMargin.
     baseRadius.current = clamp(fit, FIT_RADIUS_MIN, RADIUS_MAX)
     applyRadius()
-  }, [size, camera, focalLength, feel.fitMargin, feel.zoomOutMobile])
+    // ⚠️ Il denominatore del fattore di focus (`fitNeedRef`) ora dipende
+    // dall'aspect, quindi un resize a gruppo inquadrato va ri-applicato o la
+    // distanza cambierebbe sotto i piedi dell'inquadratura. Con un denominatore
+    // costante non serviva: è il prezzo del fit su due assi, ed è una riga.
+    // Deve stare QUI e non nell'effetto di ri-applicazione più sopra — quello è
+    // dichiarato prima, quindi su un resize girerebbe con `need` ancora vecchio.
+    if (focusGroupRef.current) applyFocus(focusGroupRef.current, focusExtraRef.current)
+  }, [
+    size,
+    camera,
+    focalLength,
+    feel.fitMargin,
+    feel.zoomOutMobile,
+    feel.focusMargin,
+    modelSize,
+    poseGraph,
+  ])
 
   // Fit dinamico (Luci + posa corrente === posa bloccata): il modello può
   // essere stato deformato in Mesh (gruppi/mesh traslati/ruotati,
-  // trasformate cotte nella scena reale da MeshController.jsx) — invece della
-  // costante FIT_HALF_WIDTH (tarata sul modello vergine), l'inquadratura usa
+  // trasformate cotte nella scena reale da MeshController.jsx) — invece delle
+  // estensioni del modello VERGINE che usa il fit statico, l'inquadratura misura
   // il Box3 LIVE di `scene`. NIENTE ulteriore moltiplicazione per uno
   // "scale" esterno: a runtime `scene` è già figlio di `<group
   // scale={scale}>` in KeyboardModel.jsx, quindi Box3().setFromObject(scene)
@@ -644,12 +797,18 @@ export function useComposerControls(
     const box = new THREE.Box3().setFromObject(scene)
     if (box.isEmpty()) return
     const worldSize = box.getSize(new THREE.Vector3())
-    const halfWidth = Math.max(worldSize.x, worldSize.z) / 2
     const aspect = size.width / Math.max(size.height, 1)
     const portrait = aspect < 1
     const tanHalfV = Math.tan((camera.fov * Math.PI) / 360)
-    let fit = portrait ? halfWidth / tanHalfV : halfWidth / (tanHalfV * aspect)
-    fit *= feelRef.current.fitMargin
+    // Stessa espressione del fit statico qui sopra — su due assi e sul caso
+    // peggiore del grafo — solo che le estensioni vengono dal Box3 LIVE invece
+    // che dal modello vergine. Due formule diverse sui due percorsi si
+    // contraddicevano in silenzio: questo allarga solo (`needed <= baseRadius`
+    // esce), quindi un vincolo più debole non avrebbe corretto niente e uno più
+    // forte avrebbe allargato senza motivo.
+    const worst = worstCaseHalfExtents(worldSize, poseGraphRef.current.poses, frame.current.yawOffset)
+    let fit = (Math.max(worst.halfW, worst.halfH * aspect) * feelRef.current.fitMargin) /
+      (tanHalfV * aspect)
     if (portrait) fit *= feelRef.current.zoomOutMobile
     const needed = clamp(fit, FIT_RADIUS_MIN, RADIUS_MAX)
     if (needed <= baseRadius.current) return
@@ -1028,8 +1187,10 @@ export function useComposerControls(
     // solo debug) × focusZoom (gruppo inquadrato). Nessuno scrive cameraRadius.
     applyRadius()
 
-    // Orbita della telecamera: rotazione inversa perfetta tramite quaternioni
-    camera.quaternion.setFromEuler(new THREE.Euler(-cur.pitch, -cur.yaw, 0, 'YXZ'))
+    // Orbita della telecamera: rotazione inversa perfetta tramite quaternioni.
+    // L'Euler è uno scratch riusato (eulerRef): l'ordine 'YXZ' è impostato una
+    // volta alla creazione, qui si riscrivono solo i tre angoli.
+    camera.quaternion.setFromEuler(eulerRef.current.set(-cur.pitch, -cur.yaw, 0))
 
     // Posizioniamo la telecamera al raggio corrente, applichiamo la rotazione
     // e la portiamo in orbita attorno al pivot corrente (di default

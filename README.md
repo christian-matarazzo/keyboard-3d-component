@@ -65,6 +65,13 @@ Aggiungi `?debug` all'URL per aprire l'ambiente di authoring.
 > graph. In `?debug` `window.__r3f_state` espone lo stato R3F, e
 > `state.advance(t)` fa avanzare un frame su richiesta.
 
+> ⚠️ **Le misure di performance NON si fanno su `npm run dev`.** Stessa scena,
+> stessa finestra, a riposo: la build di produzione senza `?debug` non ha **un
+> solo** frame sopra i 60 ms, mentre dev + `?debug` ne ha 5 con picchi a 114 ms.
+> Sono React in modalità sviluppo e i pannelli Leva. Riproduci sempre su
+> `npm run preview` prima di dare la caccia a uno scatto, o finirai per
+> ottimizzare il dev server.
+
 ---
 
 ## ✨ Cosa fa
@@ -135,6 +142,15 @@ responsive), `userZoom` (la rotellina, registrata *solo* in `?debug`) e
 Un resize o un cambio di modalità riscrive la base e rimoltiplica gli altri
 fattori sopra, quindi non può cancellarli. In produzione l'unico zoom è
 `focus(groupId)`.
+
+**Il fit inquadra il modello vero, su due assi.** Non una costante tarata a
+mano: le estensioni *proiettate* del GLB, prese sul caso peggiore di tutte e 21
+le pose (`cameraFraming.js`), vincolando **larghezza e altezza** — prima
+guardava solo la larghezza, e su una finestra quasi quadrata buttava via un
+terzo del frame in verticale. Due margini autorati indipendenti: `fitMargin`
+per l'insieme, `focusMargin` per i gruppi. ⚠️ Sono separati apposta — finché il
+margine dell'insieme entrava anche nella distanza dei focus, stringere
+l'inquadratura generale spostava in silenzio ogni inquadratura autorata a occhio.
 
 ---
 
@@ -343,13 +359,13 @@ sequenceDiagram
 ```mermaid
 flowchart LR
     subgraph EAGER["📦 sempre"]
-        CORE["index-*.js<br/>183 kB · 59 kB gz"]
-        CSS["keyboard-composer.css<br/>12 kB"]
+        CORE["index-*.js<br/>198 kB · 64 kB gz"]
+        CSS["keyboard-composer.css<br/>12,6 kB · 3,4 kB gz"]
     end
 
     subgraph LAZYC["⏳ solo se serve"]
-        HUDX["Hud-*.js<br/>10 kB — se hud = true"]
-        AUTHX["authoring-*.js<br/>101 kB — se ?debug"]
+        HUDX["Hud-*.js<br/>10,3 kB — se hud = true"]
+        AUTHX["index-*.js (authoring)<br/>104 kB · 27 kB gz — se ?debug"]
     end
 
     subgraph PEERS["🔗 peer del progetto ospite"]
@@ -377,6 +393,53 @@ flowchart LR
 > letterali, perché l'unica forma di import che evita l'estrazione (`?inline`)
 > non restituisce la mappa dei nomi di classe.
 
+### La risoluzione segue il carico, non lo zoom
+
+Il costo di questa scena è la **superficie coperta**, quindi la risoluzione di
+rendering si abbassa da sola quando il modello riempie la viewport. Il segnale
+non è il fattore di zoom ma una **frazione di viewport coperta**, misurata dalla
+geometria.
+
+```mermaid
+flowchart LR
+    BOX["estensione del modello<br/>+ posa e distanza<br/>DI DESTINAZIONE"]
+    COV["cameraFraming<br/>coverageFraction()<br/>proiezione scatola × sagoma"]
+    PX["× pixel del target<br/>(viewport × pixelRatioCap)"]
+    BUD{{"budget<br/>frameBudgetMs<br/>÷ fillCostMsPerMpx"}}
+    LAW["scala = √(budget ÷ coperti)"]
+    TIER["gradino: floor + isteresi<br/>scende subito, risale con margine"]
+    APPLY["composer.setPixelRatio()"]
+
+    BOX --> COV --> PX --> LAW
+    BUD --> LAW --> TIER --> APPLY
+
+    classDef geo fill:#047857,stroke:#064e3b,color:#fff
+    classDef law fill:#1d4ed8,stroke:#1e3a8a,color:#fff
+    classDef out fill:#334155,stroke:#0f172a,color:#fff
+    class BOX,COV,PX geo
+    class BUD,LAW,TIER law
+    class APPLY out
+```
+
+Tre proprietà che un fattore di zoom non poteva dare, tutte misurate:
+
+| | |
+| --- | --- |
+| **Satura** | Riempita la viewport, avvicinarsi non aggiunge un pixel da ombreggiare — la vecchia legge continuava a scalare, e la sola cosa che la fermava era un pavimento scelto a mano |
+| **Sa quanto è grande la finestra** | Un rapporto di zoom vale lo stesso in un canvas piccolo e a schermo pieno, dove i pixel sono 3× e il frame costa 3× |
+| **Anticipa** | Legge l'inquadratura di *destinazione*: la scala cambia al frame **17**, la camera parte al **18** — una sola riallocazione per carrellata, mai a metà del movimento |
+
+> ⚠️ **`composer.setPixelRatio()` e mai la ricostruzione della catena.** Ricostruire
+> significherebbe un `GTAOPass` nuovo, cioè materiali nuovi, cioè una
+> compilazione di shader: lo stallo che questa manopola esiste per evitare, fatto
+> scattare dal tentativo di evitarlo. Verificato: `gl.info.programs.length` resta
+> invariato attraverso un focus.
+>
+> ⚠️ L'isteresi non è cosmetica. Senza, due pose la cui copertura differiva
+> dell'11% stavano a cavallo di una soglia e producevano **6 riallocazioni ogni
+> 18 cambi di posa**; ora sono **0**. (Non erano loro lo stutter — una
+> riallocazione costa ~16 ms — ma erano lavoro buttato.)
+
 ### Mappa dei sorgenti
 
 ```
@@ -388,6 +451,9 @@ src/
 │  ├─ LightRig.jsx            SOLO il rig: griglia di luci, scatola adattiva, un useFrame
 │  ├─ lightConfig.js          la forma di un `lights[posa]`, condivisa fra rig ed editor
 │  ├─ poseGraph.js            primitive angolari + createPoseGraph (fabbrica, senza dati)
+│  ├─ cameraFraming.js        proiezione pura: estensioni peggiori sul grafo (per il fit)
+│  │                             e frazione di viewport coperta (per la scala dinamica)
+│  ├─ focusFraming.js         sfera contenitrice di un gruppo (per `focusGroup`)
 │  │
 │  ├─ products/               ⬅ TUTTO ciò che dipende dal modello
 │  ├─ runtime/                ⬅ CODICE DI PRODUZIONE — non importa mai `leva`
@@ -501,14 +567,19 @@ Vincoli **non negoziabili**:
 | ✅ **Luci** | Tutte e 21 le pose sono autorate nel JSON di produzione |
 | ✅ **Pacchetto** | `build:lib` esternalizza react/three/r3f/leva; `leva` è peer **opzionale** |
 | ✅ **SSR** | Il pacchetto si importa e renderizza su Node; verificato a ogni build |
-| ✅ **Post-processing** | `runtime/postfx/PostFx.jsx`: composer MSAA su render target, `GTAOPass` a mezza risoluzione con normali ricostruite dal depth, e scala di risoluzione **feed-forward** sul focus |
+| ✅ **Post-processing** | `runtime/postfx/PostFx.jsx`: composer MSAA su render target, `GTAOPass` a mezza risoluzione con normali ricostruite dal depth, e scala di risoluzione **feed-forward a budget di pixel** (vedi sotto) |
 | ⏳ **Ombre di contatto** | Assenti *per costruzione*: le `rectAreaLight` non supportano le ombre in three.js e le point light solo via cube map — **31 delle 34 luci non possono fisicamente proiettarne**. L'AO screen-space è ciò che sta al loro posto |
 | ⏳ **Accumulo temporale** | **Archiviato per misura, non rimandato**: a scena ferma due frame consecutivi sono *identici bit a bit*, e l'eccesso di variazione temporale dell'MSAA 4× sul riferimento supersampled è **0,018/255**. Non c'è sfarfallio da togliere |
 | ⏳ **Secondo prodotto** | Il registro ne contiene uno solo; l'infrastruttura è pronta |
 | ➖ **Test e linter** | Solo lo smoke SSR su `build:lib`. Nota: **non si può fare il fingerprint del rig hashando i valori smorzati** — lo smorzamento è asintotico e il delta del primo frame varia a ogni run |
 
-> **La scena è fill-bound, non ALU-bound.** Misurato: la CPU è l'1,3% del frame,
-> il costo è lineare nei pixel (~60 ns ciascuno), e *togliere* luci lo peggiora.
-> Qualunque ottimizzazione che rimuova matematica dallo shader qui non farà
-> nulla; l'unica leva vera è il numero di pixel — che è ciò che `dynamicScale`
-> abbassa da solo quando un focus riempie la viewport.
+> **La scena è fill-bound, non ALU-bound.** Misurato: la CPU è l'1,3% del frame
+> e *togliere* luci lo peggiora. Qualunque ottimizzazione che rimuova matematica
+> dallo shader qui non farà nulla; l'unica leva vera è il numero di pixel.
+>
+> ⚠️ E **non è lineare come sembrava**: il costo per pixel *coperto* triplica fra
+> un render target piccolo e uno grande (13 → 25 → 38 ms/Mpx, misurato a schermo
+> pieno su GPU integrata), perché il limite è la banda e la residenza in cache.
+> Conseguenza pratica: `pixelRatioCap` rende **più** di quanto i pixel promettano
+> — passare da 1,32 a 1,0 vale −58% di costo contro −43% di pixel — e nessuna
+> stima va estrapolata su risoluzioni molto diverse da quella misurata.

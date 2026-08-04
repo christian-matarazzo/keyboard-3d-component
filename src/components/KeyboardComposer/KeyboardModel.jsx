@@ -7,6 +7,7 @@ import {
   collectGroupMaterials,
   programSignature,
   warmTransparentPrograms,
+  warmWireframeBuffers,
 } from './materials/warmupTransparency'
 import { useComposerControls } from './useComposerControls'
 import { isDebug } from './state/debug'
@@ -42,6 +43,16 @@ const DEFAULT_MODEL_URL = ARRAY_MODEL_L.modelUrl
 // Larghezza finale del modello in unità scena, indipendente dalle unità
 // del file sorgente (l'OBJ è in centimetri).
 const TARGET_WIDTH = 3.2
+
+/**
+ * Le animazioni autorate di questo prodotto contengono uno step `setWireframe`?
+ *
+ * È la condizione del pre-riscaldamento degli indici di linea (~8 MB): si paga
+ * solo dove quella vista esiste davvero. Si guarda l'AZIONE e non `params.on`,
+ * perché anche lo step che lo SPEGNE presuppone che qualcuno l'abbia acceso.
+ */
+const hasWireframeStep = (animations) =>
+  (animations?.items ?? []).some((a) => (a?.steps ?? []).some((s) => s?.action === 'setWireframe'))
 
 export function KeyboardModel({ product, apiRef, store, onSizeComputed, onSelectMesh, controlsDisabled, editMode = 'none', homePoseKey = null, appMode = 'idle', focusOverrides = null }) {
   const { modelUrl, dracoPath, meshGroups, poseGraph } = product
@@ -106,14 +117,29 @@ export function KeyboardModel({ product, apiRef, store, onSizeComputed, onSelect
   // uno slider Leva attraverso lo zero di `clearcoat` la firma sfarfalla, e
   // senza si ricompilerebbe a ogni valore intermedio. Costa un tick di ritardo
   // sul primo warm-up, che cade comunque dentro la dissolvenza d'ingresso.
-  const warmRef = useRef({ warmed: null, pending: null })
+  const warmRef = useRef({ warmed: null, pending: null, wireframe: false })
   useEffect(() => {
-    warmRef.current = { warmed: null, pending: null }
+    warmRef.current = { warmed: null, pending: null, wireframe: false }
     const check = () => {
       const { materials, hidden } = collectGroupMaterials(scene)
       if (!materials.length) return
-      const sig = programSignature(materials)
       const st = warmRef.current
+      // Indici di linea del wireframe: ~8 MB e ~68 ms di costruzione una volta
+      // sola, spostati qui dal frame in cui l'animazione accende `setWireframe`
+      // (misurato 148.7 ms contro una mediana di 32 — vedi warmupTransparency.js).
+      //
+      // ⚠️ Condizionato alle animazioni AUTORATE del prodotto, e la condizione è
+      // ciò che rende accettabile il pre-riscaldamento: CLAUDE.md aveva deciso di
+      // non farlo per non addebitare a ogni sessione una vista che i più non
+      // aprono. Un prodotto il cui JSON non contiene uno step `setWireframe` non
+      // alloca un byte. Gira dentro lo stesso intervallo del warm-up trasparente
+      // perché ha la stessa dipendenza: le animazioni arrivano per fetch, cioè
+      // dopo il montaggio.
+      if (!st.wireframe && hasWireframeStep(store?.get('animations'))) {
+        st.wireframe = true
+        warmWireframeBuffers({ gl, scene: rootScene, camera, materials, hidden })
+      }
+      const sig = programSignature(materials)
       if (sig === st.warmed) return (st.pending = null)
       if (sig !== st.pending) return (st.pending = sig)
       st.warmed = sig
@@ -134,7 +160,7 @@ export function KeyboardModel({ product, apiRef, store, onSizeComputed, onSelect
     }
     const id = setInterval(check, 400)
     return () => clearInterval(id)
-  }, [scene, gl, rootScene, camera, apiRef])
+  }, [scene, gl, rootScene, camera, apiRef, store])
 
   // Posa d'ingresso: su desktop è la POSA HOME autorata in ?debug e salvata
   // nel JSON (di default l'ingresso landscape dichiarato dal prodotto — per
@@ -167,6 +193,11 @@ export function KeyboardModel({ product, apiRef, store, onSizeComputed, onSelect
     // `focusOverrides` porta le inquadrature autorate (Scene.jsx/FocusTuner).
     meshGroups,
     focusOverrides,
+    // Taglia finale del modello in unità di scena: la stessa che va al LightRig
+    // per la scatola adattiva. Da qui il fit inquadra le estensioni proiettate
+    // reali invece di una costante, e la scala dinamica del post-processing sa
+    // quanta parte del viewport è coperta — vedi cameraFraming.js.
+    modelSize: finalSize,
   })
 
   // `initialRotation` viene letta una sola volta (finché la posa non è

@@ -68,10 +68,11 @@ import { DEFAULT_POSTFX } from '../../state/defaults'
 /**
  * --- Scala dinamica della risoluzione ------------------------------------
  *
- * Il "perché" e la legge (`scala = focusZoom`) stanno in state/defaults.js, su
- * `dynamicScale`. Qui restano i due numeri di MECCANISMO, che non sono materia
- * di authoring perché non cambiano l'aspetto, solo il modo in cui la manopola
- * si muove.
+ * Il "perché" e la legge (`scala = √(budget / pixel coperti)`) stanno in
+ * state/defaults.js, su `dynamicScale`; la geometria che stima i pixel coperti
+ * sta in cameraFraming.js. Qui restano i due numeri di MECCANISMO, che non sono
+ * materia di authoring perché non cambiano l'aspetto, solo il modo in cui la
+ * manopola si muove.
  *
  * ⚠️ Cambiare scala RIALLOCA i due render target del composer (più quelli
  * dell'AO): è la stessa microfreeze che l'effetto di ridimensionamento qui
@@ -94,8 +95,76 @@ const SCALE_STEP = 0.1
 /** Secondi minimi fra due riallocazioni. Copre il dolly del focus con al più un cambio. */
 const SCALE_COOLDOWN_S = 0.35
 
-/** Il continuo → un gradino intero, per confrontare INTERI e non float sommati. */
-const scaleTier = (value) => Math.round(value / SCALE_STEP)
+/**
+ * Margine di RISALITA, in unità di scala.
+ *
+ * ⚠️ È il pezzo che mancava, e la sua assenza si sentiva come uno stutter
+ * periodico — non come un frame rate basso. MISURATO in fullscreen (finestra
+ * 1900×925, render target 3.06 Mpx): girando fra le pose la copertura oscilla fra
+ * 0.1635 (TBL) e 0.1821 (CFT), cioè l'11%, e quell'11% stava a cavallo di una
+ * soglia di gradino. Risultato: **6 riallocazioni in 18 cambi di posa**, fra 2258
+ * e 2509 px, **~245 MB di render target buttati e riallocati ogni volta** (RGBA16F
+ * multicampionato ×4 a 3 Mpx, per due buffer). In una finestra piccola non si
+ * nota, a schermo pieno è esattamente la botta che si sente.
+ *
+ * Da qui un controller asimmetrico: si SCENDE subito (si è oltre budget, il frame
+ * sta già costando troppo) e si RISALE solo con questo margine di vantaggio, così
+ * due stati che differiscono di meno di un gradino non possono farsi rimbalzare.
+ */
+const SCALE_RAISE_MARGIN = 0.05
+
+/**
+ * Il continuo → un gradino intero, per confrontare INTERI e non float sommati.
+ *
+ * ⚠️ `floor` e non `round`, e non è un dettaglio: arrotondando, una scala
+ * desiderata di 0.99 diventa 1.0, cioè si rende PIÙ pixel di quanti il budget
+ * consenta — e soprattutto si finisce a sedere esattamente sulla soglia, che è la
+ * condizione del rimbalzo qui sopra. Troncando, il gradino scelto è sempre dentro
+ * il budget e i due stati misurati (0.999 e 0.947) cadono nello STESSO gradino.
+ */
+const tierFloor = (value) => Math.floor(value / SCALE_STEP)
+
+/** Il gradino di piena qualità, come intero. */
+const FULL_TIER = Math.round(1 / SCALE_STEP)
+
+/**
+ * La scala che terrebbe il frame dentro il budget, NON limitata a 1.
+ *
+ * `costo ≈ fillCostMsPerMpx · copertura · pixel`, con i pixel che vanno come
+ * `scala²`: invertendo, `scala = √(budget / pixel_coperti)`.
+ *
+ * ⚠️ Il valore torna GREZZO, senza tetto: il tetto si applica al gradino, non
+ * qui. Serve così al margine di risalita — un valore già tagliato a 1 non
+ * potrebbe mai superare `(gradino + margine)` una volta scesi sotto, e il
+ * controller resterebbe incastrato in basso per sempre. Errore fatto e corretto
+ * in fase di progetto, vale la pena non rifarlo.
+ *
+ * ⚠️ `coverage` nullo non è zero: significa "non lo so ancora" (il modello non ha
+ * comunicato la taglia) e deve valere piena risoluzione, cioè il comportamento di
+ * prima che questa legge esistesse. Un `?? 0` avrebbe scalato al pavimento
+ * all'avvio.
+ */
+const wantedScaleRaw = (s, coverage, fullPixels) => {
+  if (!s.dynamicScale || coverage == null || !(fullPixels > 0)) return null
+  const budgetPx = (s.frameBudgetMs / Math.max(s.fillCostMsPerMpx, 0.01)) * 1e6
+  const coveredPx = Math.max(1, coverage * fullPixels)
+  return Math.sqrt(budgetPx / coveredPx)
+}
+
+/**
+ * Il gradino da applicare, dato quello corrente. Il pavimento `dynamicScaleMin`
+ * resta il limite di MORBIDEZZA accettata — quando è lui a vincere, la finestra è
+ * troppo grande per questo hardware e la scelta fra fluidità e nitidezza torna
+ * all'autore.
+ */
+const nextTier = (s, raw, current) => {
+  if (raw == null) return FULL_TIER
+  const minTier = Math.max(1, Math.ceil(s.dynamicScaleMin / SCALE_STEP))
+  const wanted = Math.min(FULL_TIER, Math.max(minTier, tierFloor(raw)))
+  // Isteresi: scendere è immediato, risalire chiede un vantaggio reale.
+  if (wanted > current && raw < (current + 1) * SCALE_STEP + SCALE_RAISE_MARGIN) return current
+  return wanted
+}
 
 /**
  * Il render target su cui si disegna la scena.
@@ -236,14 +305,23 @@ export default function PostFx({ store, apiRef }) {
   const baseRatioRef = useRef(baseRatio)
   baseRatioRef.current = baseRatio
 
+  // Pixel che il render target avrebbe a scala 1: l'altro fattore del budget,
+  // ed è la grandezza che alla vecchia legge mancava del tutto. `focusZoom` è un
+  // rapporto e vale lo stesso in un canvas 798×718 e a tutto schermo su un 1080p,
+  // dove i pixel sono 3.6× — cioè la stessa animazione a 12 fps in un caso e a 6
+  // nell'altro, la contraddizione già registrata in CLAUDE.md fra le "known
+  // strains". Specchiato in un ref come baseRatio, e per lo stesso motivo.
+  const fullPixelsRef = useRef(0)
+  fullPixelsRef.current = size.width * size.height * baseRatio * baseRatio
+
   // Lo stesso specchio per le manopole lette dentro il useFrame.
   const settingsRef = useRef(settings)
   settingsRef.current = settings
 
   // Gradino di scala ATTUALMENTE applicato al render target, come intero (vedi
-  // scaleTier). Non è uno stato React: cambiarlo non deve far rendere nulla,
+  // tierFloor). Non è uno stato React: cambiarlo non deve far rendere nulla,
   // deve solo ridimensionare dei buffer.
-  const tierRef = useRef(scaleTier(1))
+  const tierRef = useRef(FULL_TIER)
   const cooldownRef = useRef(0)
 
   // Costruzione. `useLayoutEffect` e non `useEffect`: il useFrame qui sotto
@@ -259,7 +337,7 @@ export default function PostFx({ store, apiRef }) {
     // La catena nasce sempre a piena qualità: il gradino ricomincia da 1, o il
     // primo frame dopo una ricostruzione userebbe una scala di cui non esiste
     // più il target che la giustificava.
-    tierRef.current = scaleTier(1)
+    tierRef.current = FULL_TIER
     cooldownRef.current = 0
 
     const ratio = Math.min(dpr, pixelRatioCap)
@@ -378,8 +456,13 @@ export default function PostFx({ store, apiRef }) {
     // non si insegue lo stato del frame precedente.
     const s = settingsRef.current
     cooldownRef.current -= delta
-    const zoom = s.dynamicScale ? (apiRef?.current?.focusZoomFactor?.() ?? 1) : 1
-    const wanted = scaleTier(Math.min(1, Math.max(s.dynamicScaleMin, zoom)))
+    // La copertura arriva da useComposerControls (`apiRef.frameCoverage()`) e si
+    // riferisce all'inquadratura di DESTINAZIONE, non a quella corrente: il
+    // gradino cambia una volta sola, nell'istante del comando, invece di
+    // attraversarne due a metà della carrellata riallocando i render target
+    // mentre il modello si muove. Vedi lì per il resto dell'argomento.
+    const raw = wantedScaleRaw(s, apiRef?.current?.frameCoverage?.() ?? null, fullPixelsRef.current)
+    const wanted = nextTier(s, raw, tierRef.current)
     if (wanted !== tierRef.current && cooldownRef.current <= 0) {
       tierRef.current = wanted
       cooldownRef.current = SCALE_COOLDOWN_S

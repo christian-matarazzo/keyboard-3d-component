@@ -133,14 +133,29 @@ src/
    │                                    product.dracoPath)` — il percorso del decoder
    │                                    NON è più un globale di modulo, vedi il ⚠️ in
    │                                    testa al file),
-   │                                    auto-fit, useComposerControls host
+   │                                    auto-fit, useComposerControls host — feeds the
+   │                                    measured `modelSize` into it for the two-axis
+   │                                    fit/`frameCoverage` (see `cameraFraming.js`);
+   │                                    also triggers `warmWireframeBuffers` (once,
+   │                                    conditioned on the product's authored
+   │                                    animations containing a `setWireframe` step
+   │                                    — `hasWireframeStep`) alongside the existing
+   │                                    transparent-material warm-up
    ├─ useComposerControls.js            drag/keys/spring/camera/zoom/focus; `rotation`
    │                                    read from the store (useComposerSection + a
-   │                                    mirror ref for useFrame); publishes
-   │                                    `apiRef.focusZoomFactor()` (the animated focus-zoom
-   │                                    factor, a number not a boolean — a focus can zoom
-   │                                    OUT) that `runtime/postfx/PostFx.jsx` reads as its
-   │                                    dynamic-resolution-scale signal
+   │                                    mirror ref for useFrame); owns the TWO-AXIS fit
+   │                                    (measured extents from `cameraFraming.js`, not the
+   │                                    old `FIT_HALF_WIDTH` constant) and publishes
+   │                                    `apiRef.frameCoverage()` — the fraction of the
+   │                                    viewport the model covers, which
+   │                                    `runtime/postfx/PostFx.jsx` reads as its
+   │                                    dynamic-resolution-scale signal. ⚠️ Replaced
+   │                                    `focusZoomFactor()`, deleted: zero callers left
+   ├─ cameraFraming.js                  pure projection math shared by the fit and the
+   │                                    resolution scale: worst-case projected extents
+   │                                    over the pose graph, and covered-viewport
+   │                                    fraction (box projection × exact silhouette
+   │                                    fill, saturating). No three, no React
    ├─ poseGraph.js                      angle primitives + `createPoseGraph` FACTORY
    │                                    (no pose data — that lives per product)
    ├─ products/                         ONE CONFIGURATOR, MANY MODELS
@@ -216,7 +231,8 @@ src/
    │  ├─ RotationTuner.jsx, ViewSettingsTuner.jsx, PostFxTuner.jsx, MaterialTuner.jsx,
    │  │  FocusTuner.jsx                   one Leva folder each (PostFxTuner tunes the
    │  │                                   `postfx` section's hot values — MSAA samples,
-   │  │                                   pixel-ratio cap, dynamicScale/dynamicScaleMin,
+   │  │                                   pixel-ratio cap, dynamicScale +
+   │  │                                   frameBudgetMs/fillCostMsPerMpx/dynamicScaleMin,
    │  │                                   AO radius/intensity/thickness/
    │  │                                   distance-exponent/samples — deliberately NOT
    │  │                                   the postfx on/off switch, see
@@ -339,12 +355,13 @@ src/
    │                                      instance so `EffectComposer.setSize` can't pull
    │                                      it back to full resolution on window resize.
    │                                      Also owns the FEED-FORWARD resolution scale
-   │                                      (`dynamicScale`/`dynamicScaleMin`): the same
-   │                                      `useFrame` reads `apiRef.focusZoomFactor()` —
-   │                                      published by useComposerControls, a number and
-   │                                      not a boolean because a focus can zoom OUT —
-   │                                      and applies `scale = clamp(focusZoom, min, 1)`
-   │                                      through `composer.setPixelRatio()` alone.
+   │                                      (`dynamicScale`/`frameBudgetMs`/
+   │                                      `fillCostMsPerMpx`/`dynamicScaleMin`): the same
+   │                                      `useFrame` reads `apiRef.frameCoverage()` —
+   │                                      published by useComposerControls — and applies
+   │                                      `scale = √(budget / covered pixels)`, clamped to
+   │                                      [min, 1], through `composer.setPixelRatio()`
+   │                                      alone.
    │                                      ⚠️ Never through the useLayoutEffect: that
    │                                      rebuild constructs a new GTAOPass, i.e. a
    │                                      shader compile fired by the knob meant to avoid
@@ -363,7 +380,11 @@ src/
    │  │                                  subscribe
    │  ├─ defaults.js                     every product default in one place (was:
    │  │                                  buried in Leva `value:` fields) +
-   │  │                                  DEFAULT_POSTFX (msaaSamples/pixelRatioCap —
+   │  │                                  DEFAULT_POSTFX (frameBudgetMs/
+   │  │                                  fillCostMsPerMpx — il budget e la taratura
+   │  │                                  della scala dinamica, gli unici due numeri
+   │  │                                  da rimisurare per macchina;
+   │  │                                  msaaSamples/pixelRatioCap —
    │  │                                  render-target tuning; aoEnabled/aoResolution-
    │  │                                  Scale/hdrTarget — structural, rebuild the
    │  │                                  composer chain (all three sit in
@@ -371,9 +392,11 @@ src/
    │  │                                  are in authoring/PostFxTuner.jsx;
    │  │                                  aoRadius/aoIntensity/aoThickness/
    │  │                                  aoDistanceExponent/aoSamples — hot uniforms;
-   │  │                                  dynamicScale/dynamicScaleMin — the feed-forward
-   │  │                                  resolution scale, hot too (they only move the
-   │  │                                  tier PostFx.jsx already applies per frame);
+   │  │                                  dynamicScale/frameBudgetMs/
+   │  │                                  fillCostMsPerMpx/dynamicScaleMin — the
+   │  │                                  feed-forward resolution scale, hot too (they
+   │  │                                  only move the tier PostFx.jsx already
+   │  │                                  applies per frame);
    │  │                                  never the postfx on/off switch itself, that's
    │  │                                  a KeyboardComposer prop) + createInitialState
    │  ├─ debug.js                        isDebug()/setDebug(), SSR-safe — now the ONLY
@@ -429,7 +452,12 @@ src/
                                         `warmTransparentPrograms` takes a
                                         `renderTarget` (from `apiRef.postfxTarget()`,
                                         `null` = screen) — must warm up wherever
-                                        production actually draws, see runtime/postfx/
+                                        production actually draws, see runtime/postfx/;
+                                        its sibling export `warmWireframeBuffers`
+                                        (2026-08-03) pre-builds the wireframe line-index
+                                        buffer, called once from KeyboardModel.jsx when
+                                        the product's animations contain a
+                                        `setWireframe` step
 public/
 ├─ models/keyboard.glb                  ARRAY_MODEL_L's GLB (`product.modelUrl`),
 │                                       authored in MILLIMETERS
@@ -695,17 +723,26 @@ variant:
   be picked up by both directions for free**, or the next one repeats the bug.
   ⚠️ The cheap static check for the round trip, worth re-running after touching
   either direction: `hydrate` the shipped config into a fresh store and compare
-  `toJSON()` to the file. ⚠️ **It is NOT byte-identical any more — this line
-  used to claim it was, and taken literally it turns every run into a false
-  alarm.** Measured 2026-08-03: all ten sections survive, but four animations
-  drift (`GoToRotorsAlt · inverso`, `GoToPatches · inverso`, `Esploso`,
-  `Esploso · inverso`). They were hand-written into the JSON rather than saved
-  from the editor, so their keys are in a different order and `loop.times`/
-  `loop.from` are absent — `normalizeAnimation` fills them in, nothing is lost.
-  **Compare per animation, not per line**: stringify each item before and after
-  and expect the four known names, so a fifth stands out. A missing SECTION is
-  invisible in review AND in the browser; only that diff catches it, and it
-  still does.
+  `toJSON()` to the file. ⚠️ **Re-run 2026-08-03 after adding `frameBudgetMs`/
+  `fillCostMsPerMpx` to `postfx` and `focusMargin` to `rotation`: all ten
+  sections identical and ZERO of the eleven animations drift.** An earlier run
+  the same day found four drifting (`GoToRotorsAlt · inverso`,
+  `GoToPatches · inverso`, `Esploso`, `Esploso · inverso`) because they had been
+  hand-written into the JSON with a different key order and no `loop.times`/
+  `loop.from`; the file has since been re-saved from the editor, which
+  normalised them. Don't treat "four known names" as the expected baseline any
+  more — the baseline is now zero, which is a stricter and more useful check.
+  **Compare per animation, not per line**, so that a single new drift stands
+  out. A missing SECTION is invisible in review AND in the browser; only that
+  diff catches it, and it still does. ⚠️ **What this check does NOT catch is a
+  new KEY** — checked, not assumed: `hydrate` REPLACES a section with the file's
+  own keys rather than merging them over the defaults, so a key added to
+  `DEFAULT_POSTFX` but not to the shipped JSON is simply absent from the store,
+  the round trip stays green, and the only thing keeping the feature alive is the
+  reader's own `{ ...DEFAULT_POSTFX, ...section }` spread (which is why that
+  spread in `runtime/postfx/PostFx.jsx` is load-bearing and not defensiveness).
+  Adding a section key therefore means adding it to the authored JSON too, or the
+  authored file and the code drift with every signal green.
 - **Ref mirrors for per-render values read inside stable closures**
   (`disabledRef`, `feelRef`, `focusImplRef`, `editModeRef`): the API effect
   runs once, so implementations are reached through a ref updated every
@@ -763,10 +800,14 @@ variant:
   per frame.
 - **README.md carries its own mermaid diagrams** (architecture overview, the
   authored-state round-trip, the consumer bundle/chunk layout, the animation
-  sequencer) that restate facts also tracked here — the component tree, the
-  COMPOSER_SECTIONS list, the apiRef writer count, the chunk split. A
-  structural change to any of those has two places to update, and the
-  diagrams are the easier one to leave silently stale.
+  sequencer, and the dynamic-resolution control law — "La risoluzione segue il
+  carico, non lo zoom") that restate facts also tracked here — the component
+  tree, the COMPOSER_SECTIONS list, the apiRef writer count, the chunk split
+  (core/authoring gzip sizes included), and the feed-forward resolution scale
+  (`dynamicScale`/`frameBudgetMs`/`fillCostMsPerMpx`/`dynamicScaleMin`, plus the
+  claim that fill cost is SUPERlinear in covered pixels). A structural change to
+  any of those has two places to update, and the diagrams are the easier one to
+  leave silently stale.
 
 <!-- END AUTO-MANAGED -->
 
@@ -1090,8 +1131,8 @@ If it ever does become worth doing, the cheap half is `Hud.module.css` alone
 | **9.1/255 on 2% of pixels** | `pixelRatioCap` 2 → 1.25 | What the default change costs visually, split by local gradient over 365k samples: flat surfaces (98%) move 0.15/255, silhouette edges (2%) move 9.1. ⚠️ And the sample count is nearly irrelevant next to it — msaa 4 gives 9.06, msaa 2 gives 9.19, which is why `msaaSamples` dropped to 2 for free. `pixelRatioCap: 1.5` is the conservative alternative: 7.6/255 on edges but only −12% |
 | **−28% wall clock, 0.49× pixels** | `dynamicScale` in the worst state | Interleaved A/B/A/B/A/B on `focusGroup('rotors', radiusFactor: 2)`, medians of the real rAF interval: **43.8 ms off (39.6–46.5) vs 31.4 ms on (31.2–31.8)**, non-overlapping. The scaled runs sit *exactly* on the harness floor, i.e. the GPU work disappears under it — so −28% is a FLOOR-LIMITED lower bound on this window, not the real saving. The machine-independent half of the result is the pixel count: 1.465 → 0.718 Mpx, the exact 0.7² the tier asked for. Exposure control: mean luminance 17.491 vs 17.471 (−0.11%), i.e. resolution changed and nothing else |
 | **0 recompiled programs** | 8 tier transitions | `gl.info.programs.length` 11 → 11 across four focus/exit cycles. This is THE check that the tier change goes through `composer.setPixelRatio()` and not the `useLayoutEffect` — the rebuild path would construct a fresh `GTAOPass`, i.e. new materials, i.e. a compile stall triggered by the very knob that exists to avoid one. Re-run it after touching either path |
-| **2 reallocations per dolly** | entering focus, 150 frames sampled | Target width went 1276 → 1148.4 → 893.2 and stopped, i.e. `SCALE_STEP` + `SCALE_COOLDOWN_S` really do keep the ~0.6 s damped dolly from reallocating at every intermediate zoom. Sample `postfxTarget().width` per frame and count distinct values to re-check |
-| **`focusZoom` 1.56 on `keycaps`** | why the signal is a number, not a boolean | Focusing a group whose bounding sphere is *larger* than the fit zooms OUT, and costs less than the resting frame. Measured: rotors 0.19 → tier 0.7, keycaps 1.56 → clamped to 1, full resolution. A boolean "focus active" would have downscaled the one case that needed nothing |
+| **2 reallocations per dolly** | entering focus, 150 frames sampled | Target width went 1276 → 1148.4 → 893.2 and stopped, i.e. `SCALE_STEP` + `SCALE_COOLDOWN_S` really do keep the ~0.6 s damped dolly from reallocating at every intermediate zoom. Sample `postfxTarget().width` per frame and count distinct values to re-check. ⚠️ **Should now read 1, not 2** — the scale is driven from the DESTINATION framing, so the whole change lands in the frame the focus is commanded, before the camera moves. Same probe; it is one of the things listed as still to verify in "Lo zoom d'insieme e il budget di pixel" |
+| **`focusZoom` 1.56 on `keycaps`** | why the load signal must be a measurement | Focusing a group whose bounding sphere is *larger* than the fit zooms OUT, and costs less than the resting frame. Measured: rotors 0.19 → tier 0.7, keycaps 1.56 → clamped to 1, full resolution. A boolean "focus active" would have downscaled the one case that needed nothing. ⚠️ The signal is no longer `focusZoom` (deleted 2026-08-03, zero callers): it is `apiRef.frameCoverage()`, a covered-viewport FRACTION, which subsumes this row and additionally knows when coverage has saturated and how large the window is — see "Lo zoom d'insieme e il budget di pixel" |
 | **A wireframe of this asset does not read at full framing — at any density** | `setWireframe`, browser 2026-08-03 | 338,586 triangles over an ~800 px canvas cover every pixel several times: the result is a flat tone, not a mesh. ⚠️ The obvious fix does NOT work — dropping the three densest groups (keycaps + damping + viti = **81.6%** of triangles) leaves the bare shell at 36,664 triangles, and it is *still* a solid mass. It is the asset's density, not a tuning problem, so the authored animation does `focusGroup` BEFORE switching on, never after. Close up the topology is unmistakable. Per-group triangles, worth not re-counting: keycaps 144,704 · damping 69,490 · viti 62,152 · body 36,664 · rotors 20,160 · the other four ≈1,300 each |
 | **13 fps wide vs 24-25 fps zoomed** | the same wireframe | ⚠️ Inverts the rule the rest of this table teaches (a focus costs ~4× because it fills the viewport). Lines are the exception: wide, all ~2 M segments are on screen and overlapping; zoomed, frustum culling throws most of them away. So the legible framing is also the cheap one — there is no trade-off to arbitrate here |
 | **6 fps from `depthWrite: false`** | the wireframe fade | Dead end already walked, in search of an x-ray look: half the frame rate of `depthWrite: true` (every interior face drawn as well) and **zero** legibility gained. Depth write is what gives the wireframe a silhouette instead of a cloud |
@@ -1103,6 +1144,271 @@ If it ever does become worth doing, the cheap half is `Hud.module.css` alone
 | **`BOX_REFRESH_FRAMES = 4`** | `LightRig.jsx` | `Box3` over the whole scene graph is not a per-frame operation; the sampled result is damped, so the sampling rate stays invisible |
 | **`commitFraction = 0.2`** | `state/defaults.js` | Fraction of a step's travel past which a released drag commits instead of springing back |
 | **`focusDamp` / `focusOutDamp` = 0.6** | `state/defaults.js` | Separate times in and out. The zoom-out closes every animation and at the entry speed it reads as hurried. Equal by default, so behavior is unchanged until one is tuned |
+
+## Lo zoom d'insieme e il budget di pixel (2026-08-03)
+
+⚠️ **Nata derivata, VERIFICATA in browser il 2026-08-03** (finestra 1197×877.5,
+`viewport.dpr` 1 quindi render target 1.05 Mpx). La verifica ha trovato **un
+errore vero nella derivazione** — vedi `fitMargin` qui sotto — ed è la ragione
+per cui la sezione non va letta come aritmetica pulita: l'aritmetica diceva 1.3,
+la scena diceva 1.5.
+
+Esiti dei quattro controlli, tutti col `?debug` e i suoi handle da console:
+
+| Controllo | Atteso | Misurato |
+| --- | --- | --- |
+| clipping su 21 pose, modello vergine | niente fuori quadro | max **\|NDC\| 0.682** — 32% di margine ✓ |
+| clipping su 21 pose, modello ESPLOSO | niente fuori quadro | **1.14 a `fitMargin` 1.3 ⚠**, 0.984 a 1.5 → margine alzato |
+| riallocazioni per carrellata | 1 (non 2) | **1** (1197 → 837.9 px) ✓ |
+| programmi ricompilati entrando in focus | 0 | **7 → 7** ✓ |
+| frame del flip wireframe | ~0 col warm-up | **24.2 ms a freddo → 0.4 ms a caldo** ✓ |
+
+⚠️ **Il feed-forward si vede al frame esatto, e vale la pena saperlo perché è la
+prova che il segnale è il TARGET e non il valore animato**: la scala scende al
+frame **17**, la camera comincia a muoversi al **18**. La copertura salta da
+0.212 a 0.927 nell'istante del comando, mentre la distanza è ancora quella di
+partenza (28.07 → poi 12.5).
+
+⚠️ **In uscita la risoluzione risale al 22% del rientro, non subito, e le
+riallocazioni sono 2 invece di 1.** È il comportamento voluto: `clearFocus`
+riporta il target all'insieme immediatamente, e un segnale preso dal solo target
+rimetterebbe la piena risoluzione col modello ancora addosso alla camera — cioè
+nel punto più costoso dello zoom-out, che è il movimento con cui si chiude ogni
+animazione. Il `Math.min(animato, target)` in `frameCoverage` compra quel ritardo
+al prezzo di una riallocazione in più, dalla parte giusta.
+
+**Il problema era che l'inquadratura d'insieme buttava via un terzo del frame, e
+che la scala dinamica non sapeva quanto è grande la finestra.**
+
+Il vecchio fit vincolava la sola LARGHEZZA e la confrontava con
+`FIT_HALF_WIDTH = 2.0`, una costante tarata a mano contro una mezza larghezza
+reale di 1.6 — cioè un 25% di margine nascosto dentro un numero che si chiama
+"half width", moltiplicato per `fitMargin: 1.6`. Risultato sulla finestra di
+sviluppo (798×718): il modello occupava il **51% della larghezza e il 39%
+dell'altezza**. Su 16:9, dove il vincolo vero è l'altezza, il fit non la
+guardava affatto.
+
+I numeri geometrici, tutti derivati dal modello reale (3.2 × 0.411 × 1.432
+unità di scena) e dal grafo delle 21 pose:
+
+| Grandezza | Valore | Perché non è quello che sembra |
+| --- | --- | --- |
+| mezze estensioni proiettate, caso peggiore sul grafo | halfW **1.638** / halfH **1.113** | il limite indipendente dall'orientamento sarebbe 1.753/1.764: il 58% in più in ALTEZZA, perché la posa che ci arriverebbe (pitch ~61°) non esiste fra le 21. Inquadrare per una posa che non c'è costa un terzo del frame |
+| la camera non ROLLA mai | — | quindi l'altezza del modello (y, l'asse corto) non contribuisce MAI alla larghezza proiettata. È l'asimmetria che rende la stima molto più stretta della sfera |
+| copertura a riposo, posa TL, vecchia inquadratura | **10.2%** (sagoma) · 19.8% (rettangolo proiettato) · 26.5% (sfera) | ⚠️ il «~25% of the viewport» che questo file attribuiva allo stato di riposo è la SFERA, non la sagoma: sovrastima 2.6×. La sagoma esagonale riempie 0.51 del proprio rettangolo su una posa a 3/4, e **1.0 esatto di fronte** — per questo il fattore di riempimento è calcolato in forma chiusa (`silhouetteArea`) e non messo a costante |
+| copertura nello stato peggiore (`GoToRotors`) | ~0.91–0.95 | satura: da lì avvicinarsi non aggiunge un pixel |
+
+**Il nuovo fit è su due assi** (`max(halfW, halfH · aspect)`), quindi
+aspect-adattivo, e `fitMargin` è scesa da 1.6 a **1.5** perché ora è aria vera
+attorno a estensioni vere. Modello **1.30× più grande** in linea (misurato:
+\|NDC\| 0.678/0.624 sulla posa d'ingresso contro 0.51/0.39 di prima), 1.7× in
+superficie.
+
+⚠️ **Era 1.3 nella prima stesura, e il browser l'ha bocciata.** Il modello
+vergine si accontenterebbe di ~1.05; chi pretende 1.5 è `Esploso`, che sposta 97
+mesh su ±0.9 unità di scena. Misurato sulle 21 pose col modello esploso:
+
+| `fitMargin` | max \|NDC\| esploso | |
+| --- | --- | --- |
+| 1.30 | 1.140 | ⚠ taglia del 14% |
+| 1.45 | 1.019 | ⚠ taglia dell'1.9% |
+| **1.50** | **0.984** | dentro |
+| 1.60 (vecchio) | 0.921 | dentro |
+
+⚠️ Due cose da non ripetere. La prima: **la derivazione geometrica dell'estensione
+dello scoppio era troppo piccola** (stimava ~1.96 unità di y contro un fabbisogno
+reale del 14% maggiore), e dava 1.3 per sicuro — l'errore era invisibile a
+qualunque rilettura del calcolo. La seconda: **lo stato esploso+ruotato è
+raggiungibile in produzione.** In `config` drag e frecce sono spente
+(`controlsDisabled`), ma `apiRef.goTo` no — solo `editMode === 'meshes'` la
+blocca — quindi la pulsantiera delle viste gira attorno a un modello esploso, e
+l'animazione lascia le mesh spostate fino al suo inverso.
+
+Chi vuole l'inquadratura stretta per davvero (1.05 → modello ~1.9× più grande di
+oggi) ha due strade, ed è una scelta di prodotto, non una taratura: dare a
+`Esploso` un'inquadratura propria, o far allargare il fit mentre le mesh sono
+spostate — il percorso "solo allargamento" esiste già in
+`useComposerControls.js` per la modalità Luci, e riusarlo vorrebbe dire animare
+`baseRadius`, cioè aggiungere uno scrittore all'invariante dei tre fattori.
+
+⚠️ **`focusMargin` esiste per questo e vale 1.6 apposta.** Fino a ieri la
+distanza di un focus era `R · radiusFactor · fitMargin / (tan(fov/2) · aspect)`:
+il margine dell'INSIEME entrava nella distanza del GRUPPO per costruzione,
+quindi stringere l'inquadratura generale avrebbe avvicinato del 23% ogni
+inquadratura autorata a occhio — rotori compresi — senza una riga di differenza
+nel JSON e senza alcun errore. Con `focusMargin: 1.6` (il vecchio `fitMargin`)
+le distanze di focus restano **numericamente identiche**: verificato su 120
+combinazioni di aspect × raggio × `radiusFactor`, errore relativo massimo
+**3.05e-16**. Chi cambia `fitMargin` da qui in avanti non muove più nessun focus.
+
+**La legge della scala dinamica era giusta a metà.** Era `scala = focusZoom`,
+con questo argomento: la frazione coperta va come 1/focusZoom², i pixel come
+scala², quindi il prodotto è costante. Mancavano due cose, entrambe misurabili:
+
+1. **la copertura SATURA.** A `focusZoom` 0.19 la legge "voleva" scala 0.19,
+   cioè il 3.6% dei pixel, quando il costo aveva smesso di crescere molto prima.
+   L'unica cosa che la fermava era `dynamicScaleMin` — un numero senza
+   derivazione, che finiva per decidere da solo tutto il frame peggiore. Il
+   sintomo era già nel repo: nel JSON spedito era stato alzato a mano da 0.7 a
+   **0.85**, che è quel che succede a una manopola costretta a fare due lavori.
+2. **non sapeva quanto è grande la finestra.** `focusZoom` è un rapporto: vale
+   0.19 sui rotori sia in un canvas 798×718 sia a tutto schermo su un 1080p,
+   dove i pixel sono 3.6×. Era la contraddizione già registrata fra le "known
+   strains" («~12 fps in a 798×718 canvas and ~6 fps fullscreen»): il rimedio
+   c'era e non poteva funzionare, perché il segnale era adimensionale.
+
+Ora è `scala = √(budget / pixel coperti)`, con il budget in millisecondi
+(`frameBudgetMs: 14`) e una sola costante da rimisurare per macchina
+(`fillCostMsPerMpx`, tarata a **35** — era 28 in questa prima stesura, corretta
+per misura il 2026-08-04, vedi la sezione sullo stutter in fullscreen). Costo di
+fill STIMATO dal modello con la costante di allora, prima contro dopo:
+
+| finestra | stato | prima | dopo |
+| --- | --- | --- | --- |
+| 798×718 | focus rotori | scala 0.85 → **18.4 ms** (30 fps) | scala 0.7 → **12.5 ms** (60 fps) |
+| 1440×900 | focus rotori | scala 0.85 → **42.9 ms** (23 fps) | scala 0.6 → **21.4 ms** (30 fps) |
+| 1920×1080 pieno | focus rotori | scala 0.85 → **69 ms** (14 fps) | scala 0.6 → **34.4 ms** (29 fps) |
+
+⚠️ Le righe di focus **non dipendono da `fitMargin`** (le distanze di focus sono
+invarianti, vedi `focusMargin`), quindi valgono così come sono; le righe a riposo
+della prima stesura no, erano calcolate a margine 1.3. A riposo, misurato a 1.5
+sulla finestra di verifica: copertura **21.2%** su 1.05 Mpx = 0.22 Mpx coperti
+contro un budget di 0.5, quindi **scala 1** — confermato dal render target
+rimasto a piena larghezza (1197 px). Il gradino scelto in focus sulla stessa
+finestra è **0.7**, che è il valore che la vecchia legge otteneva solo per via
+del pavimento tarato a mano.
+
+Cioè il modello è 1.5× più grande **e** lo stato peggiore costa metà.
+
+⚠️ **`fillCostMsPerMpx` si tara sullo stato PEGGIORE, mai a riposo**, e non è
+indifferente: la stima usa la proiezione della scatola corretta dal
+riempimento della sagoma, che è esatta di fronte e nello stato saturo ma resta
+approssimata in mezzo. Tarando sul peggiore l'errore cade dove non fa danno (a
+riposo la scala è comunque bloccata a 1 da tutt'altro margine); tarando a
+riposo si otterrebbe piena risoluzione proprio nel frame che non ce la fa.
+⚠️ E riaccendere `aoEnabled` cambia quel numero (~43 invece di 28): l'AO costa
+~15 ms nello stato saturo e scala anch'esso con i pixel coperti.
+
+⚠️ **Quando vince `dynamicScaleMin` il messaggio è preciso, e non è un bug**:
+quella finestra è troppo grande per questo hardware, e la scelta fra fluidità e
+nitidezza torna all'autore (`pixelRatioCap` più basso, o 30 fps alzando
+`frameBudgetMs`). A 1080p pieno con il modello che riempie il viewport, questa
+scena non fa 60 fps a risoluzione nativa: 2.07 Mpx coperti × 28 ns/px sono
+~58 ms, e nessuna manopola di post-processing li toglie — li scala.
+
+**Come si misura il clipping senza guardare** — è il modo in cui `fitMargin` 1.3
+è stata bocciata, e costa dieci righe: per ogni mesh non taggata
+`__editorHelper`/`__variantHidden` si prendono gli 8 spigoli di
+`geometry.boundingBox`, si applicano `matrixWorld` → `camera.matrixWorldInverse`
+→ `camera.projectionMatrix` a mano (le `.elements` sono column-major), si divide
+per w e si tiene il massimo di |x| e |y| in NDC. **1.0 è il bordo esatto.** Poi
+si gira su tutto il grafo con `__setPose` + un `advance()` per posa — non serve
+convergenza, `__setPose` scrive direttamente gli angoli correnti. Vale molto più
+di uno screenshot: dà il margine in numeri e copre 21 pose in un tick.
+
+⚠️ Due trappole incontrate lungo la strada, entrambe costano una misura
+sbagliata:
+- **`store.set` non ha effetto nello stesso tick.** La sezione passa da
+  `useSyncExternalStore`, quindi React ri-renderizza dopo, e l'effetto del fit con
+  lui: un `set('rotation', {fitMargin})` seguito subito dalla misura legge ancora
+  l'inquadratura vecchia. Tre margini diversi hanno dato tre risultati identici
+  prima che me ne accorgessi. Ci vuole un `await setTimeout(…, ~140)` in mezzo.
+  (`set` FONDE, invece: la sezione resta a 13 chiavi.)
+- **`esploso-inverso` non riporta a riposo.** Dopo l'inverso `__animStats()`
+  legge ancora `pivots: 97 / pivotedMeshes: 97` e la geometria è ancora spostata;
+  solo `__stopAnimation()` (la teardown morbida) riazzera tutto. È la stessa
+  famiglia del difetto già descritto in "Known strains" sugli inversi generati —
+  qui l'effetto pratico è che una misura presa "dopo l'inverso" misura di
+  nascosto il modello esploso.
+
+**Il metodo per il warm-up del wireframe**, perché il caso a freddo non si
+riproduce due volte nella stessa sessione: si rinomina l'azione `setWireframe`
+nella config servita (2 occorrenze) così `hasWireframeStep` è falso e il warm-up
+non parte, si ricarica, e si accende `wireframe` a mano su tutti i materiali di
+gruppo cronometrando `st.advance()` con `frameloop: 'never'`. Misurato **24.2 ms
+contro un frame normale da 0.2** a freddo, **0.4 ms** a caldo. ⚠️ Sono 24 ms, non
+i 68 che questo file attribuisce alla costruzione: quel numero veniva
+dall'intervallo rAF reale (che include l'upload alla GPU), questo dal solo tempo
+di CPU sincrono — non sono la stessa grandezza e non vanno confrontati. Ciò che
+il warm-up toglie è la parte di CPU, e la toglie tutta.
+
+## Lo stutter in fullscreen: due ipotesi sbagliate e il colpevole (2026-08-04)
+
+Misurato sulla build di **produzione** (`npm run preview`), finestra 1901×926,
+dpr 1.333 → target 3.06 Mpx. Vale la pena leggerlo per l'ordine in cui le ipotesi
+sono cadute, perché due erano plausibili e sbagliate entrambe.
+
+**Ipotesi 1 — la scala dinamica che oscilla fra due gradini. VERA come difetto,
+FALSA come causa dello stutter.** Girando fra le pose a schermo pieno si
+contavano **6 riallocazioni in 18 cambi di posa**, fra 2258 e 2509 px, perché la
+copertura oscilla fra 0.1635 (TBL) e 0.1821 (CFT) e quell'11% stava a cavallo di
+una soglia. Il difetto era reale ed è stato corretto (`floor` invece di `round` +
+`SCALE_RAISE_MARGIN` in `runtime/postfx/PostFx.jsx`). ⚠️ Ma **una riallocazione
+costa 15.9 ms, non 120**, e correlando i frame lenti con i cambi di larghezza del
+target: **0 picchi su 11 cadevano su una riallocazione**. Il ~245 MB di churn che
+sembrava spiegare tutto non spiega niente. Correlare, non dedurre.
+
+**Ipotesi 2 — il cambio di posa (re-render del rig, retarget delle 34 luci).
+FALSA.** Contati i picchi >60 ms su 216 frame in tre condizioni: fermo **5**,
+`setPose` ripetuto sulla stessa posa **3**, cambio posa ogni 12 frame **6**. Cioè
+i picchi ci sono **a scena completamente ferma** e il cambio di posa non li
+aumenta.
+
+**Il colpevole dei picchi era l'ambiente di misura.** Stessa finestra, stessa
+scena, a riposo:
+
+| build | mediana | max | picchi >60 ms |
+| --- | --- | --- | --- |
+| produzione, senza `?debug` | 33.1 | **58** | **0** |
+| produzione, con `?debug` (Leva montato) | 32.7 | 72.5 | 3 |
+| **dev** + `?debug` | 36.9 | **114** | 5 |
+
+⚠️ **Quindi i picchi isolati non sono un difetto del prodotto: sono il dev server
+più il pannello di authoring.** Prima di dare la caccia a uno stutter, riprodurlo
+su `npm run preview` senza `?debug` — altrimenti si ottimizza React in modalità
+sviluppo. Il floor dell'harness resta ~31.3 ms, quindi le mediane qui sopra sono
+"app ≈ 2 ms" a riposo.
+
+**Quello che invece è un problema vero, e non è uno stutter.** Nello stato di
+focus (`GoToRotors`, copertura 0.952) la produzione a schermo pieno legge
+**mediana 67.9 ms, p90 109.8, 116 frame su 120 sopra i 60 ms**, con il target già
+scalato a 1505 px — cioè `dynamicScaleMin` che vincola e la legge che ha già
+fatto tutto il possibile. Non sono botte isolate: sono **~15 fps costanti**.
+
+La scala delle leve, misurata nello stesso stato (costo app = mediana − 31.3):
+
+| configurazione | mediana | costo app | target |
+| --- | --- | --- | --- |
+| cap 1.32, 16 bit, min 0.6 (spedita) | 71.4 | **40.1 ms** | 1.10 Mpx |
+| `hdrTarget: false` | 66.8 | 35.5 (−11%) | 1.10 |
+| **+ `pixelRatioCap` 1.0** | 46.3 | **15.0 (−58%)** | 0.63 |
+| + `dynamicScaleMin` 0.45 | 36.7 | **5.4** | 0.44 |
+
+⚠️ `pixelRatioCap` resta di gran lunga la leva dominante, come questo file già
+diceva — ma il **−58% da 1.32 a 1.0 è più del −43% dei pixel**, e quella
+differenza è la scoperta: **il costo per pixel coperto non è costante, triplica
+fra target piccolo e grande** (13 → 25 → 38 ms/Mpx sulle tre righe). È banda e
+residenza in cache su una GPU integrata, non aritmetica. Conseguenza pratica:
+`fillCostMsPerMpx` è una sola costante per un fenomeno con due regimi, si tara
+sul PESANTE (35, corretto da 28 il 2026-08-04) e il modello resta ottimista
+proprio sui target più grandi. ⚠️ Non scalare stime da questa costante su
+risoluzioni molto diverse da quella su cui è stata presa.
+
+**Esito, verificato sulla configurazione spedita** (`msaaSamples: 2`,
+`pixelRatioCap: 1.0`, `fillCostMsPerMpx: 35`, `dynamicScaleMin: 0.6`), stessa
+finestra a schermo pieno:
+
+| | prima | dopo |
+| --- | --- | --- |
+| riposo, costo app | ~2 ms (scala 1.0) | **0.1 ms** — mediana 31.4, cioè esattamente il floor dell'harness; target 1.76 Mpx a scala 1.0 |
+| focus rotori, costo app | **40.1 ms** | **17.1 ms** (−57%), target 0.63 Mpx a scala 0.6 |
+| riallocazioni girando su tutte le pose | 6 | **0** |
+
+⚠️ Le tre correzioni non sono intercambiabili e vanno lette per quello che
+ciascuna fa: l'isteresi toglie le riallocazioni (6 → 0) ma NON i millisecondi;
+`pixelRatioCap` toglie i millisecondi ma non le riallocazioni; la taratura a 35
+serve solo a far scegliere alla legge il gradino giusto. Chi ne rimuovesse una
+credendo di tenere il risultato ne perderebbe una parte diversa.
 
 ## Invariants that span files
 
@@ -1388,8 +1694,12 @@ These are accepted costs of the current design, not bugs waiting to be filed.
     CPU 1.3%, and cutting lights makes it *worse*. Every one of those was
     measured after being wrongly predicted as the cause; don't re-derive them.
 
-  The only lever is `pixelRatioCap` (linear), which is why it ships at 1.25
-  rather than 2. Beyond that the fix would have to be the material shader
+  The only lever is `pixelRatioCap` — ⚠️ **not linear, and the shipped config is
+  now 1.0, not 1.25**: measured 2026-08-04, going 1.32 → 1.0 buys −58% of app
+  cost against −43% of pixels, because cost per covered pixel triples between a
+  small and a large target (13 → 25 → 38 ms/Mpx). See "Lo stutter in fullscreen".
+  It used to ship at 1.25 rather than 2, and now at 1.0.
+  Beyond that the fix would have to be the material shader
   itself — 32 forward lights with clearcoat, i.e. two BRDF lobes per light per
   fragment — and that is an authoring decision, not a tuning one.
   ⚠️ **Since `dynamicScale` that lever is applied automatically** (see the
@@ -1398,6 +1708,14 @@ These are accepted costs of the current design, not bugs waiting to be filed.
   fewer pixels", which is a quality cost, not a frame-rate one. What did **not**
   change is the underlying profile — the scene is still fill-bound and the
   shader is still the only structural fix.
+  ⚠️ And since 2026-08-03 the automatic lever is driven by a PIXEL BUDGET rather
+  than by the zoom factor, which is what finally makes the second bullet above
+  ("it is a property of the WINDOW, not of the animation") stop being a strain
+  the reader has to remember: the law now reads the window size, so the same
+  animation lands on the same frame time in a small canvas and fullscreen — at
+  different resolutions. Reproducing a perf report at the reporter's window size
+  still matters, but for the IMAGE, not for the frame rate. See "Lo zoom
+  d'insieme e il budget di pixel".
 - **A material change that flips a DEFINE does not reach the shader while that
   material is under an opacity override — observed, mechanism not yet
   diagnosed.** Seen 2026-08-02 while measuring clearcoat: with `GoToRotors`
@@ -1427,8 +1745,16 @@ These are accepted costs of the current design, not bugs waiting to be filed.
   second**, against a 32 ms median — so ~68 ms is the one-time build and the
   remaining 81 is the first line draw, which never goes away. The authored
   «Wireframe» animation flips it at opacity 0.04 so that frame lands where
-  nothing is visible; it is deliberately NOT pre-warmed, which would charge
-  every session for a view most visitors never open. And the textured GLB will
+  nothing is visible. ⚠️ **It IS pre-warmed since 2026-08-03**, and the reason
+  the earlier refusal ("would charge every session for a view most visitors never
+  open") no longer applies is the CONDITION, not a change of mind:
+  `materials/warmupTransparency.js`'s `warmWireframeBuffers` runs only when the
+  product's authored animations actually contain a `setWireframe` step
+  (`hasWireframeStep` in KeyboardModel.jsx), and it draws into a 4×4 render
+  target — so the ~8 MB of line indices are built during the entry fade at zero
+  fill cost, and a product without that view allocates nothing. The ~68 ms move
+  to startup; the 81 ms of drawing lines stay where they are, because they are the
+  price of the view itself. And the textured GLB will
   bring the genuine defines
   (`map`, `normalMap`, `alphaMap` presence are all defines, and
   `programSignature` already tracks them for the warm-up). Authoring materials

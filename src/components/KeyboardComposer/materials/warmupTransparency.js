@@ -1,5 +1,8 @@
+import * as THREE from 'three'
+
 /**
- * Precompilazione degli shader TRASPARENTI dei materiali di gruppo.
+ * Precompilazione degli shader TRASPARENTI dei materiali di gruppo, e
+ * costruzione anticipata degli indici di linea del wireframe.
  *
  * ## Il difetto che risolve
  *
@@ -166,6 +169,76 @@ export function programSignature(materials) {
  *
  * @returns {number} quanti materiali sono stati scaldati (0 = non fatto nulla)
  */
+/**
+ * Costruisce in anticipo gli INDICI DI LINEA che `setWireframe` pretende al
+ * primo disegno.
+ *
+ * ## Il difetto, che NON è una compilazione di shader
+ *
+ * `wireframe` non è un define e non entra nella chiave di cache del programma
+ * (three scambia l'index buffer al momento del disegno,
+ * `WebGLRenderer.js:1111`), quindi il warm-up qui sopra non lo copre e non
+ * dovrebbe: misurato, `gl.info.programs.length` legge 11 prima e 11 dopo. Il
+ * costo sta altrove ed è memoria: three genera l'attributo di linee alla prima
+ * mesh disegnata con `wireframe = true`, sei indici per triangolo, cioè ~2.03
+ * milioni di voci (~8 MB) sulle 338.586 facce di questo asset.
+ *
+ * Misurato in browser: il frame che accende il wireframe costa **148.7 ms la
+ * prima volta e 81 la seconda**, contro una mediana di 32. Gli 81 ms sono il
+ * disegno delle linee e non se ne vanno mai — sono il prezzo di quella vista —
+ * ma i ~68 ms di differenza sono la costruzione, e si pagano una volta sola.
+ * Questa funzione li sposta all'avvio.
+ *
+ * ⚠️ CLAUDE.md registrava la decisione OPPOSTA («deliberatamente NON
+ * pre-riscaldato, che addebiterebbe a ogni sessione una vista che i più non
+ * aprono»), e l'argomento era giusto. Quello che lo scioglie non è cambiare
+ * idea: è la CONDIZIONE. Il chiamante (KeyboardModel.jsx) invoca questa funzione
+ * solo se le animazioni autorate del prodotto contengono davvero uno step
+ * `setWireframe` — quindi paga solo il prodotto che quella vista ce l'ha, e la
+ * paga durante la dissolvenza d'ingresso invece che in mezzo a un'animazione.
+ * Un prodotto senza wireframe non alloca un byte.
+ *
+ * ## Perché un render target 4×4
+ *
+ * Gli indici di linea sono per GEOMETRIA e vengono creati al primo disegno,
+ * indipendentemente da quanti pixel quel disegno copra: un bersaglio minuscolo
+ * li costruisce e li carica tutti pagando fill zero. Serve anche a non far
+ * lampeggiare un frame di wireframe sullo schermo, che a differenza del flip di
+ * `transparent` (invisibile, opacità ancora 1) si vedrebbe benissimo.
+ *
+ * @returns {number} quante geometrie sono state disegnate (0 = non fatto nulla)
+ */
+export function warmWireframeBuffers({ gl, scene, camera, materials, hidden = [] }) {
+  if (!gl || !scene || !camera) return 0
+  const list = [...new Set(materials)].filter((m) => m && m.wireframe !== true)
+  if (!list.length) return 0
+
+  const wasVisible = hidden.map((o) => o.visible)
+  const prevTarget = gl.getRenderTarget()
+  const target = new THREE.WebGLRenderTarget(4, 4)
+  try {
+    for (const m of list) m.wireframe = true
+    // Come per il warm-up trasparente: le mesh nascoste da una variante vanno
+    // mostrate, o le loro geometrie non vengono disegnate e quindi nemmeno
+    // indicizzate — e la prima animazione dopo uno swap di variante ripagherebbe
+    // la costruzione per quella metà del modello.
+    for (const o of hidden) o.visible = true
+    gl.setRenderTarget(target)
+    gl.render(scene, camera)
+  } finally {
+    // `finally` per la stessa ragione dell'altro warm-up: se il render lancia,
+    // lasciare i materiali in wireframe significherebbe un prodotto a fil di
+    // ferro per il resto della sessione.
+    gl.setRenderTarget(prevTarget)
+    for (const m of list) m.wireframe = false
+    for (let i = 0; i < hidden.length; i++) hidden[i].visible = wasVisible[i]
+    // Solo il bersaglio: gli indici di linea vivono in `WebGLGeometries`,
+    // indicizzati per GEOMETRIA, e sopravvivono — è tutto il punto.
+    target.dispose()
+  }
+  return list.length
+}
+
 export function warmTransparentPrograms({
   gl,
   scene,

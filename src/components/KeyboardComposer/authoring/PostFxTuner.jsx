@@ -35,10 +35,29 @@ export default function PostFxTuner({ store }) {
         step: 0.25,
         label: 'tetto pixel ratio',
       },
-      // Le due manopole della scala dinamica sono a caldo come le uniform
-      // dell'AO: non ricostruiscono la catena, riallocano solo i buffer al
-      // prossimo cambio di gradino.
+      // Le manopole della scala dinamica sono a caldo come le uniform dell'AO:
+      // non ricostruiscono la catena, riallocano solo i buffer al prossimo
+      // cambio di gradino.
       dynamicScale: { value: DEFAULT_POSTFX.dynamicScale, label: 'scala dinamica' },
+      // Il budget di FILL per frame. 14 ≈ 60 fps (i ~2-3 ms non-fill sono già
+      // scontati), 30 ≈ 30 fps con più nitidezza negli stati pesanti.
+      frameBudgetMs: {
+        value: DEFAULT_POSTFX.frameBudgetMs,
+        min: 6,
+        max: 40,
+        step: 0.5,
+        label: 'budget frame (ms)',
+      },
+      // ⚠️ Taratura per MACCHINA, non gusto: ms di fill per megapixel coperto.
+      // Si misura nello stato peggiore (modello che riempie il viewport), mai a
+      // riposo — vedi state/defaults.js.
+      fillCostMsPerMpx: {
+        value: DEFAULT_POSTFX.fillCostMsPerMpx,
+        min: 4,
+        max: 80,
+        step: 1,
+        label: 'costo fill (ms/Mpx)',
+      },
       dynamicScaleMin: {
         value: DEFAULT_POSTFX.dynamicScaleMin,
         min: 0.4,

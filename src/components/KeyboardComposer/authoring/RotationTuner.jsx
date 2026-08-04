@@ -28,7 +28,14 @@ export default function RotationTuner({ store }) {
       rubberFactor: { value: DEFAULT_ROTATION.rubberFactor, min: 0, max: 0.6, step: 0.05, label: 'elastico oltre-step' },
       rubberCapDeg: { value: DEFAULT_ROTATION.rubberCapDeg, min: 0, max: 20, step: 1, label: 'elastico max ( )' },
       timeScale: { value: DEFAULT_ROTATION.timeScale, min: 0.3, max: 1.5, step: 0.05, label: 'velocità animazione' },
-      fitMargin: { value: DEFAULT_ROTATION.fitMargin, min: 1, max: 2.5, step: 0.05, label: 'margine inquadratura' },
+      // Aria attorno alle estensioni PROIETTATE del modello, sul caso peggiore
+      // del grafo delle pose. Il minimo è 1: sotto, qualche posa taglia.
+      fitMargin: { value: DEFAULT_ROTATION.fitMargin, min: 1, max: 2.5, step: 0.05, label: 'margine insieme' },
+      // ⚠️ Manopola SEPARATA da quella sopra apposta: prima il margine
+      // dell'insieme entrava nella distanza dei focus per costruzione, quindi
+      // stringere l'inquadratura generale riscriveva in silenzio ogni
+      // inquadratura di gruppo autorata. Vedi state/defaults.js.
+      focusMargin: { value: DEFAULT_ROTATION.focusMargin, min: 1, max: 2.5, step: 0.05, label: 'margine focus' },
       zoomOutMobile: { value: DEFAULT_ROTATION.zoomOutMobile, min: 1, max: 1.8, step: 0.05, label: 'zoom-out mobile' },
       // Transizione dello zoom sui gruppi (dolly + spostamento del pivot).
       // Volutamente NON la molla delle pose: quella integra angoli con la

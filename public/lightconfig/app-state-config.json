@@ -2163,7 +2163,8 @@
     "rubberFactor": 0,
     "rubberCapDeg": 0,
     "timeScale": 0.3,
-    "fitMargin": 1.6,
+    "fitMargin": 1.5,
+    "focusMargin": 1.6,
     "zoomOutMobile": 1.25,
     "focusDamp": 0.6,
     "focusOutDamp": 0.6
@@ -3547,11 +3548,13 @@
     "homePose": "TL"
   },
   "postfx": {
-    "msaaSamples": 4,
+    "msaaSamples": 2,
     "hdrTarget": true,
-    "pixelRatioCap": 1.32,
+    "pixelRatioCap": 1,
     "dynamicScale": true,
-    "dynamicScaleMin": 0.7,
+    "frameBudgetMs": 14,
+    "fillCostMsPerMpx": 35,
+    "dynamicScaleMin": 0.6,
     "aoEnabled": false,
     "aoResolutionScale": 0.5,
     "aoRadius": 0.12,

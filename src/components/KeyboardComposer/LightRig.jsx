@@ -184,6 +184,12 @@ export default function LightRig({
 
   const prevCamRef = useRef({ pitch: 0, yaw: 0, initialized: false })
   const transitionRef = useRef({ totalDist: 0, progress: 1 })
+  // Scratch per leggere l'orientamento della camera nel useFrame. Era
+  // `new THREE.Euler()` dentro il ciclo, cioè un oggetto al frame per tutta la
+  // sessione: irrilevante da solo, ma è allocazione in un ciclo a 60 Hz e le
+  // pause del GC sono uno degli scatti da togliere. Un ref e non un globale di
+  // modulo, per la stessa ragione del gemello in useComposerControls.js.
+  const camEulerRef = useRef(new THREE.Euler(0, 0, 0, 'YXZ'))
 
   // Impostazioni della vista corrente. Non è più una `useControls`: il rig le
   // legge dallo store, e il pannello che le muove vive in
@@ -366,7 +372,7 @@ export default function LightRig({
     // DOM dell'authoring, 60 volte al secondo. Ora la posa passa da `store.ui`
     // e l'etichetta è un normale render di LightEditor.jsx.)
 
-    const camEuler = new THREE.Euler().setFromQuaternion(state.camera.quaternion, 'YXZ')
+    const camEuler = camEulerRef.current.setFromQuaternion(state.camera.quaternion, 'YXZ')
     const currentPitch = -camEuler.x
     const currentYaw = -camEuler.y
     
