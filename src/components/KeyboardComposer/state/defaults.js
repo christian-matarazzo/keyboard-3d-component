@@ -201,12 +201,99 @@ export const DEFAULT_POSTFX = {
   // un composer: qui vanno richiesti a mano, o il primo pass aggiunto PEGGIORA
   // l'immagine invece di migliorarla.
   //
-  // ⚠️ 2 e non 4, MISURATO: sopra `pixelRatioCap` 1.25 il numero di campioni non
-  // si vede più. Delta medio sui pixel di bordo contro l'immagine a dpr 2 +
-  // msaa 4: 9.06/255 con msaa 4, 9.19/255 con msaa 2 — indistinguibili. Chi
-  // decide la qualità dei bordi è la RISOLUZIONE, non i campioni; da 4 a 2 si
-  // risparmiano ~4 ms per frame senza contropartita.
-  msaaSamples: 2,
+  // ⚠️ **0, MISURATO 2026-08-04, ed è un capovolgimento.** Il valore era 2, con
+  // accanto la misura «sopra `pixelRatioCap` 1.25 passare da 4 a 2 campioni è
+  // indistinguibile». Quella misura era giusta e fuori campo: il prodotto
+  // spedito sta a `pixelRatioCap` 1.0, dove non era mai stata rifatta. Rifatta
+  // lì (Intel Iris Xe, dpr 1, 1.64 Mpx, tempi GPU del solo `composer.render()`),
+  // l'MSAA 2× costa **+6.0 ms a riposo e +8.2 nello stato saturo** — e compra
+  // un'immagine che il supercampionamento dà per 3 ms in meno:
+  //   msaa2 @scala 1.0   errore di bordo 4.61   16.3 ms
+  //   msaa0 @scala 1.2   errore di bordo 4.72   13.4 ms
+  //   msaa0 @scala 1.4   errore di bordo 4.00  ~17.4 ms   (msaa4 fa 3.97 a 19.2)
+  // Sono campioni veri contro campioni veri, e l'MSAA li paga anche sui pixel
+  // dove non c'è un bordo. La tabella completa sta in testa a
+  // runtime/postfx/PostFx.jsx; il budget che si libera si spende con
+  // `dynamicScaleMax`.
+  //
+  // ⚠️ Ed è SUPERADDITIVO con un pass a valle: msaa2+fxaa costa 13.8 ms sopra la
+  // base contro i 10.3 della somma delle due. Ogni confine di pass su un target
+  // multicampionato paga un blit di resolve, cioè banda — l'asse su cui questa
+  // scena è già satura.
+  msaaSamples: 0,
+  // Antialiasing A VALLE, sull'immagine risolta: 'none' | 'fxaa'.
+  //
+  // Un pass a valle lavora sull'immagine già risolta e ricostruisce un gradiente
+  // continuo dove l'MSAA 2× ha TRE soli livelli di copertura (0, ½, 1) — che su
+  // una silhouette illuminata contro il nero del guscio è una scala a tre
+  // gradini, e ruotando i gradini scorrono. `FXAAPass` costa 1 quad, ~12 tap,
+  // ZERO render target nuovi (riusa il ping-pong): **1.3 ms per megapixel di
+  // target**, misurati, contro i 3.7-5.0 dell'MSAA 2×.
+  //
+  // ⚠️ **Questa manopola dice quale tecnica è DISPONIBILE, non quando gira.**
+  // Dal 2026-08-04 il pass si accende da sé solo entro mezzo gradino dall'1:1
+  // esatto con lo schermo (`AA_BAND` in runtime/postfx/PostFx.jsx), perché è
+  // l'unico regime in cui ha vinto una misura: 5.16 contro 6.27 a scala 1.
+  // Sopra perde contro i campioni veri (5.01 contro 4.72 a 1.2) e sotto
+  // PEGGIORA (11.35 contro 10.14 a 0.6, 8.25 contro 7.66 a 0.8), perché sfuoca
+  // ciò che l'upscaling ha già sfuocato.
+  //
+  // Prima quella scelta era affidata all'autore, e si vedeva: default di
+  // libreria 'fxaa' e default di prodotto 'none', cioè due valori diversi per
+  // la stessa domanda — «in che regime girerà la macchina di qualcun altro?» —
+  // a cui nessuno dei due poteva rispondere in anticipo. Ora la risposta si
+  // legge a runtime, e restare su 'fxaa' non può più peggiorare un'immagine.
+  //
+  // ⚠️ **Ma non è gratis, e il JSON di ARRAY_MODEL_L resta su 'none'.**
+  // `wantedScaleRaw` addebita `aaCostMsPerMpx` in base a QUESTO valore e non al
+  // fatto che il pass stia girando — deve, o il costo dipenderebbe dal gradino
+  // che il costo stesso determina, e la legge diventerebbe bistabile (a
+  // copertura 0.183 sia 1.0 sia 1.1 sono autoconsistenti: si atterrerebbe
+  // sull'uno o sull'altro secondo la storia, e la riproducibilità di questa
+  // legge è il motivo per cui è a feed-forward). Conseguenza aritmetica sulla
+  // configurazione spedita (1920×855, dpr 1, budget 14, fill 35):
+  //   copertura 0.183   gradino 1.1 → 1.0
+  //   copertura 0.149   gradino 1.2 → 1.1
+  //   copertura 0.053   gradino 1.4 → 1.4
+  // cioè si paga un gradino di supercampionamento in due pose su tre per un
+  // pass che lì non si accende nemmeno. Su un prodotto il cui gradino sta sopra
+  // 1 conviene 'none'; con `dynamicScaleMax` a 1 — il default di libreria — il
+  // gradino sta a 1 comunque e 'fxaa' è puro guadagno.
+  //
+  // ⚠️ SMAA è stato implementato, misurato e RIMOSSO: dominato (4.88 a 18.8 ms)
+  // e +40 kB gzip nel chunk `three` di ogni integratore. Il perché per esteso, e
+  // dove andrebbe rimesso se qualcuno insiste, è su AA_PASSES in
+  // runtime/postfx/PostFx.jsx.
+  aa: 'fxaa',
+  // Riduzione a BOX quando il gradino supercampiona, invece del tap singolo di
+  // `OutputShader`.
+  //
+  // ⚠️ Non è una rifinitura: senza, il supercampionamento che si paga non
+  // arriva a destinazione. `OutputShader` fa `texture2D(tDiffuse, vUv)` una
+  // volta sola, e un tap bilineare pesa 2×2 texel — cioè è il box esatto del
+  // rapporto 2 e di nessun altro. Il gradino spedito è 1.4, dove quel tap salta
+  // texel interi: il sintomo misurato su una cattura del prodotto è una cresta
+  // di ombreggiatura larga 1 px con picchi 115-126 su fondo 60, che scatta di
+  // un pixel ogni 24 righe. Una seghettatura luminosa, non un'immagine morbida.
+  //
+  // Acceso costa tre fetch in più su un quad che si disegnava comunque, su una
+  // scena satura di banda e non di aritmetica (16 → 4 campioni di AO valgono
+  // zero millisecondi, misurato). MISURATO anche questo, 2026-08-04, sulla build
+  // di produzione: a riposo cambia **31.527 pixel, l'1.92% del frame** (delta
+  // medio 3.31/255, massimo 39) — tutti sui bordi — e la frazione di righe in cui
+  // il pixel di confine è coperto oltre l'80% scende **dal 66.0% al 47.1%**, che
+  // è il gradino che diventa gradiente. Il costo sta **sotto 0.2 ms** su 1.64 Mpx
+  // di schermo, cioè sotto il pavimento di misura (a ~20 ms/frame: acceso
+  // 19.93/19.88/20.09, spento 20.17/19.88).
+  //
+  // A gradino ≤ 1 l'offset è zero e l'immagine è identica a prima — verificato,
+  // **0 pixel di differenza** nello stato saturo. È la proprietà che rende la
+  // manopola sicura da lasciare accesa ovunque: dove non può aiutare, non c'è.
+  //
+  // ⚠️ Esiste come manopola, invece di essere sempre attiva, solo per poterla
+  // spegnere durante una misura: è la leva di AA più recente del file e le altre
+  // sono tutte confrontabili dal pannello.
+  resolveBox: true,
   // Precisione del render target. `false` scende a 8 bit per canale, cioè
   // dimezza i byte per campione — l'unica classe di risparmio che si misuri su
   // questa scena (bandwidth-bound, vedi CLAUDE.md).
@@ -337,6 +424,56 @@ export const DEFAULT_POSTFX = {
   // ⚠️ Riaccendere `aoEnabled` cambia questo numero (~43 invece di 28): l'AO
   // costa ~15 ms nello stato saturo e scala anch'esso con i pixel coperti.
   fillCostMsPerMpx: 35,
+  // La gemella della riga sopra per il pass di AA: millisecondi per megapixel
+  // di TARGET.
+  //
+  // ⚠️ La differenza fra le due non è di taratura, è di grandezza, ed è tutto
+  // il motivo per cui `wantedScaleRaw` ha dovuto generalizzarsi. Il fill si
+  // paga sui pixel COPERTI dal modello, e a inquadratura d'insieme la copertura
+  // è ~0.20: quel costo quasi sparisce da solo. Il pass di AA è un quad
+  // fullscreen, quindi si paga su TUTTI i pixel, sempre, anche col modello
+  // lontano. Sommarlo dentro `fillCostMsPerMpx` avrebbe dato un numero che
+  // sbaglia in due direzioni opposte a seconda dell'inquadratura.
+  //
+  // Serve solo con `aa` acceso; con 'none' il termine non entra proprio nella
+  // legge.
+  //
+  // 1.3 = misurato 2026-08-04 (Intel Iris Xe) nel regime SATURO, cioè a fine
+  // `GoToRotors` dove il frame costa 63 ms e la GPU non scende mai di frequenza:
+  // 63.4 ms senza FXAA, 65.6 con, su 1.64 Mpx di target. A riposo lo stesso
+  // delta si legge 2.4 ms invece di 2.1, ma lì il frame sta sotto al vsync, la
+  // GPU si addormenta fra un frame e l'altro e la dispersione raddoppia — è il
+  // motivo per cui questa taratura va presa dove la macchina è carica, non dove
+  // è comoda misurare.
+  aaCostMsPerMpx: 1.3,
+  // Tetto del moltiplicatore, cioè fin dove si può SUPERcampionare.
+  //
+  // 1 = comportamento storico: la scala poteva solo scendere, mai salire.
+  // Sopra 1 il render target diventa più grande dello schermo e il quad finale
+  // riduce in scala — campioni veri, l'antialiasing più forte che esista, e per
+  // costruzione dentro `frameBudgetMs` perché è la stessa legge a concederlo.
+  //
+  // ⚠️ Il default resta 1 e si alza NEL JSON DEL PRODOTTO, dopo aver misurato.
+  // Il motivo è scritto due righe sopra: il costo per pixel non è lineare,
+  // triplica fra target piccolo e grande, quindi salendo si entra nel regime
+  // caro più in fretta di quanto `fillCostMsPerMpx` prometta. Una libreria che
+  // supercampionasse per default su macchine mai misurate scambierebbe la
+  // fluidità di qualcun altro con la nitidezza di nessuno.
+  //
+  // ⚠️ Su schermo HiDPI il primo effetto non è supercampionare: è tornare al
+  // nativo. Con `devicePixelRatio` 1.25 e `pixelRatioCap` 1 il composer disegna
+  // a 0.8× e il browser riscala in su — un gradino 1.25 annulla quell'upscaling
+  // prima di aggiungere un solo campione. (Sulla macchina di misura non capita:
+  // `devicePixelRatio` vale 1 e `pixelRatioCap` 1 È il nativo. Il guadagno
+  // misurato lì è quindi supercampionamento vero, non recupero di un upscaling.)
+  //
+  // ⚠️ Nel JSON di ARRAY_MODEL_L vale **1.4**, misurato: sulle 21 pose la legge
+  // sceglie 1.1 / 1.2 / 1.4 secondo la copertura (0.183 / 0.149 / 0.053) e non
+  // oscilla — 6 cambi di gradino in 21 pose, ognuno su un cambio di copertura
+  // reale e nessuno avanti e indietro sulla stessa posa. Il tetto vero però lo
+  // mette `MAX_TARGET_MPX` in runtime/postfx/PostFx.jsx: a 1.4 il target arriva
+  // a 3.2 Mpx e il gradino 1.5 sarebbe già sopra il tetto di memoria.
+  dynamicScaleMax: 1,
   // Pavimento del moltiplicatore, e non è più la manopola che decide il frame
   // peggiore: quello lo decide il budget. Qui resta il limite di MORBIDEZZA
   // accettata — 0.6 × `pixelRatioCap` 1.32 ≈ 0.79 pixel per pixel di schermo,

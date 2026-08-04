@@ -28,6 +28,24 @@ export default function PostFxTuner({ store }) {
         options: { spento: 0, '2×': 2, '4×': 4, '8×': 8 },
         label: 'MSAA',
       },
+      // ⚠️ Va confrontata INSIEME all'MSAA e alla scala massima, mai da sola:
+      // sono tre modi di comprare lo stesso bordo su assi diversi (campioni di
+      // copertura, un quad a valle, pixel veri), e la misura del 2026-08-04 dice
+      // che su questa scena vince il terzo. La matrice da guardare è quella, non
+      // tre interruttori indipendenti — vedi state/defaults.js su `aa`.
+      // ⚠️ Dice quale tecnica è DISPONIBILE, non quando gira: il pass si accende
+      // da sé solo entro mezzo gradino dall'1:1 con lo schermo, che è l'unico
+      // regime in cui ha battuto una misura. Se in pannello sembra non fare
+      // nulla, guardare prima il gradino della scala dinamica.
+      aa: {
+        value: DEFAULT_POSTFX.aa,
+        options: { spento: 'none', FXAA: 'fxaa' },
+        label: 'AA a valle',
+      },
+      // L'interruttore per l'A/B: spegnendolo la riduzione torna al tap singolo
+      // di `OutputShader`, cioè al difetto misurato (cresta larga 1 px che
+      // scatta ogni 24 righe). Ha effetto solo quando il gradino sta sopra 1.
+      resolveBox: { value: DEFAULT_POSTFX.resolveBox, label: 'riduzione a box' },
       pixelRatioCap: {
         value: DEFAULT_POSTFX.pixelRatioCap,
         min: 1,
@@ -58,12 +76,34 @@ export default function PostFxTuner({ store }) {
         step: 1,
         label: 'costo fill (ms/Mpx)',
       },
+      // ⚠️ Taratura per MACCHINA come quella sopra, ma di un'altra grandezza:
+      // il fill si paga sui pixel COPERTI, questo su tutti quelli del target.
+      // Si misura facendo variare la risoluzione a copertura FERMA.
+      aaCostMsPerMpx: {
+        value: DEFAULT_POSTFX.aaCostMsPerMpx,
+        min: 0,
+        max: 12,
+        step: 0.1,
+        label: 'costo AA (ms/Mpx)',
+      },
       dynamicScaleMin: {
         value: DEFAULT_POSTFX.dynamicScaleMin,
         min: 0.4,
         max: 1,
         step: 0.05,
         label: 'scala minima',
+      },
+      // Sopra 1 si SUPERcampiona: il target diventa più grande dello schermo e
+      // il quad finale riduce in scala. 1 = il comportamento storico, in cui la
+      // legge poteva solo togliere risoluzione. Il tetto vero però è di
+      // memoria, non di gusto (MAX_TARGET_MPX in runtime/postfx/PostFx.jsx):
+      // alzare qui non alloca oltre quello.
+      dynamicScaleMax: {
+        value: DEFAULT_POSTFX.dynamicScaleMax,
+        min: 1,
+        max: 2,
+        step: 0.1,
+        label: 'scala massima',
       },
       aoEnabled: { value: DEFAULT_POSTFX.aoEnabled, label: 'occlusione ambientale' },
       aoResolutionScale: {

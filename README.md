@@ -359,13 +359,13 @@ sequenceDiagram
 ```mermaid
 flowchart LR
     subgraph EAGER["📦 sempre"]
-        CORE["index-*.js<br/>198 kB · 64 kB gz"]
+        CORE["index-*.js<br/>204 kB · 67 kB gz"]
         CSS["keyboard-composer.css<br/>12,6 kB · 3,4 kB gz"]
     end
 
     subgraph LAZYC["⏳ solo se serve"]
         HUDX["Hud-*.js<br/>10,3 kB — se hud = true"]
-        AUTHX["index-*.js (authoring)<br/>104 kB · 27 kB gz — se ?debug"]
+        AUTHX["index-*.js (authoring)<br/>105 kB · 27 kB gz — se ?debug"]
     end
 
     subgraph PEERS["🔗 peer del progetto ospite"]
@@ -396,18 +396,18 @@ flowchart LR
 ### La risoluzione segue il carico, non lo zoom
 
 Il costo di questa scena è la **superficie coperta**, quindi la risoluzione di
-rendering si abbassa da sola quando il modello riempie la viewport. Il segnale
-non è il fattore di zoom ma una **frazione di viewport coperta**, misurata dalla
-geometria.
+rendering si muove da sola: scende quando il modello riempie la viewport, e
+**sale sopra il nativo** quando il budget avanza. Il segnale non è il fattore di
+zoom ma una **frazione di viewport coperta**, misurata dalla geometria.
 
 ```mermaid
 flowchart LR
     BOX["estensione del modello<br/>+ posa e distanza<br/>DI DESTINAZIONE"]
     COV["cameraFraming<br/>coverageFraction()<br/>proiezione scatola × sagoma"]
     PX["× pixel del target<br/>(viewport × pixelRatioCap)"]
-    BUD{{"budget<br/>frameBudgetMs<br/>÷ fillCostMsPerMpx"}}
-    LAW["scala = √(budget ÷ coperti)"]
-    TIER["gradino: floor + isteresi<br/>scende subito, risale con margine"]
+    BUD{{"budget<br/>frameBudgetMs ÷<br/>(fillCostMsPerMpx × copertura<br/>+ aaCostMsPerMpx)"}}
+    LAW["scala = √(budget ÷ pixel)"]
+    TIER["gradino: floor + isteresi<br/>scende subito, risale con margine<br/>fra dynamicScaleMin e<br/>min(dynamicScaleMax, MAX_TARGET_MPX)"]
     APPLY["composer.setPixelRatio()"]
 
     BOX --> COV --> PX --> LAW
@@ -421,24 +421,45 @@ flowchart LR
     class APPLY out
 ```
 
-Tre proprietà che un fattore di zoom non poteva dare, tutte misurate:
+Quattro proprietà che un fattore di zoom non poteva dare, tutte misurate:
 
 | | |
 | --- | --- |
 | **Satura** | Riempita la viewport, avvicinarsi non aggiunge un pixel da ombreggiare — la vecchia legge continuava a scalare, e la sola cosa che la fermava era un pavimento scelto a mano |
 | **Sa quanto è grande la finestra** | Un rapporto di zoom vale lo stesso in un canvas piccolo e a schermo pieno, dove i pixel sono 3× e il frame costa 3× |
 | **Anticipa** | Legge l'inquadratura di *destinazione*: la scala cambia al frame **17**, la camera parte al **18** — una sola riallocazione per carrellata, mai a metà del movimento |
+| **Spende, non solo risparmia** | Dove il budget avanza il target diventa più grande dello schermo e il quad finale lo **riduce con un box a 4 tap**: campioni veri, l'antialiasing più forte che esista, e per costruzione dentro `frameBudgetMs` perché è la stessa legge a concederlo |
 
+> ⚠️ **I due costi non si possono sommare in una costante sola.** Il *fill* si
+> paga sui pixel **coperti** dal modello; il pass di AA è un quad fullscreen,
+> quindi si paga su **tutti** i pixel del target, anche col modello lontano.
+> Con `aa: 'none'` il secondo termine è zero e la legge collassa esattamente
+> nella vecchia `√(budget ÷ coperti)`.
+>
+> ⚠️ **Supercampionare non basta: bisogna anche RIDURRE come si deve.** Il pass
+> di uscita di three fa un solo `texture2D(tDiffuse, vUv)`, e un tap bilineare
+> pesa 2×2 texel — cioè è il box esatto del rapporto 2 e di nessun altro. Al
+> gradino spedito, 1.4, salta texel interi, e il sintomo non è un'immagine
+> morbida ma una **seghettatura luminosa**: una cresta di ombreggiatura larga
+> 1 px che scatta di un pixel ogni 24 righe. `createResolveOutputPass` sostituisce
+> quel tap con quattro tap disposti a un quarto dell'impronta — tre fetch in più
+> su un quad che si disegnava comunque, su una scena satura di banda e non di
+> aritmetica.
+>
 > ⚠️ **`composer.setPixelRatio()` e mai la ricostruzione della catena.** Ricostruire
 > significherebbe un `GTAOPass` nuovo, cioè materiali nuovi, cioè una
 > compilazione di shader: lo stallo che questa manopola esiste per evitare, fatto
 > scattare dal tentativo di evitarlo. Verificato: `gl.info.programs.length` resta
 > invariato attraverso un focus.
 >
-> ⚠️ L'isteresi non è cosmetica. Senza, due pose la cui copertura differiva
-> dell'11% stavano a cavallo di una soglia e producevano **6 riallocazioni ogni
-> 18 cambi di posa**; ora sono **0**. (Non erano loro lo stutter — una
-> riallocazione costa ~16 ms — ma erano lavoro buttato.)
+> ⚠️ L'isteresi non è cosmetica, e sbloccare il tetto superiore la rimette alla
+> prova. Senza, due pose la cui copertura differiva dell'11% stavano a cavallo di
+> una soglia e producevano **6 riallocazioni ogni 18 cambi di posa**, tutte
+> avanti e indietro sulla stessa coppia. Rimisurato con `dynamicScaleMax: 1.4`
+> sulle 21 pose di ARRAY_MODEL_L: **6 cambi di gradino in 21 pose**, ma nessuno è
+> un rimbalzo — la copertura autorata varia di 3.5× fra le pose (0.053 → 0.183) e
+> ogni cambio segue un cambio reale. Il numero da guardare non è quanti, è se
+> tornano indietro.
 
 ### Mappa dei sorgenti
 

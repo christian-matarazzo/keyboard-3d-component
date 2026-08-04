@@ -5,7 +5,9 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
+import { FXAAPass } from 'three/examples/jsm/postprocessing/FXAAPass.js'
 import { useComposerSection } from '../../state/useComposerSection'
+import { isDebug } from '../../state/debug'
 import { DEFAULT_POSTFX } from '../../state/defaults'
 
 /**
@@ -21,7 +23,7 @@ import { DEFAULT_POSTFX } from '../../state/defaults'
  * ## Perché i pass di `three` e non `postprocessing`
  *
  * `EffectComposer`, `RenderPass`, `OutputPass` (e, per i passi successivi,
- * `GTAOPass`/`SMAAPass`) sono già dentro `three` sotto `examples/jsm/`. Non
+ * `GTAOPass`/`FXAAPass`) sono già dentro `three` sotto `examples/jsm/`. Non
  * sono una dipendenza nuova: sono lo stesso peer che l'host installa comunque,
  * e `vite.config.js` li lascia esterni da sé (la regola su EXTERNAL confronta
  * anche i SOTTOPERCORSI — `three/…` — apposta). Il pacchetto npm non cresce di
@@ -59,10 +61,91 @@ import { DEFAULT_POSTFX } from '../../state/defaults'
  * come passo successivo è ARCHIVIATA, vale 0.018/255 — vedi CLAUDE.md,
  * "Anti-aliasing". Non costruirla senza rimisurare.
  *
- * ⚠️ E i `samples` contano molto meno del numero di PIXEL: sopra
- * `pixelRatioCap` 1.25 passare da 4 a 2 campioni è indistinguibile
- * (9.06 contro 9.19 di delta medio sui bordi). Il default è sceso a 2 per
- * questo — la manopola vera è `pixelRatioCap`, vedi state/defaults.js.
+ * ## Perché l'MSAA è spento (misurato 2026-08-04)
+ *
+ * ⚠️ **`msaaSamples` è la manopola peggiore di questo file, e per anni è stata
+ * l'unica accesa.** La misura che la giustificava («sopra `pixelRatioCap` 1.25
+ * passare da 4 a 2 campioni è indistinguibile») era vera e fuori campo: il
+ * prodotto spedito sta a **1.0**, dove non era mai stata verificata. Rifatta lì
+ * — build di produzione, Intel Iris Xe / ANGLE D3D11, `devicePixelRatio` 1,
+ * finestra 1920×855 (1.64 Mpx), tempi GPU del solo `composer.render()` presi con
+ * `EXT_disjoint_timer_query_webgl2` (l'intervallo rAF non serve: a 60 Hz satura
+ * a 16.7 ms e nasconde tutto ciò che sta sotto):
+ *
+ *            configurazione   a riposo (cop. 0.15)   saturo (cop. 0.96)
+ *            msaa0 + none            10.3 ms               63.4 ms
+ *            msaa0 + fxaa            12.7                  65.6
+ *            msaa2 + none            16.3                  71.7
+ *            msaa0 + smaa            18.4                  70.6
+ *            msaa4 + none            19.2                  75.7
+ *            msaa2 + fxaa            22.6                  77.2
+ *
+ * cioè MSAA 2× costa **+6.0 ms a riposo e +8.2 saturo** (3.7 e 5.0 ms per Mpx di
+ * target), contro +2.4/+2.1 di FXAA (1.3 ms/Mpx) e +8.1/+7.2 di SMAA (4.4). Ed è
+ * SUPERADDITIVO con un pass a valle (msaa2+fxaa costa 13.8 sopra la base contro i
+ * 10.3 della somma): ogni confine di pass su un target multicampionato paga un
+ * blit di resolve, e questa scena è satura proprio su quell'asse.
+ *
+ * ## Cosa si compra con quei millisecondi: la manopola `aa` e il gradino > 1
+ *
+ * Qualità misurata come delta medio per pixel sui pixel di BORDO (2.9%
+ * dell'immagine, maschera per gradiente locale sulla luma) contro l'immagine
+ * supercampionata 2× — target 6.57 Mpx ridotto in scala dal quad finale, cioè un
+ * box filter 2×2 esatto. Più basso è meglio:
+ *
+ *            msaa4 + none  @1      3.97      19.2 ms
+ *            msaa0 + none  @1.4    4.00     ~17.4
+ *            msaa2 + none  @1      4.61      16.3      ← ciò che si spediva
+ *            msaa0 + none  @1.2    4.72      13.4
+ *            msaa0 + smaa  @1      4.88      18.8
+ *            msaa0 + fxaa  @1.2    5.01      17.2
+ *            msaa0 + fxaa  @1      5.16      12.7
+ *            msaa0 + none  @1      6.27      10.3
+ *
+ * ⚠️ **Supercampionare DOMINA l'MSAA sulla frontiera qualità/costo**: a scala 1.2
+ * si ottiene la stessa qualità di bordo di MSAA 2× per 3 ms in meno, e a 1.4 si
+ * batte MSAA 4× costando meno. Sono campioni veri contro campioni veri, e i
+ * secondi li paga anche dove non servono. Da qui il default spedito: MSAA spento,
+ * `aa: 'none'`, e il budget speso alzando `dynamicScaleMax`.
+ *
+ * ⚠️ **SMAA è stato provato e RIMOSSO**, non dimenticato. Due ragioni, entrambe
+ * misurate: è dominato (4.88 a 18.8 ms, cioè peggio del supercampionamento a 1.4
+ * che costa meno), e il suo `SMAAPass` porta le texture di area/ricerca in base64
+ * dentro il chunk `three` — **465 → 505 kB gzip**, 40 kB che pagherebbe ogni
+ * integratore per un'opzione che ha perso la misura. Se qualcuno lo rimette:
+ * va DOPO `OutputPass`, non prima. Misurato anche quello — 4.88 dopo contro 5.98
+ * prima, cioè la posizione che la documentazione di three prescrive è la peggiore
+ * delle due su questa catena (il suo shader di blend fa `pow(C, 2.2)`, cioè dà
+ * per sRGB un ingresso che la doc dichiara lineare).
+ *
+ * ⚠️ **Il pass di AA costa per pixel di TARGET, non per pixel COPERTO**, cioè
+ * è l'unico costo di questo file che non passa dal modello. La scala dinamica
+ * lo scopre solo se glielo si dice: vedi `aaCostMsPerMpx` in `wantedScaleRaw`.
+ * Senza quel termine il budget continuerebbe a promettere millisecondi che il
+ * pass si è già preso, e "niente cali di framerate" si perderebbe in silenzio.
+ *
+ * ## Il supercampionamento non arrivava a destinazione (2026-08-04)
+ *
+ * ⚠️ **Fino a `createResolveOutputPass` la riduzione finale era UN SOLO TAP
+ * BILINEARE**, e con lei metà del vantaggio che aveva fatto vincere il
+ * supercampionamento nella tabella qui sopra. `OutputShader` fa letteralmente
+ * `gl_FragColor = texture2D( tDiffuse, vUv )`: un tap bilineare pesa 2×2 texel,
+ * cioè è il box ESATTO del rapporto 2 e di nessun altro. Il gradino spedito è
+ * 1.4, dove quel tap salta texel interi.
+ *
+ * Si vedeva, e il sintomo non era "immagine morbida" ma una **seghettatura
+ * luminosa**: misurata su una cattura del prodotto, le due creste di
+ * ombreggiatura sullo smusso del fianco (la silhouette e lo spigolo interno)
+ * sono larghe **1 px** con picchi 115-126 su un fondo locale di 60, migrano di
+ * 1 px ogni 24 righe e restano in fase fra loro — 24 px di riga dritta, poi lo
+ * scatto. È il campionamento puntuale di una cresta più stretta del pixel: i
+ * campioni per risolverla c'erano già nel target a 1.4, li buttava via l'ultimo
+ * quad.
+ *
+ * ⚠️ La conseguenza sulla tabella: i numeri di errore di bordo delle righe a
+ * scala > 1 sono stati misurati CON questo difetto, cioè penalizzano il
+ * supercampionamento. Non vanno cancellati, vanno riletti — e rimisurati prima
+ * di riaprire il confronto con l'MSAA.
  */
 
 /**
@@ -124,14 +207,59 @@ const SCALE_RAISE_MARGIN = 0.05
  */
 const tierFloor = (value) => Math.floor(value / SCALE_STEP)
 
+/**
+ * Lo stesso, ma per i TETTI. `Math.floor(1.5 / 0.1)` fa 14, non 15: in binario
+ * 1.5/0.1 vale 14.999999999999998, e un tetto autorato a 1.5 diventerebbe 1.4
+ * senza che nessuno capisca perché. Il troncamento serve alla legge continua
+ * (vedi sopra), non a un limite che l'autore ha scritto a mano.
+ */
+const tierRound = (value) => Math.round(value / SCALE_STEP)
+
 /** Il gradino di piena qualità, come intero. */
-const FULL_TIER = Math.round(1 / SCALE_STEP)
+const FULL_TIER = tierRound(1)
+
+/**
+ * Tetto ASSOLUTO alla superficie del render target, in megapixel.
+ *
+ * ⚠️ È il tetto che conta davvero, e `dynamicScaleMax` da solo non lo
+ * sostituisce: quello è un moltiplicatore, quindi non sa quanto è grande la
+ * finestra: 1.5× su un canvas incorporato sono 30 MB, 1.5× a schermo pieno su
+ * un 4K sono centinaia. L'aritmetica, per i due buffer del composer:
+ *
+ *   colore  RGBA `HalfFloat` = 8 B/px, ×2 buffer, ×`msaaSamples` sui campioni
+ *   profondità `UnsignedInt` = 4 B/px, ×2 buffer
+ *
+ * cioè ~24 B/px con MSAA spento (il default spedito) e ~40 con `msaaSamples: 2`.
+ * A 4 Mpx si sta fra 96 e 160 MB, che su una GPU integrata che condivide la
+ * memoria di sistema è il massimo difendibile. `FXAAPass` non aggiunge nulla al
+ * conto: è uno `ShaderPass`, riusa il ping-pong. Rialzare questo tetto è una
+ * decisione di memoria, non di qualità.
+ */
+const MAX_TARGET_MPX = 4
+
+/**
+ * Il gradino massimo che il tetto di memoria concede, data la taglia a scala 1.
+ * `√(tetto / pixel)` è la stessa inversione di `wantedScaleRaw`: i pixel vanno
+ * come `scala²`.
+ */
+const pixelCeilingTier = (fullPixels) =>
+  fullPixels > 0 ? tierFloor(Math.sqrt((MAX_TARGET_MPX * 1e6) / fullPixels)) : FULL_TIER
 
 /**
  * La scala che terrebbe il frame dentro il budget, NON limitata a 1.
  *
- * `costo ≈ fillCostMsPerMpx · copertura · pixel`, con i pixel che vanno come
- * `scala²`: invertendo, `scala = √(budget / pixel_coperti)`.
+ * `costo ≈ (fillCostMsPerMpx · copertura + aaCostMsPerMpx) · pixel`, con i
+ * pixel che vanno come `scala²`: invertendo,
+ * `scala = √(budget / (costo_per_Mpx · pixel_a_scala_1))`.
+ *
+ * ⚠️ I due addendi del costo NON sono la stessa grandezza, ed è il motivo per
+ * cui la formula ha dovuto generalizzarsi. Il fill si paga sui pixel COPERTI
+ * dal modello (quindi moltiplicato per la copertura); il pass di AA si paga su
+ * TUTTI i pixel del target, perché è un quad fullscreen — a modello lontano la
+ * copertura crolla e il fill con lei, il costo dell'AA no. Con `aa: 'none'` il
+ * secondo termine è zero e questa espressione collassa ESATTAMENTE nella
+ * vecchia `√(budgetPx / pixel_coperti)`: nessuna deriva sul comportamento che
+ * c'era prima.
  *
  * ⚠️ Il valore torna GREZZO, senza tetto: il tetto si applica al gradino, non
  * qui. Serve così al margine di risalita — un valore già tagliato a 1 non
@@ -146,9 +274,10 @@ const FULL_TIER = Math.round(1 / SCALE_STEP)
  */
 const wantedScaleRaw = (s, coverage, fullPixels) => {
   if (!s.dynamicScale || coverage == null || !(fullPixels > 0)) return null
-  const budgetPx = (s.frameBudgetMs / Math.max(s.fillCostMsPerMpx, 0.01)) * 1e6
-  const coveredPx = Math.max(1, coverage * fullPixels)
-  return Math.sqrt(budgetPx / coveredPx)
+  const msPerMpx =
+    s.fillCostMsPerMpx * Math.max(0, coverage) + (s.aa && s.aa !== 'none' ? s.aaCostMsPerMpx : 0)
+  const budgetPx = (s.frameBudgetMs / Math.max(msPerMpx, 0.01)) * 1e6
+  return Math.sqrt(budgetPx / fullPixels)
 }
 
 /**
@@ -156,12 +285,39 @@ const wantedScaleRaw = (s, coverage, fullPixels) => {
  * resta il limite di MORBIDEZZA accettata — quando è lui a vincere, la finestra è
  * troppo grande per questo hardware e la scelta fra fluidità e nitidezza torna
  * all'autore.
+ *
+ * ⚠️ Il tetto NON è più fisso a `FULL_TIER`, e il cambio è il punto di tutto il
+ * supercampionamento: fino a ieri questa legge poteva solo TOGLIERE risoluzione,
+ * cioè spendeva il budget solo per difendersi e mai per guadagnare. Ma il budget
+ * è dichiarato, non consumato: dove avanza — canvas incorporati, e tutta la
+ * navigazione a riposo, dove la copertura misurata è ~0.20 — si può renderizzare
+ * SOPRA la densità nativa e far ridurre in scala il quad finale. Sono campioni
+ * veri, non ricostruzione: è l'antialiasing più forte che esista, e per
+ * costruzione non può sforare `frameBudgetMs`, perché è la stessa legge a
+ * concederlo.
+ *
+ * ⚠️ Su schermo HiDPI il primo effetto non è supercampionare, è tornare al
+ * NATIVO. Con `devicePixelRatio` 1.25 e `pixelRatioCap` 1 il composer disegna a
+ * 0.8× e il browser riscala in su: un gradino 1.25 annulla quell'upscaling prima
+ * di aggiungere un solo campione in più. Su questa macchina è probabilmente il
+ * guadagno di nitidezza più grande dell'intera manopola.
+ *
+ * ⚠️ E il tetto è DUE tetti, non uno: `dynamicScaleMax` (scelta d'autore) e
+ * `pixelCeilingTier` (memoria). Nessuno dei due può però spingere SOTTO
+ * `FULL_TIER` — sono guardie contro il supercampionamento, non un secondo
+ * pavimento: il pavimento è `dynamicScaleMin`, e ha un'altra ragione d'essere.
  */
-const nextTier = (s, raw, current) => {
+const nextTier = (s, raw, current, fullPixels) => {
   if (raw == null) return FULL_TIER
   const minTier = Math.max(1, Math.ceil(s.dynamicScaleMin / SCALE_STEP))
-  const wanted = Math.min(FULL_TIER, Math.max(minTier, tierFloor(raw)))
-  // Isteresi: scendere è immediato, risalire chiede un vantaggio reale.
+  const maxTier = Math.max(
+    FULL_TIER,
+    Math.min(tierRound(s.dynamicScaleMax ?? 1), pixelCeilingTier(fullPixels)),
+  )
+  const wanted = Math.min(maxTier, Math.max(minTier, tierFloor(raw)))
+  // Isteresi: scendere è immediato, risalire chiede un vantaggio reale. Vale
+  // anche attraversando FULL_TIER — anzi lì serve di più, perché è la soglia su
+  // cui la copertura a riposo oscilla dell'11% fra una posa e l'altra.
   if (wanted > current && raw < (current + 1) * SCALE_STEP + SCALE_RAISE_MARGIN) return current
   return wanted
 }
@@ -248,10 +404,10 @@ const createAoPass = (scene, camera, width, height, settings) => {
   // ⚠️ La texture di profondità va riletta dal buffer che il pass riceve, non
   // fissata una volta. `EffectComposer` scambia i due render target a ogni pass
   // con `needsSwap`, e i due hanno DEPTH TEXTURE DISTINTE (`clone()` la
-  // duplica). Oggi i passaggi che scambiano sono due, quindi il giro torna al
-  // punto di partenza e un riferimento fisso funzionerebbe per caso; aggiungere
-  // un terzo pass (SMAA) lo romperebbe a frame alterni, e il sintomo sarebbe
-  // un'AO che sfarfalla — non un errore.
+  // duplica). Con `aa: 'none'` i passaggi che scambiano sono due, quindi il giro
+  // torna al punto di partenza e un riferimento fisso funzionerebbe per caso;
+  // il pass di AA è il terzo e lo romperebbe a frame alterni — sintomo: un'AO
+  // che sfarfalla, non un errore. Da qui la rilettura a ogni frame.
   const baseRender = GTAOPass.prototype.render
   pass.render = function (renderer, writeBuffer, readBuffer, deltaTime, maskActive) {
     const depth = readBuffer?.depthTexture
@@ -264,6 +420,171 @@ const createAoPass = (scene, camera, width, height, settings) => {
   }
 
   applyAoSettings(pass, settings)
+  return pass
+}
+
+/**
+ * Le tecniche di AA a valle, e — la metà che conta — DOVE ognuna va messa.
+ *
+ * ⚠️ Sbagliare il posto non alza errori: dà un'immagine leggermente sbagliata
+ * che si scambia per "l'AA non funziona". `FXAAPass` ragiona su luma PERCETTIVA
+ * (soglie 0.0312/0.063 tarate su valori sRGB), quindi va DOPO `OutputPass`,
+ * sull'immagine già compressa da ACES e codificata. Prima, sui valori HDR
+ * lineari che possono superare 1, troverebbe bordi dove non ce ne sono e li
+ * mancherebbe nelle ombre.
+ *
+ * ⚠️ **La tabella ha una voce sola apposta, e SMAA non c'è per misura.** Vedi il
+ * blocco in testa al file: dominato in qualità-per-millisecondo dal
+ * supercampionamento, e +40 kB gzip nel chunk `three` di ogni integratore. Se lo
+ * si rimette, `beforeOutput: false` anche per lui: la posizione che la doc di
+ * three prescrive (prima di `OutputPass`, «operates in linear-srgb») è quella
+ * che ha misurato PEGGIO, 5.98 contro 4.88 di errore di bordo, ed è coerente col
+ * suo `SMAABlendShader` che fa `pow(C, 2.2)` — cioè tratta l'ingresso da sRGB.
+ * La struttura resta a tabella per questo: aggiungere una tecnica è una riga, e
+ * la riga dice anche dove va.
+ */
+const AA_PASSES = {
+  fxaa: { create: () => new FXAAPass(), beforeOutput: false },
+}
+
+/**
+ * Larghezza della banda, in unità di scala, dentro cui il pass di AA a valle ha
+ * senso di esistere. Mezzo gradino attorno all'1:1 esatto con lo schermo.
+ *
+ * ⚠️ È stretta perché la misura lo è: FXAA vince SOLO a 1:1 (errore di bordo
+ * 5.16 contro 6.27). Sopra perde contro i campioni veri (5.01 contro 4.72 a
+ * scala 1.2) e sotto PEGGIORA l'immagine (11.35 contro 10.14 a 0.6, 8.25 contro
+ * 7.66 a 0.8), perché sfuoca ciò che l'upscaling ha già sfuocato. Prima questa
+ * scelta era affidata all'autore — `aa: 'fxaa'` di libreria, `'none'` nel JSON
+ * del prodotto — cioè a indovinare a mano in quale regime avrebbe girato la
+ * macchina di qualcun altro. Ora il pass si spegne da sé fuori banda, e `aa`
+ * torna a dire solo "questa tecnica è disponibile".
+ */
+const AA_BAND = SCALE_STEP / 2
+
+/** Il target è più grande dello schermo di almeno questo: sotto, non si riduce. */
+const RESOLVE_EPS = 0.02
+
+/** Il rapporto fra i pixel del target e quelli dello schermo. 1 = nessuna riduzione. */
+const screenRatio = (composerRatio, dpr) => composerRatio / Math.max(dpr, 1e-6)
+
+/** Il pass di AA a valle è acceso solo dentro la banda attorno all'1:1. */
+const applyAaGate = (pass, composerRatio, dpr) => {
+  if (pass) pass.enabled = Math.abs(screenRatio(composerRatio, dpr) - 1) <= AA_BAND
+}
+
+/**
+ * I due marcatori da riscrivere in `OutputShader`. Separati dal codice perché
+ * sono l'unica cosa di questo file che dipende dal SORGENTE di three e non dalla
+ * sua API: se un aggiornamento li sposta, si vuole accorgersene qui e ricadere
+ * sul pass intatto, non spedire uno shader mezzo patchato.
+ */
+const RESOLVE_MARKERS = {
+  uniform: 'uniform sampler2D tDiffuse;',
+  tap: 'gl_FragColor = texture2D( tDiffuse, vUv );',
+}
+
+/**
+ * ⚠️ La media si fa in HDR LINEARE, cioè PRIMA del tone mapping, ed è
+ * deliberato: è lo stesso ordine di un resolve MSAA e dello schermo
+ * supercampionato contro cui è tarata la tabella di qualità in testa al file.
+ * Mediare dopo la curva sarebbe percettivamente più uniforme, ma richiederebbe
+ * di duplicare qui la catena di `#ifdef` del tone mapping di three, che è
+ * esattamente il tipo di copia che diverge in silenzio a ogni aggiornamento. Su
+ * questa scena lo scarto fra i due ordini è calcolabile e minuscolo: sulla
+ * cresta misurata (126 contro 60 in sRGB, 4.3:1 in lineare) un pixel mezzo
+ * coperto esce a 98/255 invece di 93, cioè 5 livelli — sotto la soglia a cui
+ * qualsiasi altra manopola di questo file è stata giudicata.
+ */
+const RESOLVE_TAP_GLSL = `
+			if ( uResolveOffset.x > 0.0 ) {
+
+				gl_FragColor = 0.25 * (
+					texture2D( tDiffuse, vUv + vec2( -uResolveOffset.x, -uResolveOffset.y ) ) +
+					texture2D( tDiffuse, vUv + vec2(  uResolveOffset.x, -uResolveOffset.y ) ) +
+					texture2D( tDiffuse, vUv + vec2( -uResolveOffset.x,  uResolveOffset.y ) ) +
+					texture2D( tDiffuse, vUv + vec2(  uResolveOffset.x,  uResolveOffset.y ) )
+				);
+
+			} else {
+
+				gl_FragColor = texture2D( tDiffuse, vUv );
+
+			}`
+
+/**
+ * L'uscita — tone mapping e spazio colore — con la RIDUZIONE fatta come si deve.
+ *
+ * Quando il gradino della scala dinamica sta sopra 1, il target è più grande
+ * dello schermo e questo quad è il posto in cui i campioni in più diventano
+ * immagine. `OutputShader` ci mette un solo tap bilineare (vedi il blocco in
+ * testa al file per che aspetto ha il difetto e per come è stato misurato); qui
+ * lo si sostituisce con **quattro tap bilineari** disposti a un quarto
+ * dell'impronta, cioè un box che copre ±metà impronta — la riduzione che il
+ * rapporto chiede, quale che sia.
+ *
+ * Cosa NON costa: nessun pass nuovo, nessun render target nuovo, nessuna banda
+ * in più. Sono tre fetch aggiuntive su un quad che veniva disegnato comunque, e
+ * questa scena è satura sulla banda, non sull'aritmetica (16 → 4 campioni di AO
+ * valgono zero millisecondi, misurato). Misurato anche il costo di queste:
+ * **sotto 0.2 ms** su 1.64 Mpx di schermo, cioè sotto il pavimento del banco —
+ * i numeri sono in state/defaults.js su `resolveBox`, insieme a quanto compra.
+ *
+ * ⚠️ **Uniform e non `#define`.** `OutputPass.render()` fa
+ * `this.material.defines = {}` alla prima chiamata per ricostruire i define del
+ * tone mapping: un define nostro sparirebbe lì, in silenzio, e resterebbe da
+ * capire perché il filtro non si accende mai. Con `uResolveOffset` a zero il
+ * ramo `else` è quello di prima, e la condizione è uniforme su tutto il quad.
+ *
+ * ⚠️ **La taglia della sorgente si legge dal `readBuffer`, non da `setSize`.**
+ * `EffectComposer.setSize` la passerebbe a ogni pass, ma solo a quelli GIÀ
+ * aggiunti: qui i pass si aggiungono dopo `setSize`/`setPixelRatio` (l'ordine è
+ * obbligato, vedi la costruzione), quindi un pass appena creato non l'ha mai
+ * ricevuta. Leggerla dal buffer che si sta per campionare la rende vera per
+ * costruzione a ogni frame — compresi quelli subito dopo un cambio di gradino.
+ *
+ * @param {boolean} resolveBox valore iniziale della manopola omonima; si muove
+ *   a caldo scrivendo `pass.resolveBox`.
+ */
+const createResolveOutputPass = (resolveBox) => {
+  const pass = new OutputPass()
+  const source = pass.material.fragmentShader
+
+  if (!source.includes(RESOLVE_MARKERS.uniform) || !source.includes(RESOLVE_MARKERS.tap)) {
+    // three ha riscritto OutputShader: si torna al tap singolo di prima, che è
+    // un peggioramento dell'immagine e non un guasto.
+    if (isDebug()) {
+      console.warn('[PostFx] OutputShader cambiato: riduzione a box non applicata')
+    }
+    return pass
+  }
+
+  pass.uniforms.uResolveOffset = { value: new THREE.Vector2(0, 0) }
+  pass.material.fragmentShader = source
+    .replace(RESOLVE_MARKERS.uniform, `${RESOLVE_MARKERS.uniform}\n\t\tuniform vec2 uResolveOffset;`)
+    .replace(RESOLVE_MARKERS.tap, RESOLVE_TAP_GLSL)
+  pass.material.needsUpdate = true
+  pass.resolveBox = resolveBox
+
+  const offset = pass.uniforms.uResolveOffset.value
+  const drawingBuffer = new THREE.Vector2()
+  const baseRender = OutputPass.prototype.render
+  pass.render = function (renderer, writeBuffer, readBuffer, deltaTime, maskActive) {
+    const image = readBuffer?.texture?.image
+    const srcW = image?.width ?? 0
+    const srcH = image?.height ?? 0
+    renderer.getDrawingBufferSize(drawingBuffer)
+    // Solo disegnando a schermo c'è una riduzione: verso un altro buffer del
+    // composer la taglia è la stessa e il box sfocherebbe e basta.
+    const ratio = this.renderToScreen && drawingBuffer.x > 0 ? srcW / drawingBuffer.x : 1
+    if (this.resolveBox && ratio > 1 + RESOLVE_EPS && srcW > 0 && srcH > 0) {
+      offset.set(ratio / 4 / srcW, ratio / 4 / srcH)
+    } else {
+      offset.set(0, 0)
+    }
+    baseRender.call(this, renderer, writeBuffer, readBuffer, deltaTime, maskActive)
+  }
+
   return pass
 }
 
@@ -292,10 +613,15 @@ export default function PostFx({ store, apiRef }) {
   // `createInitialState` nasce con le sezioni a `{}`, e un `samples: undefined`
   // sul render target è un MSAA spento in silenzio.
   const settings = { ...DEFAULT_POSTFX, ...useComposerSection(store, 'postfx') }
-  const { msaaSamples, pixelRatioCap, aoEnabled, aoResolutionScale, hdrTarget } = settings
+  const { msaaSamples, pixelRatioCap, aoEnabled, aoResolutionScale, hdrTarget, aa } = settings
 
   const composerRef = useRef(null)
   const aoRef = useRef(null)
+  // I due pass che si muovono senza ricostruire la catena: l'uscita (la manopola
+  // `resolveBox` è un uniform) e l'AA a valle (si accende e si spegne col
+  // gradino, vedi AA_BAND).
+  const outputRef = useRef(null)
+  const aaRef = useRef(null)
 
   // Il pixel ratio a piena qualità: il tetto autorato, non oltre il `dpr` che
   // il Canvas ha davvero. Specchiato in una ref perché il useFrame qui sotto lo
@@ -358,8 +684,8 @@ export default function PostFx({ store, apiRef }) {
 
     // L'AO va PRIMA dell'uscita: opera su colore lineare in HDR, non su valori
     // già compressi dal tone mapping. È l'ordine che la sezione "planned work"
-    // di CLAUDE.md prescrive — scena lineare → AO → tone map → (SMAA per ultima,
-    // che invece vuole ingresso in sRGB).
+    // di CLAUDE.md prescrive — scena lineare → AO → tone map → AA per ultimo,
+    // che invece vuole ingresso in sRGB.
     let ao = null
     if (aoEnabled) {
       ao = createAoPass(scene, camera, width, height, settings)
@@ -367,13 +693,56 @@ export default function PostFx({ store, apiRef }) {
     }
     aoRef.current = ao
 
-    // Ultimo della catena: tone mapping + conversione di spazio colore.
-    composer.addPass(new OutputPass())
+    // L'antialiasing a valle, prima o dopo l'uscita a seconda della tecnica —
+    // il perché è su AA_PASSES, ed è l'unica cosa non ovvia di queste righe.
+    const aaSpec = AA_PASSES[aa] ?? null
+    const aaPass = aaSpec ? aaSpec.create() : null
+    if (aaPass && aaSpec.beforeOutput) composer.addPass(aaPass)
+
+    // ⚠️ La taglia va data a mano ai pass aggiunti DOPO `setSize`, cioè a tutti
+    // quelli di questa funzione: `EffectComposer.setSize` la gira solo a quelli
+    // già in lista. Senza questa riga `FXAAPass` resta sul default del suo
+    // shader (1/1024, 1/512) fino al primo ridimensionamento della finestra —
+    // cioè applica un antialiasing tarato su una risoluzione che non esiste.
+    aaPass?.setSize(width, height)
+    // La catena nasce a piena qualità (`tierRef` è appena tornato a FULL_TIER),
+    // quindi il rapporto iniziale è quello del solo `pixelRatioCap`.
+    applyAaGate(aaPass, ratio, dpr)
+    aaRef.current = aaPass
+
+    // Tone mapping + conversione di spazio colore. Ultimo della catena solo
+    // finché nessuno gli mette l'AA dietro: in quel caso `EffectComposer`
+    // sposta da sé `renderToScreen` sull'ultimo pass, e questo finisce a
+    // scrivere in un buffer invece che a schermo. Va bene: i valori che
+    // produce (ACES + sRGB) sono gli stessi in entrambi i casi, perché
+    // `OutputPass` li ricava da `renderer.toneMapping`/`outputColorSpace` e
+    // non da dove sta disegnando.
+    const output = createResolveOutputPass(settings.resolveBox)
+    composer.addPass(output)
+    outputRef.current = output
+    if (aaPass && !aaSpec.beforeOutput) composer.addPass(aaPass)
 
     composerRef.current = composer
     return () => {
       composerRef.current = null
       aoRef.current = null
+      outputRef.current = null
+      aaRef.current = null
+      // ⚠️ `EffectComposer.dispose()` libera i propri due target e la sua
+      // `copyPass`, e NIENTE dei pass che gli sono stati aggiunti — controllato
+      // nel sorgente, non dedotto. Con una catena costruita una volta sola non
+      // si vedeva; ora `aa` e `aoEnabled` sono manopole, cioè questo effetto si
+      // rifà ogni volta che si cambia idea nell'editor, e ogni giro
+      // abbandonerebbe i target dell'AO — e quelli di qualunque tecnica di AA
+      // che, a differenza di `FXAAPass`, ne allochi di propri.
+      aaPass?.dispose()
+      ao?.dispose()
+      // Vale per l'uscita esattamente come per gli altri due, e prima non lo si
+      // faceva: `OutputPass` possiede un materiale e un quad a schermo intero.
+      // Con la catena costruita una volta sola era un oggetto abbandonato per
+      // sessione; oggi che si ricostruisce a ogni cambio di `aa`/`aoEnabled` è
+      // uno per giro.
+      output.dispose()
       composer.dispose()
     }
     // `size` volutamente fuori: il ridimensionamento è l'effetto qui sotto, che
@@ -383,8 +752,14 @@ export default function PostFx({ store, apiRef }) {
     // TRANNE le due che cambiano la STRUTTURA della catena: `aoEnabled` (un pass
     // in più o in meno) e `aoResolutionScale` (la dimensione dei suoi target).
     // Le altre sono uniform e si applicano a caldo, nell'effetto qui sotto.
+    // `aa` è qui e non fra le uniform a caldo per la stessa ragione di
+    // `aoEnabled`: è un pass in più o in meno, cioè la STRUTTURA della catena.
+    // Ricostruire non ricompila i materiali della scena (la chiave di cache dei
+    // programmi dipende da dove si disegna, e la scena continua a disegnare nel
+    // solito render target), quindi può stare fra i valori autorati — a
+    // differenza dell'interruttore del composer, che invece no.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gl, scene, camera, msaaSamples, pixelRatioCap, aoEnabled, aoResolutionScale, hdrTarget])
+  }, [gl, scene, camera, msaaSamples, pixelRatioCap, aoEnabled, aoResolutionScale, hdrTarget, aa])
 
   // Taratura a caldo: raggio, intensità, spessore, campioni. Sono uniform e
   // define del solo materiale dell'AO — mai dei materiali della scena — quindi
@@ -400,6 +775,14 @@ export default function PostFx({ store, apiRef }) {
     settings.aoSamples,
   ])
 
+  // `resolveBox` è la manopola più a caldo di tutte: muove un solo uniform, e
+  // solo nei frame in cui il target è più grande dello schermo. Nessuna
+  // ricostruzione, quindi NON sta fra le dipendenze del useLayoutEffect —
+  // esiste per poter fare l'A/B in pannello sullo stesso frame.
+  useEffect(() => {
+    if (outputRef.current) outputRef.current.resolveBox = settings.resolveBox
+  }, [settings.resolveBox])
+
   // Ridimensionamento, con antirimbalzo. `setSize` rialloca i due buffer del
   // composer: farlo a ogni evento di resize trasforma il trascinamento del
   // bordo della finestra in una serie di microfreeze. Nell'intervallo
@@ -413,8 +796,13 @@ export default function PostFx({ store, apiRef }) {
       // altrimenti rimetterebbe di soppiatto la piena risoluzione proprio nello
       // stato che questa manopola esiste per alleggerire, e il useFrame non se
       // ne accorgerebbe (per lui il gradino non è cambiato).
-      composer.setPixelRatio(Math.min(dpr, pixelRatioCap) * tierRef.current * SCALE_STEP)
+      const composerRatio = Math.min(dpr, pixelRatioCap) * tierRef.current * SCALE_STEP
+      composer.setPixelRatio(composerRatio)
       composer.setSize(size.width, size.height)
+      // Il rapporto col nuovo schermo può aver cambiato banda anche a gradino
+      // fermo: passare da un monitor a `devicePixelRatio` 1 a uno a 1.5 sposta
+      // l'1:1 senza che la legge muova un dito.
+      applyAaGate(aaRef.current, composerRatio, dpr)
     }, 100)
     return () => clearTimeout(id)
   }, [size.width, size.height, dpr, pixelRatioCap])
@@ -461,15 +849,24 @@ export default function PostFx({ store, apiRef }) {
     // gradino cambia una volta sola, nell'istante del comando, invece di
     // attraversarne due a metà della carrellata riallocando i render target
     // mentre il modello si muove. Vedi lì per il resto dell'argomento.
-    const raw = wantedScaleRaw(s, apiRef?.current?.frameCoverage?.() ?? null, fullPixelsRef.current)
-    const wanted = nextTier(s, raw, tierRef.current)
+    const cov = apiRef?.current?.frameCoverage?.() ?? null
+    const raw = wantedScaleRaw(s, cov, fullPixelsRef.current)
+    const wanted = nextTier(s, raw, tierRef.current, fullPixelsRef.current)
     if (wanted !== tierRef.current && cooldownRef.current <= 0) {
       tierRef.current = wanted
       cooldownRef.current = SCALE_COOLDOWN_S
       // Solo `setPixelRatio`: rialloca i due target (e, tramite il `setSize` dei
       // pass, quelli dell'AO) senza toccare la catena. Vedi il blocco in testa
       // al file per cosa succederebbe passando invece dalla ricostruzione.
-      composer.setPixelRatio(baseRatioRef.current * wanted * SCALE_STEP)
+      const composerRatio = baseRatioRef.current * wanted * SCALE_STEP
+      composer.setPixelRatio(composerRatio)
+      // ⚠️ Il gradino decide anche SE il pass di AA a valle ha senso: sopra 1:1
+      // ci sono campioni veri e FXAA li sfoca, sotto sfoca un upscaling. Si passa
+      // da `enabled` e non dalla ricostruzione della catena perché
+      // `EffectComposer.render()` salta i pass spenti e RICALCOLA
+      // `renderToScreen` da `isLastEnabledPass` a ogni frame — quindi l'uscita
+      // torna a essere l'ultimo pass da sola, senza che nessuno glielo dica.
+      applyAaGate(aaRef.current, composerRatio, dpr)
     }
 
     composer.render()
